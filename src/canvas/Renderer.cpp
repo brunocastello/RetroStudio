@@ -1,11 +1,13 @@
 #include "Renderer.h"
 
-// --------------------------------------------------------------------------
-// Helpers
-// --------------------------------------------------------------------------
+// In Retro68's CarbonLib headers CGrafPtr aliases GrafPort* (old definition),
+// while GWorldPtr is CGrafPort*. Cast GWorldPtr→CGrafPtr when calling port APIs.
+#define AS_CGRAF(p) reinterpret_cast<CGrafPtr>(p)
 
-static void SetFore(const RGBColor& c) { RGBForeColor(&c); }
-static void SetBack(const RGBColor& c) { RGBBackColor(&c); }
+// RGBForeColor / RGBBackColor take non-const RGBColor* in old headers.
+// Pass by value so we can safely take the address of a local copy.
+static void SetFore(RGBColor c) { RGBForeColor(&c); }
+static void SetBack(RGBColor c) { RGBBackColor(&c); }
 
 // --------------------------------------------------------------------------
 // Lifecycle
@@ -43,10 +45,11 @@ bool Renderer::Resize(SInt16 w, SInt16 h) {
 void Renderer::Render(const Document& doc) {
     if (!mGWorld) return;
 
-    GWorldPtr savedGW;
-    GDHandle  savedGD;
-    GetGWorld(&savedGW, &savedGD);
-    SetGWorld(mGWorld, nullptr);
+    // Save current port; use GetPort/SetPort to avoid CGrafPtr vs GWorldPtr
+    // typedef mismatch in the Retro68 CarbonLib headers.
+    GrafPtr savedPort;
+    GetPort(&savedPort);
+    SetGWorld(AS_CGRAF(mGWorld), nullptr);
 
     PixMapHandle pix = GetGWorldPixMap(mGWorld);
     LockPixels(pix);
@@ -57,15 +60,14 @@ void Renderer::Render(const Document& doc) {
         RenderFrame(*frame);
 
     UnlockPixels(pix);
-    SetGWorld(savedGW, savedGD);
+    SetPort(savedPort);
 }
 
 void Renderer::DrawCanvasBackground() const {
-    // Figma-style: mid-gray canvas behind artboards
     RGBColor bg = { 0xDDDD, 0xDDDD, 0xDDDD };
     SetBack(bg);
     Rect full;
-    GetPortBounds(mGWorld, &full);
+    GetPortBounds(AS_CGRAF(mGWorld), &full);
     EraseRect(&full);
 }
 
@@ -74,28 +76,25 @@ void Renderer::RenderFrame(const Frame& frame) const {
 
     Rect r = ToMacRect(frame.bounds);
 
-    // Drop shadow (1-pixel offset, dark gray)
+    // Drop shadow
     RGBColor shadow = { 0x6666, 0x6666, 0x6666 };
     SetFore(shadow);
     Rect shadowR = r;
     OffsetRect(&shadowR, 3, 3);
     PaintRect(&shadowR);
 
-    // Frame fill (white by default)
+    // Frame fill
     SetFore(frame.backgroundColor);
     PaintRect(&r);
 
-    // Render children clipped to frame
-    // (true clipping via regions deferred; children out-of-bounds simply overdraw)
+    // Children
     for (const auto& shape : frame.children)
         RenderShape(*shape);
 
-    // Frame label above top-left corner (Figma-style name tag)
-    // Drawn after children so it's always on top
+    // Frame name label (Figma-style, above top-left corner)
     RGBColor labelColor = { 0x4444, 0x4444, 0x4444 };
     SetFore(labelColor);
     MoveTo(r.left, r.top - 4);
-    // DrawString expects a Pascal string; limit name to 63 chars
     Str255 pname;
     pname[0] = 0;
     const char* src = frame.name.c_str();
@@ -155,11 +154,11 @@ void Renderer::BlitToWindow(WindowRef win, const Rect& destRect) const {
     LockPixels(srcPix);
 
     Rect srcBounds;
-    GetPortBounds(mGWorld, &srcBounds);
+    GetPortBounds(AS_CGRAF(mGWorld), &srcBounds);
 
     SetPortWindowPort(win);
     CopyBits(
-        GetPortBitMapForCopyBits(mGWorld),
+        GetPortBitMapForCopyBits(AS_CGRAF(mGWorld)),
         GetPortBitMapForCopyBits(GetWindowPort(win)),
         &srcBounds,
         &destRect,
