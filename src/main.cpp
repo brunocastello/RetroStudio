@@ -42,12 +42,18 @@ int main(int argc, char* argv[]) {
                             } else if (win == gMainWindow) {
                                 // Background click just brings window to front
                                 if (win != FrontWindow()) { SelectWindow(win); break; }
-                                // Shape-creation tools: rubber-band drag on canvas
                                 switch (gActiveTool) {
+                                    case Tool::Select:
+                                        HandleCanvasSelect(win, event.where);
+                                        // Sync palette in case selection changed active tool state
+                                        DrawPalette();
+                                        break;
                                     case Tool::Frame:
                                     case Tool::Rectangle:
                                     case Tool::Ellipse:
                                         HandleCanvasCreate(win, event.where);
+                                        // HandleCanvasCreate auto-switches to Select
+                                        DrawPalette();
                                         break;
                                     default:
                                         break;
@@ -87,8 +93,15 @@ int main(int argc, char* argv[]) {
                             case 'o': case 'O': gActiveTool = Tool::Ellipse;   break;
                             case 't': case 'T': gActiveTool = Tool::Text;      break;
                             case 'h': case 'H': gActiveTool = Tool::Hand;      break;
+                            case 0x1B: {        // Escape — deselect
+                                gSelectedFrame = nullptr;
+                                gSelectedShape = nullptr;
+                                Rect r;
+                                GetWindowPortBounds(gMainWindow, &r);
+                                InvalWindowRect(gMainWindow, &r);
+                                break;
+                            }
                         }
-                        // Redraw palette if tool changed
                         if (gActiveTool != prev)
                             DrawPalette();
                     }

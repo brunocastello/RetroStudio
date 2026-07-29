@@ -9,10 +9,13 @@ extern Boolean    gQuitFlag;
 extern Tool       gActiveTool;
 extern Renderer*  gRenderer;
 extern Document*  gDocument;
+extern Frame*     gSelectedFrame;
+extern Shape*     gSelectedShape;
 
 void SetupMenus();
 void SetupWindow();
 void DrawWindowContent(WindowRef win);
 void HandleCanvasCreate(WindowRef win, Point startGlobal);
+void HandleCanvasSelect(WindowRef win, Point startGlobal);
 void HandleMenuCommand(long menuResult);
 void HandleWindowGrow(WindowRef win, Point where);
