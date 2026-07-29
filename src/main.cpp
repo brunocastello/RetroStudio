@@ -1,5 +1,4 @@
-#include <Carbon/Carbon.h>
-#include <iostream>
+#include <Carbon.h>
 
 // RetroStudio Application Entry Point for Mac OS 9 Carbon
 void InitializeMacintosh() {
