@@ -17,17 +17,32 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Locate Retro68 Toolchain
+        run: |
+          echo "=== Searching for retro68.toolchain.cmake ==="
+          find / -name "retro68.toolchain.cmake" 2>/dev/null || true
+          echo "=== /Retro68-build contents ==="
+          ls /Retro68-build/ 2>/dev/null || echo "(not found)"
+          echo "=== Retro68 top-level search ==="
+          find /Retro68-build -maxdepth 4 -name "*.cmake" 2>/dev/null || true
+
       - name: Configure CMake with Retro68 Toolchain
         run: |
+          TOOLCHAIN=$(find / -name "retro68.toolchain.cmake" 2>/dev/null | head -1)
+          if [ -z "$TOOLCHAIN" ]; then
+            echo "ERROR: Could not locate retro68.toolchain.cmake"
+            exit 1
+          fi
+          echo "Using toolchain: $TOOLCHAIN"
           mkdir build && cd build
           cmake .. \
-            -DCMAKE_TOOLCHAIN_FILE=/Retro68-build/toolchain/retro68.toolchain.cmake \
+            -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
             -DCMAKE_BUILD_TYPE=Release
 
       - name: Build Executable and Disk Image
         run: |
           cd build
-          make RetroStudio
+          make -j$(nproc) RetroStudio
 
       - name: Package Disk Image Artifact (.img)
         run: |
