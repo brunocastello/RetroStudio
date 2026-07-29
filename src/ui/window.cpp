@@ -81,8 +81,9 @@ void DrawWindowContent(WindowRef win) {
 }
 
 void HandleMenuCommand(long menuResult) {
-    short menuID   = HiWord(menuResult);
-    short menuItem = LoWord(menuResult);
+    // HiWord/LoWord are unlinked in retrocarbon; use bit ops directly.
+    short menuID   = static_cast<short>(menuResult >> 16);
+    short menuItem = static_cast<short>(menuResult & 0xFFFF);
 
     switch (menuID) {
         case kFileMenuID:

@@ -44,7 +44,7 @@ jobs:
         run: |
           mkdir -p output
           # Exclude CMakeFiles/ — those contain compiler ABI probe binaries, not the app
-          find build \( -name "*.bin" -o -name "*.img" -o -name "*.dsk" -o -name "*.APPL" \) \
+          find build \( -name "*.bin" -o -name "*.img" -o -name "*.dsk" -o -name "*.APPL" -o -name "*.xcoff" \) \
             -not -path "*/CMakeFiles/*" \
             -exec cp {} output/ \; || true
 
