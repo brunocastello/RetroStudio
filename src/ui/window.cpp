@@ -3,14 +3,18 @@
 WindowRef gMainWindow = nullptr;
 Boolean   gQuitFlag   = false;
 
-static const MenuID kFileMenuID = 129;
-static const MenuID kEditMenuID = 130;
+// zoomDocProc (8) = document window with close + zoom box.
+// Not exported by all CarbonLib header versions; use the numeric literal.
+static const short kZoomDocProc = 8;
 
-// File menu items
-static const MenuItemIndex kFileNew  = 1;
-static const MenuItemIndex kFileOpen = 2;
+static const short kFileMenuID = 129;
+static const short kEditMenuID = 130;
+
+// File menu item indices
+static const short kFileNew  = 1;
+static const short kFileOpen = 2;
 // item 3 is separator
-static const MenuItemIndex kFileQuit = 4;
+static const short kFileQuit = 4;
 
 void SetupMenus() {
     MenuRef fileMenu = NewMenu(kFileMenuID, "\pFile");
@@ -45,7 +49,7 @@ void SetupWindow() {
         &bounds,
         "\pRetroStudio",
         true,              // visible
-        zoomDocProc,       // document window with zoom box
+        kZoomDocProc,
         (WindowRef)-1L,    // in front of all windows
         true,              // has close box
         0                  // refCon
@@ -90,5 +94,5 @@ void HandleMenuCommand(long menuResult) {
             break;
     }
 
-    HiliteMenu(0); // always unhighlight after handling
+    HiliteMenu(0);
 }
