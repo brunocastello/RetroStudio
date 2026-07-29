@@ -37,13 +37,16 @@ jobs:
           cd build
           make -j$(nproc) RetroStudio
 
-      - name: Package Disk Image Artifact (.img)
+      - name: List build tree (debug artifact location)
+        run: find build -not -path "*/CMakeFiles/*" | sort
+
+      - name: Package Build Artifact
         run: |
           mkdir -p output
-          # Copy generated disk image file from Retro68 build output
-          find build -name "*.img" -exec cp {} output/ \; || true
-          find build -name "*.bin" -exec cp {} output/ \; || true
-          find build -name "*.dsk" -exec cp {} output/ \; || true
+          # Exclude CMakeFiles/ — those contain compiler ABI probe binaries, not the app
+          find build \( -name "*.bin" -o -name "*.img" -o -name "*.dsk" -o -name "*.APPL" \) \
+            -not -path "*/CMakeFiles/*" \
+            -exec cp {} output/ \; || true
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4

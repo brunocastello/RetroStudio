@@ -1,32 +1,71 @@
 #include <Carbon.h>
+#include "ui/window.h"
 
-// RetroStudio Application Entry Point for Mac OS 9 Carbon
-void InitializeMacintosh() {
+static void InitializeMacintosh() {
     InitCursor();
 }
 
 int main(int argc, char* argv[]) {
     InitializeMacintosh();
+    SetupMenus();
+    SetupWindow();
 
-    // Core Event Loop Skeleton
-    Boolean quitFlag = false;
     EventRecord event;
 
-    while (!quitFlag) {
-        if (WaitNextEvent(everyEvent, &event, 15, NULL)) {
+    while (!gQuitFlag) {
+        if (WaitNextEvent(everyEvent, &event, 15, nullptr)) {
             switch (event.what) {
-                case mouseDown:
-                    // Handle window clicks, toolbars, canvas interaction
-                    break;
-                case keyDown:
-                case autoKey:
-                    // Handle keyboard shortcuts
-                    if ((event.modifiers & cmdKey) && ((event.message & charCodeMask) == 'q')) {
-                        quitFlag = true;
+
+                case mouseDown: {
+                    WindowRef win;
+                    short part = FindWindow(event.where, &win);
+                    switch (part) {
+                        case inMenuBar:
+                            HandleMenuCommand(MenuSelect(event.where));
+                            break;
+                        case inDrag:
+                            DragWindow(win, event.where, nullptr);
+                            break;
+                        case inContent:
+                            if (win != FrontWindow())
+                                SelectWindow(win);
+                            break;
+                        case inGoAway:
+                            if (TrackGoAway(win, event.where))
+                                gQuitFlag = true;
+                            break;
+                        case inZoomIn:
+                        case inZoomOut:
+                            if (TrackBox(win, event.where, part))
+                                ZoomWindow(win, part, true);
+                            break;
                     }
                     break;
-                case updateEvt:
-                    // Redraw dirty rects in offscreen GWorld
+                }
+
+                case keyDown:
+                case autoKey: {
+                    char key = static_cast<char>(event.message & charCodeMask);
+                    if (event.modifiers & cmdKey)
+                        HandleMenuCommand(MenuKey(key));
+                    break;
+                }
+
+                case updateEvt: {
+                    WindowRef win = reinterpret_cast<WindowRef>(event.message);
+                    BeginUpdate(win);
+                    DrawWindowContent(win);
+                    EndUpdate(win);
+                    break;
+                }
+
+                case activateEvt:
+                    // Window activation state changes are handled by the OS;
+                    // trigger a redraw so the title bar repaints correctly.
+                    InvalWindowRect(
+                        reinterpret_cast<WindowRef>(event.message),
+                        nullptr
+                    );
                     break;
             }
         }
