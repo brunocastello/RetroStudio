@@ -17,13 +17,22 @@ jobs:
       - name: Checkout Code
         uses: actions/checkout@v4
 
+      - name: Inspect PPC toolchain
+        run: |
+          echo "=== PPC toolchain bin/ ==="
+          ls /Retro68-build/toolchain/powerpc-apple-macos/bin/ 2>/dev/null || echo "(not found)"
+          echo "=== Retro68 top-level bin/ ==="
+          ls /Retro68-build/bin/ 2>/dev/null || echo "(not found)"
+          echo "=== add_application.cmake (PPC) ==="
+          cat /Retro68-build/toolchain/powerpc-apple-macos/cmake/add_application.cmake 2>/dev/null || echo "(not found)"
+          echo "=== retrocarbon.toolchain.cmake ==="
+          cat /Retro68-build/toolchain/powerpc-apple-macos/cmake/retrocarbon.toolchain.cmake 2>/dev/null || echo "(not found)"
+
       - name: Configure CMake with Retro68 Toolchain
         run: |
-          # Use the PowerPC Carbon toolchain (not the m68k one)
           TOOLCHAIN=$(find /Retro68-build -name "retrocarbon.toolchain.cmake" 2>/dev/null | head -1)
           if [ -z "$TOOLCHAIN" ]; then
             echo "ERROR: Could not locate retrocarbon.toolchain.cmake"
-            find /Retro68-build -name "*.cmake" 2>/dev/null || true
             exit 1
           fi
           echo "Using toolchain: $TOOLCHAIN"
@@ -32,24 +41,54 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
             -DCMAKE_BUILD_TYPE=Release
 
-      - name: Build Executable and Disk Image
+      - name: Build Executable
         run: |
           cd build
           make -j$(nproc) RetroStudio
 
-      - name: List build tree (debug artifact location)
+      - name: List build tree
         run: find build -not -path "*/CMakeFiles/*" | sort
 
-      - name: Package Build Artifact
+      - name: Convert XCOFF to PEF and package
         run: |
           mkdir -p output
-          # Exclude CMakeFiles/ — those contain compiler ABI probe binaries, not the app
-          find build \( -name "*.bin" -o -name "*.img" -o -name "*.dsk" -o -name "*.APPL" -o -name "*.xcoff" \) \
-            -not -path "*/CMakeFiles/*" \
-            -exec cp {} output/ \; || true
+          XCOFF="build/RetroStudio.xcoff"
 
-      - name: Upload Build Artifacts
+          if [ ! -f "$XCOFF" ]; then
+            echo "ERROR: $XCOFF not found"
+            exit 1
+          fi
+
+          # Search for PEF conversion tool (Apple MakePEF or Retro68 equivalent)
+          MAKEPEF=$(find /Retro68-build -name "MakePEF" -o -name "makepef" \
+                         -o -name "xcoff2pef" -o -name "ppc-macos-makepef" \
+                         2>/dev/null | head -1)
+          echo "MakePEF tool: ${MAKEPEF:-(not found)}"
+
+          # Also look for any post-link wrapper scripts
+          echo "=== Candidate converter tools ==="
+          find /Retro68-build -name "*pef*" -o -name "*xcoff*" -o -name "*macho*" \
+               2>/dev/null | grep -v CMakeFiles | sort || true
+
+          if [ -n "$MAKEPEF" ]; then
+            "$MAKEPEF" "$XCOFF" -o output/RetroStudio.pef
+            echo "PEF produced: output/RetroStudio.pef"
+          else
+            # No converter found yet — copy XCOFF so artifact is never empty
+            cp "$XCOFF" output/RetroStudio.xcoff
+            echo "WARNING: No PEF converter found. Packaged raw XCOFF for inspection."
+          fi
+
+          # Also copy any .bin / .dsk / .img the build may have produced
+          find build \( -name "*.bin" -o -name "*.img" -o -name "*.dsk" \) \
+               -not -path "*/CMakeFiles/*" \
+               -exec cp {} output/ \; 2>/dev/null || true
+
+          echo "=== output/ contents ==="
+          ls -lh output/
+
+      - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: RetroStudio-OS9-DiskImage
+          name: RetroStudio-OS9
           path: output/*
