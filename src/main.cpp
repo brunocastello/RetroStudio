@@ -26,6 +26,9 @@ int main(int argc, char* argv[]) {
                         case inDrag:
                             DragWindow(win, event.where, nullptr);
                             break;
+                        case inGrow:
+                            HandleWindowGrow(win, event.where);
+                            break;
                         case inContent:
                             if (win != FrontWindow())
                                 SelectWindow(win);
@@ -46,8 +49,19 @@ int main(int argc, char* argv[]) {
                 case keyDown:
                 case autoKey: {
                     char key = static_cast<char>(event.message & charCodeMask);
-                    if (event.modifiers & cmdKey)
+                    if (event.modifiers & cmdKey) {
                         HandleMenuCommand(MenuKey(key));
+                    } else {
+                        // Tool keyboard shortcuts (Figma-style)
+                        switch (key) {
+                            case 'v': case 'V': gActiveTool = Tool::Select;    break;
+                            case 'f': case 'F': gActiveTool = Tool::Frame;     break;
+                            case 'r': case 'R': gActiveTool = Tool::Rectangle; break;
+                            case 'o': case 'O': gActiveTool = Tool::Ellipse;   break;
+                            case 't': case 'T': gActiveTool = Tool::Text;      break;
+                            case 'h': case 'H': gActiveTool = Tool::Hand;      break;
+                        }
+                    }
                     break;
                 }
 
@@ -59,14 +73,14 @@ int main(int argc, char* argv[]) {
                     break;
                 }
 
-                case activateEvt:
-                    // Window activation state changes are handled by the OS;
-                    // trigger a redraw so the title bar repaints correctly.
-                    InvalWindowRect(
-                        reinterpret_cast<WindowRef>(event.message),
-                        nullptr
-                    );
+                case activateEvt: {
+                    // Trigger a redraw when focus changes so title bar repaints
+                    WindowRef win = reinterpret_cast<WindowRef>(event.message);
+                    Rect portRect;
+                    GetWindowPortBounds(win, &portRect);
+                    InvalWindowRect(win, &portRect);
                     break;
+                }
             }
         }
     }
