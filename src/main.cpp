@@ -32,21 +32,36 @@ int main(int argc, char* argv[]) {
                             HandleWindowGrow(win, event.where);
                             break;
                         case inContent: {
-                            if (win != FrontWindow())
-                                SelectWindow(win);
-
-                            // Route clicks to palette or canvas
                             if (win == gPaletteWindow) {
+                                // Palette is always responsive even when in background
+                                if (win != FrontWindow()) SelectWindow(win);
                                 Point localPt = event.where;
                                 SetPortWindowPort(gPaletteWindow);
                                 GlobalToLocal(&localPt);
                                 HandlePaletteClick(localPt);
+                            } else if (win == gMainWindow) {
+                                // Background click just brings window to front
+                                if (win != FrontWindow()) { SelectWindow(win); break; }
+                                // Shape-creation tools: rubber-band drag on canvas
+                                switch (gActiveTool) {
+                                    case Tool::Frame:
+                                    case Tool::Rectangle:
+                                    case Tool::Ellipse:
+                                        HandleCanvasCreate(win, event.where);
+                                        break;
+                                    default:
+                                        break;
+                                }
                             }
                             break;
                         }
                         case inGoAway:
-                            if (TrackGoAway(win, event.where))
-                                gQuitFlag = true;
+                            if (TrackGoAway(win, event.where)) {
+                                if (win == gMainWindow)
+                                    gQuitFlag = true;
+                                else if (win == gPaletteWindow)
+                                    HideWindow(gPaletteWindow);
+                            }
                             break;
                         case inZoomIn:
                         case inZoomOut:

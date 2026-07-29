@@ -46,15 +46,16 @@ void SetupPalette() {
         palRect.left    = 2;
     }
 
-    // plainDBox (2) = borderless dialog box — clean floating palette look
+    // noGrowDocProc (4) = document window without grow box.
+    // Gives a title bar for dragging and a close box — like Photoshop's palettes.
     gPaletteWindow = NewCWindow(
         nullptr,
         &palRect,
-        "\p",          // no title
+        "\pTools",
         true,
-        plainDBox,
+        noGrowDocProc,
         (WindowRef)-1L,
-        false,         // no close box
+        true,          // close box so user can hide the palette
         0
     );
 }
