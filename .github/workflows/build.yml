@@ -1,0 +1,44 @@
+name: Build RetroStudio for Mac OS 9
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/autc04/retro68:latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Configure CMake with Retro68 Toolchain
+        run: |
+          mkdir build && cd build
+          cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=/Retro68-build/toolchain/retro68.toolchain.cmake \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Executable and Disk Image
+        run: |
+          cd build
+          make RetroStudio
+
+      - name: Package Disk Image Artifact (.img)
+        run: |
+          mkdir -p output
+          # Copy generated disk image file from Retro68 build output
+          find build -name "*.img" -exec cp {} output/ \; || true
+          find build -name "*.bin" -exec cp {} output/ \; || true
+          find build -name "*.dsk" -exec cp {} output/ \; || true
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: RetroStudio-OS9-DiskImage
+          path: output/*
