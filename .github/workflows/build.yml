@@ -41,50 +41,22 @@ jobs:
             -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN" \
             -DCMAKE_BUILD_TYPE=Release
 
-      - name: Build Executable
+      - name: Build Executable and Package
         run: |
           cd build
-          make -j$(nproc) RetroStudio
+          make -j$(nproc)
 
       - name: List build tree
         run: find build -not -path "*/CMakeFiles/*" | sort
 
-      - name: Convert XCOFF to PEF and package
+      - name: Collect artifact
         run: |
           mkdir -p output
-          XCOFF="build/RetroStudio.xcoff"
-
-          if [ ! -f "$XCOFF" ]; then
-            echo "ERROR: $XCOFF not found"
-            exit 1
-          fi
-
-          # Search for PEF conversion tool (Apple MakePEF or Retro68 equivalent)
-          MAKEPEF=$(find /Retro68-build -name "MakePEF" -o -name "makepef" \
-                         -o -name "xcoff2pef" -o -name "ppc-macos-makepef" \
-                         2>/dev/null | head -1)
-          echo "MakePEF tool: ${MAKEPEF:-(not found)}"
-
-          # Also look for any post-link wrapper scripts
-          echo "=== Candidate converter tools ==="
-          find /Retro68-build -name "*pef*" -o -name "*xcoff*" -o -name "*macho*" \
-               2>/dev/null | grep -v CMakeFiles | sort || true
-
-          if [ -n "$MAKEPEF" ]; then
-            "$MAKEPEF" "$XCOFF" -o output/RetroStudio.pef
-            echo "PEF produced: output/RetroStudio.pef"
-          else
-            # No converter found yet — copy XCOFF so artifact is never empty
-            cp "$XCOFF" output/RetroStudio.xcoff
-            echo "WARNING: No PEF converter found. Packaged raw XCOFF for inspection."
-          fi
-
-          # Also copy any .bin / .dsk / .img the build may have produced
-          find build \( -name "*.bin" -o -name "*.img" -o -name "*.dsk" \) \
+          # RetroStudio_APPL (ALL target) produces .bin, .APPL, .dsk via MakePEF+Rez
+          find build \( -name "*.bin" -o -name "*.dsk" -o -name "*.APPL" \) \
                -not -path "*/CMakeFiles/*" \
-               -exec cp {} output/ \; 2>/dev/null || true
-
-          echo "=== output/ contents ==="
+               -exec cp {} output/ \;
+          echo "=== output/ ==="
           ls -lh output/
 
       - name: Upload Build Artifact

@@ -12,7 +12,6 @@ file(GLOB_RECURSE SOURCES
 
 # Retro68 target executable setup
 add_application(RetroStudio ${SOURCES}
-    CONSOLE
     CREATOR "RSTD"
     TYPE "APPL"
 )
