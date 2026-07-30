@@ -34,3 +34,5 @@ void HandleWindowGrow(WindowRef win, Point where);
 void StepZoom(int direction);   // +1 = zoom in, -1 = zoom out
 void ZoomToFit();
 void DeleteSelected();          // Delete/Backspace — removes selected shape or frame
+void CopySelected();            // Cmd+C — copies selected shape or frame to clipboard
+void PasteClipboard();          // Cmd+V — pastes clipboard at +10,+10 offset

@@ -26,6 +26,7 @@ public:
 
     virtual ~Shape() = default;
     virtual Type GetType() const = 0;
+    virtual std::unique_ptr<Shape> Clone() const = 0;
 
     Bounds2     bounds;
     RGBColor    fillColor   = { 0xCCCC, 0xCCCC, 0xFFFF }; // Figma default fill
@@ -40,10 +41,12 @@ public:
 class RectShape : public Shape {
 public:
     Type GetType() const override { return kRectangle; }
+    std::unique_ptr<Shape> Clone() const override { return std::make_unique<RectShape>(*this); }
     SInt16 cornerRadius = 0;
 };
 
 class EllipseShape : public Shape {
 public:
     Type GetType() const override { return kEllipse; }
+    std::unique_ptr<Shape> Clone() const override { return std::make_unique<EllipseShape>(*this); }
 };

@@ -19,6 +19,11 @@ int        gCanvasZoom    = 100;
 int        gNextRectNum   = 1;
 int        gNextEllipseNum = 1;
 
+// In-memory clipboard (one item — either a frame or a shape, never both)
+static std::unique_ptr<Frame> sClipFrame;
+static std::unique_ptr<Shape> sClipShape;
+static int                    sPasteOffset = 0;  // increments per paste, resets on copy
+
 static const short kZoomDocProc = 8;
 static const short kFileMenuID  = 129;
 static const short kEditMenuID  = 130;
@@ -32,6 +37,9 @@ static const short kViewZoomOut = 2;
 // item 3 = separator
 static const short kViewZoomFit = 4;
 static const short kViewZoom100 = 5;
+// Edit menu items
+static const short kEditCopy    = 4;
+static const short kEditPaste   = 5;
 
 // --------------------------------------------------------------------------
 // Small helpers
@@ -860,6 +868,61 @@ static void NewDocument() {
     UpdateWindowTitle();
 }
 
+// Deep-copy a frame tree (children have absolute canvas coords, so no coord fixup needed)
+static std::unique_ptr<Frame> CloneFrame(const Frame* src, Frame* newParent) {
+    auto f = std::make_unique<Frame>();
+    f->name            = src->name;
+    f->bounds          = src->bounds;
+    f->backgroundColor = src->backgroundColor;
+    f->visible         = src->visible;
+    f->clipContent     = src->clipContent;
+    f->parent          = newParent;
+    for (const auto& s : src->children)
+        f->children.push_back(s->Clone());
+    for (const auto& cf : src->childFrames)
+        f->childFrames.push_back(CloneFrame(cf.get(), f.get()));
+    return f;
+}
+
+void CopySelected() {
+    sClipFrame.reset();
+    sClipShape.reset();
+    sPasteOffset = 0;
+    if (gSelectedShape)
+        sClipShape = gSelectedShape->Clone();
+    else if (gSelectedFrame)
+        sClipFrame = CloneFrame(gSelectedFrame, nullptr);
+}
+
+void PasteClipboard() {
+    if (!gDocument) return;
+    if (!sClipShape && !sClipFrame) return;
+
+    ++sPasteOffset;
+    SInt32 off = SInt32(sPasteOffset) * 10;
+
+    if (sClipShape) {
+        auto copy = sClipShape->Clone();
+        copy->bounds.x = sClipShape->bounds.x + off;
+        copy->bounds.y = sClipShape->bounds.y + off;
+        Shape* raw = copy.get();
+        if (gSelectedFrame) gSelectedFrame->children.push_back(std::move(copy));
+        else                gDocument->rootShapes.push_back(std::move(copy));
+        gSelectedShape = raw;
+    } else {
+        auto copy = CloneFrame(sClipFrame.get(), nullptr);
+        MoveFrameTree(copy.get(), off, off);  // shifts frame + all children
+        Frame* raw = copy.get();
+        gDocument->frames.push_back(std::move(copy));
+        gSelectedFrame = raw;
+        gSelectedShape = nullptr;
+    }
+
+    Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
+    RefreshLayersPanel();
+    RefreshInspector();
+}
+
 void DeleteSelected() {
     if (!gDocument) return;
     bool changed = false;
@@ -918,6 +981,11 @@ void HandleMenuCommand(long menuResult) {
             case kFileQuit:
                 gQuitFlag = true;
                 break;
+        }
+    } else if (menuID == kEditMenuID) {
+        switch (menuItem) {
+            case kEditCopy:  CopySelected();  break;
+            case kEditPaste: PasteClipboard(); break;
         }
     } else if (menuID == kViewMenuID) {
         switch (menuItem) {
