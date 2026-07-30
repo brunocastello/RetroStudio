@@ -13,11 +13,23 @@ extern Frame*     gSelectedFrame;
 extern Shape*     gSelectedShape;
 extern int        gNextFrameNum;
 extern bool       gIsDoubleClick;
+extern SInt32     gCanvasOffsetX;
+extern SInt32     gCanvasOffsetY;
+extern int        gCanvasZoom;      // percent: 100 = 1:1, 200 = 2:1, 50 = 0.5:1
+extern int        gNextRectNum;
+extern int        gNextEllipseNum;
+
+// Canvas ↔ screen coordinate transforms
+Rect  CanvasRect(const Bounds2& b);  // canvas-space bounds → screen-space Mac Rect
+Point ScreenToCanvas(Point screenPt); // screen local pt → canvas pt
 
 void SetupMenus();
 void SetupWindow();
 void DrawWindowContent(WindowRef win);
 void HandleCanvasCreate(WindowRef win, Point startGlobal);
 void HandleCanvasSelect(WindowRef win, Point startGlobal);
+void HandleCanvasPan(WindowRef win, Point startGlobal);
 void HandleMenuCommand(long menuResult);
 void HandleWindowGrow(WindowRef win, Point where);
+void StepZoom(int direction);   // +1 = zoom in, -1 = zoom out
+void ZoomToFit();

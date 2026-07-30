@@ -85,6 +85,9 @@ int main(int argc, char* argv[]) {
                                         RefreshLayersPanel();
                                         RefreshInspector();
                                         break;
+                                    case Tool::Hand:
+                                        HandleCanvasPan(win, event.where);
+                                        break;
                                     default:
                                         break;
                                 }

@@ -11,16 +11,27 @@ Renderer*  gRenderer      = nullptr;
 Document*  gDocument      = nullptr;
 Frame*     gSelectedFrame = nullptr;
 Shape*     gSelectedShape = nullptr;
-int        gNextFrameNum  = 2;   // auto-name counter for new frames
+int        gNextFrameNum  = 2;
 bool       gIsDoubleClick = false;
+SInt32     gCanvasOffsetX = 0;
+SInt32     gCanvasOffsetY = 0;
+int        gCanvasZoom    = 100;
+int        gNextRectNum   = 1;
+int        gNextEllipseNum = 1;
 
 static const short kZoomDocProc = 8;
 static const short kFileMenuID  = 129;
 static const short kEditMenuID  = 130;
+static const short kViewMenuID  = 131;
 static const short kFileNew     = 1;
 static const short kFileOpen    = 2;
 static const short kFileSave    = 4;
 static const short kFileQuit    = 6;
+static const short kViewZoomIn  = 1;
+static const short kViewZoomOut = 2;
+// item 3 = separator
+static const short kViewZoomFit = 4;
+static const short kViewZoom100 = 5;
 
 // --------------------------------------------------------------------------
 // Small helpers
@@ -34,6 +45,111 @@ static std::string istr(int n) {
     char buf[12]; int i = 11; buf[i] = '\0';
     while (n > 0) { buf[--i] = static_cast<char>('0' + n % 10); n /= 10; }
     return std::string(&buf[i]);
+}
+
+// Forward declaration — ToPStr is defined in the rendering section below
+static void ToPStr(const std::string& src, Str255& dst);
+
+// --------------------------------------------------------------------------
+// Canvas coordinate transforms
+// --------------------------------------------------------------------------
+
+Rect CanvasRect(const Bounds2& b) {
+    Rect r;
+    r.left   = static_cast<short>(SInt32(b.x)         * gCanvasZoom / 100 + gCanvasOffsetX);
+    r.top    = static_cast<short>(SInt32(b.y)         * gCanvasZoom / 100 + gCanvasOffsetY);
+    r.right  = static_cast<short>(SInt32(b.x + b.w)  * gCanvasZoom / 100 + gCanvasOffsetX);
+    r.bottom = static_cast<short>(SInt32(b.y + b.h)  * gCanvasZoom / 100 + gCanvasOffsetY);
+    return r;
+}
+
+Point ScreenToCanvas(Point screenPt) {
+    Point p;
+    p.h = static_cast<short>((SInt32(screenPt.h) - gCanvasOffsetX) * 100 / gCanvasZoom);
+    p.v = static_cast<short>((SInt32(screenPt.v) - gCanvasOffsetY) * 100 / gCanvasZoom);
+    return p;
+}
+
+static void UpdateWindowTitle() {
+    std::string title = "RetroStudio " + istr(gCanvasZoom) + "%";
+    Str255 pt; ToPStr(title, pt);
+    SetWTitle(gMainWindow, pt);
+}
+
+static const int kZoomTable[] = { 10, 25, 50, 75, 100, 150, 200, 300, 400 };
+static const int kNumZoom = 9;
+
+static void ZoomTo(int newZoom) {
+    if (!gMainWindow) return;
+    Rect portRect; GetWindowPortBounds(gMainWindow, &portRect);
+    short cx = static_cast<short>((portRect.left + portRect.right)  / 2);
+    short cy = static_cast<short>((portRect.top  + portRect.bottom) / 2);
+    SInt32 canvasX = (SInt32(cx) - gCanvasOffsetX) * 100 / gCanvasZoom;
+    SInt32 canvasY = (SInt32(cy) - gCanvasOffsetY) * 100 / gCanvasZoom;
+    gCanvasZoom    = newZoom;
+    gCanvasOffsetX = SInt32(cx) - canvasX * gCanvasZoom / 100;
+    gCanvasOffsetY = SInt32(cy) - canvasY * gCanvasZoom / 100;
+    Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
+    UpdateWindowTitle();
+}
+
+void StepZoom(int dir) {
+    int idx = kNumZoom - 1;
+    for (int i = 0; i < kNumZoom; ++i) {
+        if (kZoomTable[i] >= gCanvasZoom) { idx = i; break; }
+    }
+    int newIdx = idx + dir;
+    if (newIdx < 0) newIdx = 0;
+    if (newIdx >= kNumZoom) newIdx = kNumZoom - 1;
+    ZoomTo(kZoomTable[newIdx]);
+}
+
+void ZoomToFit() {
+    if (!gDocument || gDocument->frames.empty()) return;
+    SInt32 minX = gDocument->frames[0]->bounds.x;
+    SInt32 minY = gDocument->frames[0]->bounds.y;
+    SInt32 maxX = minX + gDocument->frames[0]->bounds.w;
+    SInt32 maxY = minY + gDocument->frames[0]->bounds.h;
+    for (const auto& f : gDocument->frames) {
+        if (f->bounds.x           < minX) minX = f->bounds.x;
+        if (f->bounds.y           < minY) minY = f->bounds.y;
+        if (f->bounds.x + f->bounds.w > maxX) maxX = f->bounds.x + f->bounds.w;
+        if (f->bounds.y + f->bounds.h > maxY) maxY = f->bounds.y + f->bounds.h;
+    }
+    Rect portRect; GetWindowPortBounds(gMainWindow, &portRect);
+    SInt32 vpW = portRect.right - portRect.left;
+    SInt32 vpH = portRect.bottom - portRect.top;
+    SInt32 cW  = maxX - minX;
+    SInt32 cH  = maxY - minY;
+    if (cW <= 0 || cH <= 0) return;
+    SInt32 fzW = (vpW - 40) * 100 / cW;
+    SInt32 fzH = (vpH - 40) * 100 / cH;
+    int fz = static_cast<int>(fzW < fzH ? fzW : fzH);
+    if (fz > 400) fz = 400;
+    if (fz < 10)  fz = 10;
+    gCanvasZoom    = fz;
+    SInt32 scaledW = cW * fz / 100;
+    SInt32 scaledH = cH * fz / 100;
+    gCanvasOffsetX = (vpW - scaledW) / 2 - minX * fz / 100;
+    gCanvasOffsetY = (vpH - scaledH) / 2 - minY * fz / 100;
+    Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
+    UpdateWindowTitle();
+}
+
+void HandleCanvasPan(WindowRef win, Point startGlobal) {
+    SetPortWindowPort(win);
+    Point prevPt = startGlobal; GlobalToLocal(&prevPt);
+    Point currPt = prevPt;
+    while (Button()) {
+        GetMouse(&currPt);
+        if (currPt.h != prevPt.h || currPt.v != prevPt.v) {
+            gCanvasOffsetX += currPt.h - prevPt.h;
+            gCanvasOffsetY += currPt.v - prevPt.v;
+            DrawWindowContent(win);
+            prevPt = currPt;
+        }
+    }
+    Rect r; GetWindowPortBounds(win, &r); InvalWindowRect(win, &r);
 }
 
 // --------------------------------------------------------------------------
@@ -66,6 +182,18 @@ void SetupMenus() {
     SetItemCmd(editMenu, 5, 'V');
     InsertMenu(editMenu, 0);
 
+    MenuRef viewMenu = NewMenu(kViewMenuID, "\pView");
+    AppendMenu(viewMenu, "\pZoom In");
+    SetItemCmd(viewMenu, kViewZoomIn, '=');
+    AppendMenu(viewMenu, "\pZoom Out");
+    SetItemCmd(viewMenu, kViewZoomOut, '-');
+    AppendMenu(viewMenu, "\p-");
+    AppendMenu(viewMenu, "\pZoom to Fit");
+    SetItemCmd(viewMenu, kViewZoomFit, '0');
+    AppendMenu(viewMenu, "\pActual Size");
+    SetItemCmd(viewMenu, kViewZoom100, '1');
+    InsertMenu(viewMenu, 0);
+
     DrawMenuBar();
 }
 
@@ -87,6 +215,8 @@ void SetupWindow() {
     frame->bounds        = { 40, 40, 390, 480 };
     frame->backgroundColor = { 0xFFFF, 0xFFFF, 0xFFFF };
     gDocument->frames.push_back(std::move(frame));
+
+    UpdateWindowTitle();
 }
 
 // --------------------------------------------------------------------------
@@ -102,7 +232,7 @@ static void ToPStr(const std::string& src, Str255& dst) {
 }
 
 static void DrawShapeNameLabel(const Shape& shape) {
-    Rect r = ToMacRect(shape.bounds);
+    Rect r = CanvasRect(shape.bounds);
     std::string label = shape.name;
     if (label.empty())
         label = (shape.GetType() == Shape::kEllipse) ? "Ellipse" : "Rectangle";
@@ -117,7 +247,7 @@ static void DrawShapeNameLabel(const Shape& shape) {
 
 static void DrawShape(const Shape& shape) {
     if (!shape.visible) return;
-    Rect r = ToMacRect(shape.bounds);
+    Rect r = CanvasRect(shape.bounds);
     switch (shape.GetType()) {
         case Shape::kRectangle:
         case Shape::kLine:
@@ -150,7 +280,7 @@ static void DrawFrame(const Frame& frame);
 
 static void DrawFrame(const Frame& frame) {
     if (!frame.visible) return;
-    Rect r = ToMacRect(frame.bounds);
+    Rect r = CanvasRect(frame.bounds);
 
     // Fill
     RGBColor bg = frame.backgroundColor;
@@ -184,8 +314,8 @@ static void DrawSelectionHighlight() {
     if (!gSelectedFrame && !gSelectedShape) return;
 
     Rect r = gSelectedShape
-        ? ToMacRect(gSelectedShape->bounds)
-        : ToMacRect(gSelectedFrame->bounds);
+        ? CanvasRect(gSelectedShape->bounds)
+        : CanvasRect(gSelectedFrame->bounds);
 
     RGBColor selBlue = { 0x1177, 0x55AA, 0xFFFF };
     RGBForeColor(&selBlue);
@@ -242,8 +372,8 @@ void DrawWindowContent(WindowRef win) {
 // Hierarchy helpers
 // --------------------------------------------------------------------------
 
-// Move a frame and ALL its descendants (shapes + nested frames) by (dx,dy)
-static void MoveFrameTree(Frame* f, short dx, short dy) {
+// Move a frame and ALL its descendants (shapes + nested frames) by (dx,dy) in canvas pixels
+static void MoveFrameTree(Frame* f, SInt32 dx, SInt32 dy) {
     f->bounds.x += dx;
     f->bounds.y += dy;
     for (auto& c : f->children)     { c->bounds.x += dx; c->bounds.y += dy; }
@@ -255,7 +385,7 @@ struct HitResult { Frame* frame = nullptr; Shape* shape = nullptr; bool found = 
 
 // Recursively search inside `f`. Returns deepest match.
 static HitResult HitTestFrame(Frame* f, Point pt) {
-    Rect r = ToMacRect(f->bounds);
+    Rect r = CanvasRect(f->bounds);
     if (!PtInRect(pt, &r)) return {};
 
     // Child frames first (last added = topmost z-order)
@@ -265,7 +395,7 @@ static HitResult HitTestFrame(Frame* f, Point pt) {
     }
     // Shapes within this frame
     for (auto it = f->children.rbegin(); it != f->children.rend(); ++it) {
-        Rect sr = ToMacRect((*it)->bounds);
+        Rect sr = CanvasRect((*it)->bounds);
         if (PtInRect(pt, &sr)) return { f, it->get(), true };
     }
     return { f, nullptr, true };  // hit frame body
@@ -274,7 +404,7 @@ static HitResult HitTestFrame(Frame* f, Point pt) {
 // Find the most deeply nested frame that contains `pt`, skipping `exclude`
 static Frame* DeepestInFrame(Frame* f, Point pt, Frame* skip) {
     if (f == skip) return nullptr;
-    Rect r = ToMacRect(f->bounds);
+    Rect r = CanvasRect(f->bounds);
     if (!PtInRect(pt, &r)) return nullptr;
     for (auto it = f->childFrames.rbegin(); it != f->childFrames.rend(); ++it) {
         Frame* deeper = DeepestInFrame(it->get(), pt, skip);
@@ -320,8 +450,8 @@ static std::unique_ptr<Frame> ExtractFrame(Frame* f) {
 static int HitTestHandles(Point pt) {
     if (!gSelectedFrame && !gSelectedShape) return -1;
     Rect r = gSelectedShape
-        ? ToMacRect(gSelectedShape->bounds)
-        : ToMacRect(gSelectedFrame->bounds);
+        ? CanvasRect(gSelectedShape->bounds)
+        : CanvasRect(gSelectedFrame->bounds);
 
     static const short kHW = 4;
     short cx = static_cast<short>((r.left + r.right)  / 2);
@@ -359,8 +489,9 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt) {
     while (Button()) {
         GetMouse(&curr);
         if (curr.h != prev.h || curr.v != prev.v) {
-            short dx = static_cast<short>(curr.h - prev.h);
-            short dy = static_cast<short>(curr.v - prev.v);
+            // Convert screen pixel delta → canvas pixel delta
+            SInt32 dx = SInt32(curr.h - prev.h) * 100 / gCanvasZoom;
+            SInt32 dy = SInt32(curr.v - prev.v) * 100 / gCanvasZoom;
 
             if (bL[hi]) { b->x += dx; b->w -= dx; }
             if (bT[hi]) { b->y += dy; b->h -= dy; }
@@ -386,7 +517,7 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt) {
 static Shape* HitTestShapeLabel(const Frame* f, Point pt) {
     for (auto it = f->children.rbegin(); it != f->children.rend(); ++it) {
         Shape* s = it->get();
-        Rect r = ToMacRect(s->bounds);
+        Rect r = CanvasRect(s->bounds);
         std::string label = s->name;
         if (label.empty())
             label = (s->GetType() == Shape::kEllipse) ? "Ellipse" : "Rectangle";
@@ -410,7 +541,7 @@ static Shape* HitTestShapeLabel(const Frame* f, Point pt) {
 // Returns the innermost Frame whose name label (rendered above its top-left
 // corner) contains pt, or nullptr.  Port must already be set to main window.
 static Frame* HitTestFrameLabel(Frame* f, Point pt) {
-    Rect fr = ToMacRect(f->bounds);
+    Rect fr = CanvasRect(f->bounds);
 
     Str255 pn; pn[0] = 0;
     const char* nm = f->name.c_str();
@@ -470,7 +601,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal) {
     }
     if (!found) {
         for (auto it = gDocument->rootShapes.rbegin(); it != gDocument->rootShapes.rend(); ++it) {
-            Rect r = ToMacRect((*it)->bounds);
+            Rect r = CanvasRect((*it)->bounds);
             if (PtInRect(pt, &r)) { hitShape = it->get(); hitFrame = nullptr; found = true; break; }
         }
     }
@@ -523,8 +654,9 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal) {
         while (Button()) {
             GetMouse(&currPt);
             if (currPt.h != prevPt.h || currPt.v != prevPt.v) {
-                short dx = currPt.h - prevPt.h;
-                short dy = currPt.v - prevPt.v;
+                // Convert screen pixel delta → canvas pixel delta
+                SInt32 dx = SInt32(currPt.h - prevPt.h) * 100 / gCanvasZoom;
+                SInt32 dy = SInt32(currPt.v - prevPt.v) * 100 / gCanvasZoom;
 
                 if (hitShape) {
                     hitShape->bounds.x += dx;
@@ -539,10 +671,11 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal) {
         }
 
         // ---- Re-parent on drop ----
+        // Center in screen space (DeepestFrameAt uses CanvasRect = screen space rects)
         Bounds2 finalB = hitShape ? hitShape->bounds : hitFrame->bounds;
         Point center;
-        center.h = static_cast<short>(finalB.x + finalB.w / 2);
-        center.v = static_cast<short>(finalB.y + finalB.h / 2);
+        center.h = static_cast<short>(SInt32(finalB.x + finalB.w / 2) * gCanvasZoom / 100 + gCanvasOffsetX);
+        center.v = static_cast<short>(SInt32(finalB.y + finalB.h / 2) * gCanvasZoom / 100 + gCanvasOffsetY);
 
         if (hitShape) {
             Frame* newParent = DeepestFrameAt(center);
@@ -611,14 +744,20 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
     short dh = sMax(currPt.v, startPt.v) - sMin(currPt.v, startPt.v);
 
     if (dw >= 4 && dh >= 4) {
-        Bounds2 b;
-        b.x = sMin(startPt.h, currPt.h);
-        b.y = sMin(startPt.v, currPt.v);
-        b.w = dw; b.h = dh;
+        // Convert rubber-band screen corners to canvas coordinates
+        Point cStart = ScreenToCanvas(startPt);
+        Point cEnd   = ScreenToCanvas(currPt);
 
+        Bounds2 b;
+        b.x = sMin(cStart.h, cEnd.h);
+        b.y = sMin(cStart.v, cEnd.v);
+        b.w = sMax(cStart.h, cEnd.h) - b.x;
+        b.h = sMax(cStart.v, cEnd.v) - b.y;
+
+        // Center in screen space for DeepestFrameAt (uses CanvasRect = screen rects)
         Point center;
-        center.h = static_cast<short>(b.x + b.w / 2);
-        center.v = static_cast<short>(b.y + b.h / 2);
+        center.h = static_cast<short>((sMin(startPt.h, currPt.h) + sMax(startPt.h, currPt.h)) / 2);
+        center.v = static_cast<short>((sMin(startPt.v, currPt.v) + sMax(startPt.v, currPt.v)) / 2);
 
         gSelectedShape = nullptr;
         gSelectedFrame = nullptr;
@@ -648,7 +787,7 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
             std::unique_ptr<Shape> shape;
             if (gActiveTool == Tool::Rectangle) {
                 auto r        = std::make_unique<RectShape>();
-                r->name       = "Rectangle";
+                r->name       = "Rectangle " + istr(gNextRectNum++);
                 r->bounds     = b;
                 r->fillColor  = { 0xCCCC, 0xDDDD, 0xFFFF };
                 r->hasFill    = true;
@@ -656,7 +795,7 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
                 shape = std::move(r);
             } else {
                 auto e        = std::make_unique<EllipseShape>();
-                e->name       = "Ellipse";
+                e->name       = "Ellipse " + istr(gNextEllipseNum++);
                 e->bounds     = b;
                 e->fillColor  = { 0xCCCC, 0xFFFF, 0xEEEE };
                 e->hasFill    = true;
@@ -709,11 +848,17 @@ static void NewDocument() {
     frame->backgroundColor = { 0xFFFF, 0xFFFF, 0xFFFF };
     gDocument->frames.push_back(std::move(frame));
 
-    gSelectedFrame = nullptr;
-    gSelectedShape = nullptr;
-    gNextFrameNum  = 2;
+    gSelectedFrame  = nullptr;
+    gSelectedShape  = nullptr;
+    gNextFrameNum   = 2;
+    gNextRectNum    = 1;
+    gNextEllipseNum = 1;
+    gCanvasOffsetX  = 0;
+    gCanvasOffsetY  = 0;
+    gCanvasZoom     = 100;
 
     Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
+    UpdateWindowTitle();
 }
 
 void HandleMenuCommand(long menuResult) {
@@ -729,10 +874,16 @@ void HandleMenuCommand(long menuResult) {
                 break;
             case kFileOpen:
                 if (LoadDocument(gDocument)) {
-                    gSelectedFrame = nullptr;
-                    gSelectedShape = nullptr;
-                    gNextFrameNum  = static_cast<int>(gDocument->frames.size()) + 2;
+                    gSelectedFrame  = nullptr;
+                    gSelectedShape  = nullptr;
+                    gNextFrameNum   = static_cast<int>(gDocument->frames.size()) + 2;
+                    gNextRectNum    = 1;
+                    gNextEllipseNum = 1;
+                    gCanvasOffsetX  = 0;
+                    gCanvasOffsetY  = 0;
+                    gCanvasZoom     = 100;
                     Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
+                    UpdateWindowTitle();
                     RefreshLayersPanel();
                     RefreshInspector();
                 }
@@ -743,6 +894,13 @@ void HandleMenuCommand(long menuResult) {
             case kFileQuit:
                 gQuitFlag = true;
                 break;
+        }
+    } else if (menuID == kViewMenuID) {
+        switch (menuItem) {
+            case kViewZoomIn:  StepZoom(+1); break;
+            case kViewZoomOut: StepZoom(-1); break;
+            case kViewZoomFit: ZoomToFit();  break;
+            case kViewZoom100: ZoomTo(100);  break;
         }
     }
     HiliteMenu(0);
