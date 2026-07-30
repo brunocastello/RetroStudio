@@ -36,3 +36,6 @@ void ZoomToFit();
 void DeleteSelected();          // Delete/Backspace — removes selected shape or frame
 void CopySelected();            // Cmd+C — copies selected shape or frame to clipboard
 void PasteClipboard();          // Cmd+V — pastes clipboard at +10,+10 offset
+void PushUndo();                // snapshot current document onto the undo stack
+void PerformUndo();             // Cmd+Z
+void PerformRedo();             // Cmd+Shift+Z

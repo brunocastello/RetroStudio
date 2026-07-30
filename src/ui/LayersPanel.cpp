@@ -254,6 +254,7 @@ check_dbl: {
 
             std::string newName = ShowRenameDialog(*targetName, globalPt);
             if (!newName.empty()) {
+                PushUndo();
                 *targetName = newName;
                 InvalidateLayers(); InvalidateMain();
                 RefreshInspector();

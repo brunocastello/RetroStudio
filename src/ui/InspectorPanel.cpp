@@ -390,6 +390,7 @@ void HandleInspectorClick(Point localPt) {
 #endif
 
         if (changed) {
+            PushUndo();
             if (gSelectedShape)
                 gSelectedShape->fillColor = newColor;
             else

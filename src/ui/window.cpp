@@ -24,6 +24,11 @@ static std::unique_ptr<Frame> sClipFrame;
 static std::unique_ptr<Shape> sClipShape;
 static int                    sPasteOffset = 0;  // increments per paste, resets on copy
 
+// Undo / redo stacks — each entry is a full document snapshot
+static const int kMaxUndo = 50;
+static std::vector<std::unique_ptr<Document>> sUndoStack;
+static std::vector<std::unique_ptr<Document>> sRedoStack;
+
 static const short kZoomDocProc = 8;
 static const short kFileMenuID  = 129;
 static const short kEditMenuID  = 130;
@@ -38,6 +43,7 @@ static const short kViewZoomOut = 2;
 static const short kViewZoomFit = 4;
 static const short kViewZoom100 = 5;
 // Edit menu items
+static const short kEditUndo    = 1;
 static const short kEditCopy    = 4;
 static const short kEditPaste   = 5;
 
@@ -494,6 +500,7 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt) {
     static const SInt32 kMin = 10;
     Point prev = startPt, curr = startPt;
 
+    PushUndo();
     while (Button()) {
         GetMouse(&curr);
         if (curr.h != prev.h || curr.v != prev.v) {
@@ -645,7 +652,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal) {
             Point globalPt = pt;
             LocalToGlobal(&globalPt);
             std::string newName = ShowRenameDialog(*targetName, globalPt);
-            if (!newName.empty()) *targetName = newName;
+            if (!newName.empty()) { PushUndo(); *targetName = newName; }
             Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
             RefreshLayersPanel();
             RefreshInspector();
@@ -659,6 +666,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal) {
         Frame* origParent = hitFrame;
         Point prevPt = pt, currPt = pt;
 
+        PushUndo();
         while (Button()) {
             GetMouse(&currPt);
             if (currPt.h != prevPt.h || currPt.v != prevPt.v) {
@@ -752,6 +760,7 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
     short dh = sMax(currPt.v, startPt.v) - sMin(currPt.v, startPt.v);
 
     if (dw >= 4 && dh >= 4) {
+        PushUndo();
         // Convert rubber-band screen corners to canvas coordinates
         Point cStart = ScreenToCanvas(startPt);
         Point cEnd   = ScreenToCanvas(currPt);
@@ -863,6 +872,8 @@ static void NewDocument() {
     gCanvasOffsetX  = 0;
     gCanvasOffsetY  = 0;
     gCanvasZoom     = 100;
+    sUndoStack.clear();
+    sRedoStack.clear();
 
     Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
     UpdateWindowTitle();
@@ -896,6 +907,12 @@ static std::string NextAvailableName(const std::string& name) {
     std::vector<std::string> existing;
     CollectAllNames(existing);
 
+    // If the original name is now free (e.g. original was deleted), reuse it
+    bool originalTaken = false;
+    for (const auto& n : existing) { if (n == name) { originalTaken = true; break; } }
+    if (!originalTaken) return name;
+
+    // Otherwise find the lowest available number above the current one
     int candidate = num + 1;
     while (candidate < 10000) {
         std::string cn = base + istr(candidate);
@@ -923,6 +940,41 @@ static std::unique_ptr<Frame> CloneFrame(const Frame* src, Frame* newParent) {
     return f;
 }
 
+static std::unique_ptr<Document> CloneDocument(const Document* src) {
+    auto d = std::make_unique<Document>();
+    d->name = src->name;
+    for (const auto& s : src->rootShapes)
+        d->rootShapes.push_back(s->Clone());
+    for (const auto& f : src->frames)
+        d->frames.push_back(CloneFrame(f.get(), nullptr));
+    return d;
+}
+
+void PushUndo() {
+    if (!gDocument) return;
+    sRedoStack.clear();
+    sUndoStack.push_back(CloneDocument(gDocument));
+    if (static_cast<int>(sUndoStack.size()) > kMaxUndo)
+        sUndoStack.erase(sUndoStack.begin());
+}
+
+static void RestoreSnapshot(std::vector<std::unique_ptr<Document>>& from,
+                             std::vector<std::unique_ptr<Document>>& to) {
+    if (from.empty()) return;
+    to.push_back(CloneDocument(gDocument));
+    delete gDocument;
+    gDocument      = from.back().release();
+    from.pop_back();
+    gSelectedFrame = nullptr;
+    gSelectedShape = nullptr;
+    Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
+    RefreshLayersPanel();
+    RefreshInspector();
+}
+
+void PerformUndo() { RestoreSnapshot(sUndoStack, sRedoStack); }
+void PerformRedo() { RestoreSnapshot(sRedoStack, sUndoStack); }
+
 void CopySelected() {
     sClipFrame.reset();
     sClipShape.reset();
@@ -937,6 +989,7 @@ void PasteClipboard() {
     if (!gDocument) return;
     if (!sClipShape && !sClipFrame) return;
 
+    PushUndo();
     ++sPasteOffset;
     SInt32 off = SInt32(sPasteOffset) * 10;
 
@@ -966,6 +1019,8 @@ void PasteClipboard() {
 
 void DeleteSelected() {
     if (!gDocument) return;
+    if (!gSelectedShape && !gSelectedFrame) return;
+    PushUndo();
     bool changed = false;
 
     if (gSelectedShape) {
@@ -1010,6 +1065,8 @@ void HandleMenuCommand(long menuResult) {
                     gCanvasOffsetX  = 0;
                     gCanvasOffsetY  = 0;
                     gCanvasZoom     = 100;
+                    sUndoStack.clear();
+                    sRedoStack.clear();
                     Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
                     UpdateWindowTitle();
                     RefreshLayersPanel();
@@ -1025,6 +1082,7 @@ void HandleMenuCommand(long menuResult) {
         }
     } else if (menuID == kEditMenuID) {
         switch (menuItem) {
+            case kEditUndo:  PerformUndo();   break;
             case kEditCopy:  CopySelected();  break;
             case kEditPaste: PasteClipboard(); break;
         }
