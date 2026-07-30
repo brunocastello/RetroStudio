@@ -1,3 +1,10 @@
+// Define USE_SYSTEM_COLOR_PICKER to use the Mac OS 9 GetColor() dialog instead
+// of the built-in swatch picker.  Disabled by default: the Color Picker
+// extension crashes on some emulators (UTM/QEMU) when switching picker panels.
+// On a real PowerPC Mac or a stable emulator, define this flag in CMakeLists.txt:
+//   target_compile_definitions(RetroStudio PRIVATE USE_SYSTEM_COLOR_PICKER)
+// #define USE_SYSTEM_COLOR_PICKER
+
 #include "InspectorPanel.h"
 #include "LayersPanel.h"
 #include "window.h"
@@ -8,6 +15,9 @@ WindowRef gInspectorWindow = nullptr;
 
 // Hit-test rect for the fill/background color swatch — rebuilt each draw
 static Rect sFillSwatchRect = {0, 0, 0, 0};
+
+// dBoxProc = 1  (shadowed dialog box, no title bar)
+static const short kDBoxProc = 1;
 
 // --------------------------------------------------------------------------
 // Helpers
@@ -65,6 +75,156 @@ static short DrawSectionHeader(short y, const char* title, const Rect& pr) {
 }
 
 // --------------------------------------------------------------------------
+// Color swatch picker — replaces the system GetColor dialog.
+// Uses only basic QuickDraw, no Color Picker extensions.
+// --------------------------------------------------------------------------
+
+// 24 preset colors: 6 columns x 4 rows
+static const RGBColor kSwatchColors[24] = {
+    // Row 1 — neutrals
+    {      0,      0,      0 },  // Black
+    { 0xFFFF, 0xFFFF, 0xFFFF },  // White
+    { 0xCCCC, 0xCCCC, 0xCCCC },  // Light Gray
+    { 0x8888, 0x8888, 0x8888 },  // Medium Gray
+    { 0x4444, 0x4444, 0x4444 },  // Dark Gray
+    { 0xFFFF, 0xFFFF, 0xDDDD },  // Cream
+    // Row 2 — reds / oranges / yellows
+    { 0xFFFF,      0,      0 },  // Red
+    { 0xFFFF, 0x7777,      0 },  // Orange
+    { 0xFFFF, 0xFFFF,      0 },  // Yellow
+    { 0xFFFF, 0xFFFF, 0x9999 },  // Light Yellow
+    { 0xFFFF, 0x9999, 0x9999 },  // Salmon
+    { 0x8888,      0,      0 },  // Dark Red
+    // Row 3 — greens
+    {      0, 0xFFFF,      0 },  // Green
+    {      0, 0x8888,      0 },  // Dark Green
+    { 0x9999, 0xFFFF, 0x9999 },  // Light Green
+    { 0xAAAA, 0xFFFF, 0xCCCC },  // Mint
+    {      0, 0x8888, 0x8888 },  // Teal
+    {      0, 0xFFFF, 0xFFFF },  // Cyan
+    // Row 4 — blues / purples
+    {      0,      0, 0xFFFF },  // Blue
+    {      0,      0, 0x8888 },  // Dark Blue
+    { 0x9999, 0xCCCC, 0xFFFF },  // Sky Blue
+    { 0xCCCC, 0xCCCC, 0xFFFF },  // Lavender (app default)
+    { 0x8888,      0, 0x8888 },  // Purple
+    { 0xFFFF,      0, 0xFFFF },  // Magenta
+};
+
+static const short kSwCellSize = 22;
+static const short kSwCellGap  =  2;
+static const short kSwPad      =  6;
+static const short kSwCols     =  6;
+static const short kSwRows     =  4;
+// Total content width / height of the picker window
+static const short kSwWidth  = kSwPad * 2 + kSwCols * (kSwCellSize + kSwCellGap) - kSwCellGap;
+static const short kSwHeight = kSwPad * 2 + kSwRows * (kSwCellSize + kSwCellGap) - kSwCellGap;
+
+static void DrawSwatchPicker(WindowRef win) {
+    SetPortWindowPort(win);
+    Rect pr; GetWindowPortBounds(win, &pr);
+
+    RGBColor bg = { 0xEEEE, 0xEEEE, 0xEEEE };
+    RGBForeColor(&bg); PaintRect(&pr);
+
+    for (int i = 0; i < 24; ++i) {
+        int col = i % kSwCols;
+        int row = i / kSwCols;
+        short x = static_cast<short>(kSwPad + col * (kSwCellSize + kSwCellGap));
+        short y = static_cast<short>(kSwPad + row * (kSwCellSize + kSwCellGap));
+        Rect cell = { y, x,
+                      static_cast<short>(y + kSwCellSize),
+                      static_cast<short>(x + kSwCellSize) };
+        RGBColor c = kSwatchColors[i];
+        RGBForeColor(&c); PaintRect(&cell);
+        RGBColor border = { 0x6666, 0x6666, 0x6666 };
+        RGBForeColor(&border); FrameRect(&cell);
+    }
+
+    RGBColor black = {0,0,0};
+    RGBForeColor(&black);
+}
+
+// Returns true and fills outColor if the user clicked a swatch; false = cancelled.
+static bool ShowColorSwatchPicker(RGBColor& outColor) {
+    // Anchor picker near the color swatch in the Inspector
+    Point anchor = { sFillSwatchRect.bottom, sFillSwatchRect.right };
+    SetPortWindowPort(gInspectorWindow);
+    LocalToGlobal(&anchor);
+
+    Rect wr;
+    wr.top    = static_cast<short>(anchor.v + 4);
+    wr.left   = static_cast<short>(anchor.h - kSwWidth);
+    wr.right  = static_cast<short>(wr.left + kSwWidth);
+    wr.bottom = static_cast<short>(wr.top  + kSwHeight);
+
+    // Keep on screen (1024 x 768 assumption)
+    if (wr.right  > 1020) { short d = static_cast<short>(wr.right - 1020); wr.left -= d; wr.right -= d; }
+    if (wr.bottom > 744)  { short d = static_cast<short>(wr.bottom - 744); wr.top  -= d; wr.bottom -= d; }
+
+    WindowRef pickerWin = NewCWindow(nullptr, &wr, "\p", true,
+                                     kDBoxProc, (WindowRef)-1L, false, 0);
+    if (!pickerWin) return false;
+
+    DrawSwatchPicker(pickerWin);
+
+    // Wait for the triggering mouse-down press to be released before listening
+    while (Button()) { /* yield */ }
+
+    bool picked = false;
+    bool done   = false;
+    EventRecord evt;
+
+    while (!done) {
+        if (WaitNextEvent(everyEvent, &evt, 5, nullptr)) {
+            switch (evt.what) {
+                case mouseDown: {
+                    WindowRef clickWin;
+                    short part = FindWindow(evt.where, &clickWin);
+                    if (part == inContent && clickWin == pickerWin) {
+                        Point local = evt.where;
+                        SetPortWindowPort(pickerWin);
+                        GlobalToLocal(&local);
+                        for (int i = 0; i < 24; ++i) {
+                            int col = i % kSwCols;
+                            int row = i / kSwCols;
+                            short x = static_cast<short>(kSwPad + col * (kSwCellSize + kSwCellGap));
+                            short y = static_cast<short>(kSwPad + row * (kSwCellSize + kSwCellGap));
+                            Rect cell = { y, x,
+                                          static_cast<short>(y + kSwCellSize),
+                                          static_cast<short>(x + kSwCellSize) };
+                            if (PtInRect(local, &cell)) {
+                                outColor = kSwatchColors[i];
+                                picked = true;
+                                break;
+                            }
+                        }
+                    }
+                    done = true;  // any click (inside or outside) dismisses
+                    break;
+                }
+                case keyDown: {
+                    char key = static_cast<char>(evt.message & charCodeMask);
+                    if (key == 0x1B) done = true;  // Escape cancels
+                    break;
+                }
+                case updateEvt: {
+                    WindowRef upWin = reinterpret_cast<WindowRef>(evt.message);
+                    BeginUpdate(upWin);
+                    if (upWin == pickerWin) DrawSwatchPicker(pickerWin);
+                    EndUpdate(upWin);
+                    break;
+                }
+                default: break;
+            }
+        }
+    }
+
+    DisposeWindow(pickerWin);
+    return picked;
+}
+
+// --------------------------------------------------------------------------
 // Setup
 // --------------------------------------------------------------------------
 
@@ -114,7 +274,7 @@ void DrawInspectorPanel() {
         RGBForeColor(&gray);
         TextSize(10);
         Str255 ps;
-        PStrC("Select an object", ps);  MoveTo(8, 28); DrawString(ps);
+        PStrC("Select an object", ps);       MoveTo(8, 28); DrawString(ps);
         PStrC("to view its properties.", ps); MoveTo(8, 44); DrawString(ps);
         TextSize(12); PenNormal();
         RGBForeColor(&black); RGBBackColor(&white);
@@ -144,7 +304,7 @@ void DrawInspectorPanel() {
     y = DrawSectionHeader(y, "FILL", portRect);
     y = static_cast<short>(y + 6);
 
-    // Color swatch (36 × 18 px)
+    // Color swatch (36 x 18 px) — clicking opens the swatch picker popup
     sFillSwatchRect = { y, 6, static_cast<short>(y + 18), 42 };
     RGBForeColor(&fillColor);
     PaintRect(&sFillSwatchRect);
@@ -152,7 +312,7 @@ void DrawInspectorPanel() {
     RGBForeColor(&border);
     FrameRect(&sFillSwatchRect);
 
-    // "Click to change" hint text
+    // Hint text
     RGBColor hint = { 0x9999, 0x9999, 0x9999 };
     RGBForeColor(&hint);
     TextSize(9);
@@ -215,16 +375,26 @@ void HandleInspectorClick(Point localPt) {
             ? gSelectedShape->fillColor
             : gSelectedFrame->backgroundColor;
 
-        RGBColor newColor;
-        Point where = {-1, -1};   // -1,-1 = center the dialog on screen
+        bool       changed  = false;
+        RGBColor   newColor = currentColor;
+
+#ifdef USE_SYSTEM_COLOR_PICKER
+        // Native Mac OS 9 Color Picker — works on real hardware, may crash
+        // under some emulators (UTM/QEMU) when switching picker panels.
         Str255 prompt; PStrC("Choose Color", prompt);
-        if (GetColor(where, prompt, &currentColor, &newColor)) {
+        Point  where  = {-1, -1};   // -1,-1 = center dialog on screen
+        changed = GetColor(where, prompt, &currentColor, &newColor);
+#else
+        // Emulator-safe built-in swatch picker (24 presets, no extensions)
+        changed = ShowColorSwatchPicker(newColor);
+#endif
+
+        if (changed) {
             if (gSelectedShape)
                 gSelectedShape->fillColor = newColor;
             else
                 gSelectedFrame->backgroundColor = newColor;
 
-            // Redraw inspector and main canvas to reflect the new color
             InvalidateInspector();
             if (gMainWindow) {
                 Rect r; GetWindowPortBounds(gMainWindow, &r);
