@@ -9,16 +9,14 @@ Frame*     gSelectedFrame = nullptr;
 Shape*     gSelectedShape = nullptr;
 
 static const short kZoomDocProc = 8;
-
-static const short kFileMenuID = 129;
-static const short kEditMenuID = 130;
-
-static const short kFileNew  = 1;
-static const short kFileOpen = 2;
-static const short kFileQuit = 4;
+static const short kFileMenuID  = 129;
+static const short kEditMenuID  = 130;
+static const short kFileNew     = 1;
+static const short kFileOpen    = 2;
+static const short kFileQuit    = 4;
 
 // --------------------------------------------------------------------------
-// Helpers
+// Small helpers
 // --------------------------------------------------------------------------
 
 static inline short sMin(short a, short b) { return a < b ? a : b; }
@@ -66,109 +64,91 @@ void SetupMenus() {
 // --------------------------------------------------------------------------
 
 void SetupWindow() {
-    // 640 px wide — leaves room for the Layers panel on the right on 1024×768
     Rect bounds = { 50, 80, 580, 720 };
     gMainWindow = NewCWindow(
-        nullptr,
-        &bounds,
-        "\pRetroStudio",
-        true,
-        kZoomDocProc,
-        (WindowRef)-1L,
-        true,
-        0
-    );
+        nullptr, &bounds, "\pRetroStudio",
+        true, kZoomDocProc, (WindowRef)-1L, true, 0);
 
     gDocument = new Document();
     gDocument->name = "Untitled";
 
-    auto frame      = std::make_unique<Frame>();
-    frame->name     = "Screen 1";
-    frame->bounds   = { 40, 40, 390, 480 };
-    RGBColor white  = { 0xFFFF, 0xFFFF, 0xFFFF };
-    frame->backgroundColor = white;
+    auto frame           = std::make_unique<Frame>();
+    frame->name          = "Screen 1";
+    frame->bounds        = { 40, 40, 390, 480 };
+    frame->backgroundColor = { 0xFFFF, 0xFFFF, 0xFFFF };
     gDocument->frames.push_back(std::move(frame));
 }
 
 // --------------------------------------------------------------------------
-// Canvas rendering — direct QuickDraw to window port (no GWorld)
+// Rendering — direct QuickDraw into window port
 // --------------------------------------------------------------------------
 
 static void DrawShape(const Shape& shape) {
     if (!shape.visible) return;
     Rect r = ToMacRect(shape.bounds);
-
     switch (shape.GetType()) {
         case Shape::kRectangle:
-        case Shape::kLine: {
+        case Shape::kLine:
             if (shape.hasFill) {
-                RGBColor c = shape.fillColor;
-                RGBForeColor(&c);
-                PaintRect(&r);
+                RGBColor c = shape.fillColor; RGBForeColor(&c); PaintRect(&r);
             }
             if (shape.hasStroke) {
-                RGBColor c = shape.strokeColor;
-                RGBForeColor(&c);
+                RGBColor c = shape.strokeColor; RGBForeColor(&c);
                 PenSize(shape.strokeWidth, shape.strokeWidth);
-                FrameRect(&r);
-                PenSize(1, 1);
+                FrameRect(&r); PenSize(1,1);
             }
             break;
-        }
-        case Shape::kEllipse: {
+        case Shape::kEllipse:
             if (shape.hasFill) {
-                RGBColor c = shape.fillColor;
-                RGBForeColor(&c);
-                PaintOval(&r);
+                RGBColor c = shape.fillColor; RGBForeColor(&c); PaintOval(&r);
             }
             if (shape.hasStroke) {
-                RGBColor c = shape.strokeColor;
-                RGBForeColor(&c);
+                RGBColor c = shape.strokeColor; RGBForeColor(&c);
                 PenSize(shape.strokeWidth, shape.strokeWidth);
-                FrameOval(&r);
-                PenSize(1, 1);
+                FrameOval(&r); PenSize(1,1);
             }
             break;
-        }
-        default:
-            break;
+        default: break;
     }
 }
+
+// Forward-declare so DrawFrame can call itself recursively
+static void DrawFrame(const Frame& frame);
 
 static void DrawFrame(const Frame& frame) {
     if (!frame.visible) return;
     Rect r = ToMacRect(frame.bounds);
 
-    // Frame fill — no drop shadow (Figma frames are flat)
+    // Fill
     RGBColor bg = frame.backgroundColor;
     RGBForeColor(&bg);
     PaintRect(&r);
 
-    // Children rendered on top of fill
-    for (const auto& shape : frame.children)
-        DrawShape(*shape);
+    // Shape children
+    for (const auto& s : frame.children)
+        DrawShape(*s);
 
-    // Thin border so frame boundaries are visible on the gray canvas
+    // Nested child frames (drawn on top of shapes)
+    for (const auto& cf : frame.childFrames)
+        DrawFrame(*cf);
+
+    // Thin border (on top of everything in this frame)
     RGBColor border = { 0xBBBB, 0xBBBB, 0xBBBB };
     RGBForeColor(&border);
     FrameRect(&r);
 
-    // Name label above top-left corner (Figma-style)
-    RGBColor label = { 0x4444, 0x4444, 0x4444 };
-    RGBForeColor(&label);
+    // Name label above top-left corner
+    RGBColor lc = { 0x4444, 0x4444, 0x4444 };
+    RGBForeColor(&lc);
     TextSize(10);
-    Str255 pname; pname[0] = 0;
+    Str255 pn; pn[0] = 0;
     const char* s = frame.name.c_str();
-    for (int i = 0; s[i] && i < 63; ++i) {
-        pname[i + 1] = static_cast<unsigned char>(s[i]);
-        pname[0]++;
-    }
+    for (int i = 0; s[i] && i < 63; ++i) { pn[i+1] = (unsigned char)s[i]; pn[0]++; }
     MoveTo(r.left, static_cast<short>(r.top - 5));
-    DrawString(pname);
+    DrawString(pn);
     TextSize(12);
 }
 
-// Figma-style selection highlight: 2 px blue border + 8 handles
 static void DrawSelectionHighlight() {
     if (!gSelectedFrame && !gSelectedShape) return;
 
@@ -182,37 +162,28 @@ static void DrawSelectionHighlight() {
     FrameRect(&r);
     PenSize(1, 1);
 
-    // 8 resize handles (corners + edge midpoints)
     static const short kHW = 4;
     short cx = static_cast<short>((r.left + r.right)  / 2);
     short cy = static_cast<short>((r.top  + r.bottom) / 2);
     const short hx[8] = { r.left, cx, r.right, r.right,  r.right,  cx,     r.left,  r.left };
-    const short hy[8] = { r.top,  r.top, r.top, cy,       r.bottom, r.bottom, r.bottom, cy   };
-
+    const short hy[8] = { r.top,  r.top, r.top, cy,      r.bottom, r.bottom, r.bottom, cy   };
     RGBColor white = { 0xFFFF, 0xFFFF, 0xFFFF };
     for (int i = 0; i < 8; ++i) {
         Rect h = {
-            static_cast<short>(hy[i] - kHW),
-            static_cast<short>(hx[i] - kHW),
-            static_cast<short>(hy[i] + kHW),
-            static_cast<short>(hx[i] + kHW)
+            static_cast<short>(hy[i]-kHW), static_cast<short>(hx[i]-kHW),
+            static_cast<short>(hy[i]+kHW), static_cast<short>(hx[i]+kHW)
         };
-        RGBForeColor(&white);
-        PaintRect(&h);
-        RGBForeColor(&selBlue);
-        FrameRect(&h);
+        RGBForeColor(&white); PaintRect(&h);
+        RGBForeColor(&selBlue); FrameRect(&h);
     }
-
     PenNormal();
 }
 
 void DrawWindowContent(WindowRef win) {
     SetPortWindowPort(win);
-
     Rect portRect;
     GetWindowPortBounds(win, &portRect);
 
-    // Gray canvas workspace
     RGBColor canvasBg = { 0xDDDD, 0xDDDD, 0xDDDD };
     RGBBackColor(&canvasBg);
     RGBColor black = { 0, 0, 0 };
@@ -222,11 +193,14 @@ void DrawWindowContent(WindowRef win) {
     if (gDocument) {
         for (const auto& frame : gDocument->frames)
             DrawFrame(*frame);
+
+        // Shapes floating at canvas root (outside every frame)
+        for (const auto& shape : gDocument->rootShapes)
+            DrawShape(*shape);
     }
 
     DrawSelectionHighlight();
 
-    // Restore default QuickDraw state
     PenNormal();
     RGBColor white = { 0xFFFF, 0xFFFF, 0xFFFF };
     RGBForeColor(&black);
@@ -234,7 +208,79 @@ void DrawWindowContent(WindowRef win) {
 }
 
 // --------------------------------------------------------------------------
-// Select tool: click to select, drag to move
+// Hierarchy helpers
+// --------------------------------------------------------------------------
+
+// Move a frame and ALL its descendants (shapes + nested frames) by (dx,dy)
+static void MoveFrameTree(Frame* f, short dx, short dy) {
+    f->bounds.x += dx;
+    f->bounds.y += dy;
+    for (auto& c : f->children)     { c->bounds.x += dx; c->bounds.y += dy; }
+    for (auto& cf : f->childFrames) { MoveFrameTree(cf.get(), dx, dy); }
+}
+
+// Hit-test result from recursive search
+struct HitResult { Frame* frame = nullptr; Shape* shape = nullptr; bool found = false; };
+
+// Recursively search inside `f`. Returns deepest match.
+static HitResult HitTestFrame(Frame* f, Point pt) {
+    Rect r = ToMacRect(f->bounds);
+    if (!PtInRect(pt, &r)) return {};
+
+    // Child frames first (last added = topmost z-order)
+    for (auto it = f->childFrames.rbegin(); it != f->childFrames.rend(); ++it) {
+        HitResult res = HitTestFrame(it->get(), pt);
+        if (res.found) return res;
+    }
+    // Shapes within this frame
+    for (auto it = f->children.rbegin(); it != f->children.rend(); ++it) {
+        Rect sr = ToMacRect((*it)->bounds);
+        if (PtInRect(pt, &sr)) return { f, it->get(), true };
+    }
+    return { f, nullptr, true };  // hit frame body
+}
+
+// Find the most deeply nested frame that contains `pt`, skipping `exclude`
+static Frame* DeepestInFrame(Frame* f, Point pt, Frame* skip) {
+    if (f == skip) return nullptr;
+    Rect r = ToMacRect(f->bounds);
+    if (!PtInRect(pt, &r)) return nullptr;
+    for (auto it = f->childFrames.rbegin(); it != f->childFrames.rend(); ++it) {
+        Frame* deeper = DeepestInFrame(it->get(), pt, skip);
+        if (deeper) return deeper;
+    }
+    return f;
+}
+
+static Frame* DeepestFrameAt(Point pt, Frame* skip = nullptr) {
+    Frame* result = nullptr;
+    for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend(); ++it) {
+        Frame* f = DeepestInFrame(it->get(), pt, skip);
+        if (f) result = f;
+    }
+    return result;
+}
+
+// Extract a Shape unique_ptr from its current owner (Frame or rootShapes)
+static std::unique_ptr<Shape> ExtractShape(Shape* s, Frame* parent) {
+    auto& vec = parent ? parent->children : gDocument->rootShapes;
+    for (auto it = vec.begin(); it != vec.end(); ++it) {
+        if (it->get() == s) { auto o = std::move(*it); vec.erase(it); return o; }
+    }
+    return nullptr;
+}
+
+// Extract a Frame unique_ptr from its current owner
+static std::unique_ptr<Frame> ExtractFrame(Frame* f) {
+    auto& vec = f->parent ? f->parent->childFrames : gDocument->frames;
+    for (auto it = vec.begin(); it != vec.end(); ++it) {
+        if (it->get() == f) { auto o = std::move(*it); vec.erase(it); return o; }
+    }
+    return nullptr;
+}
+
+// --------------------------------------------------------------------------
+// Select tool: click-to-select + drag-to-move + drop-to-reparent
 // --------------------------------------------------------------------------
 
 void HandleCanvasSelect(WindowRef win, Point startGlobal) {
@@ -244,41 +290,29 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal) {
     Point pt = startGlobal;
     GlobalToLocal(&pt);
 
-    // Hit-test in reverse draw order so topmost object wins
     Frame* hitFrame = nullptr;
     Shape* hitShape = nullptr;
     bool   found    = false;
 
+    // Search top-level frames recursively (last = topmost z-order)
     for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend() && !found; ++it) {
-        Frame* frame = it->get();
-
-        // Check shapes within frame (reverse = topmost drawn first)
-        for (auto sit = frame->children.rbegin(); sit != frame->children.rend(); ++sit) {
-            Rect r = ToMacRect((*sit)->bounds);
-            if (PtInRect(pt, &r)) {
-                hitShape = sit->get();
-                hitFrame = frame;
-                found    = true;
-                break;
-            }
-        }
-
-        if (!found) {
-            Rect r = ToMacRect(frame->bounds);
-            if (PtInRect(pt, &r)) {
-                hitFrame = frame;
-                found    = true;
-            }
+        HitResult res = HitTestFrame(it->get(), pt);
+        if (res.found) { hitFrame = res.frame; hitShape = res.shape; found = true; }
+    }
+    // Search root shapes
+    if (!found) {
+        for (auto it = gDocument->rootShapes.rbegin(); it != gDocument->rootShapes.rend(); ++it) {
+            Rect r = ToMacRect((*it)->bounds);
+            if (PtInRect(pt, &r)) { hitShape = it->get(); hitFrame = nullptr; found = true; break; }
         }
     }
 
     gSelectedFrame = hitFrame;
     gSelectedShape = hitShape;
 
-    // Move-drag if something was hit
     if (found) {
-        Point prevPt = pt;
-        Point currPt = pt;
+        Frame* origParent = hitFrame;  // remember parent before drag
+        Point prevPt = pt, currPt = pt;
 
         while (Button()) {
             GetMouse(&currPt);
@@ -290,19 +324,47 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal) {
                     hitShape->bounds.x += dx;
                     hitShape->bounds.y += dy;
                 } else {
-                    // Move the frame and drag all its children with it —
-                    // children use absolute canvas coords, so they need the
-                    // same delta applied or they appear to "stay behind".
-                    hitFrame->bounds.x += dx;
-                    hitFrame->bounds.y += dy;
-                    for (auto& child : hitFrame->children) {
-                        child->bounds.x += dx;
-                        child->bounds.y += dy;
-                    }
+                    MoveFrameTree(hitFrame, dx, dy);
                 }
 
                 DrawWindowContent(win);
                 prevPt = currPt;
+            }
+        }
+
+        // ---- Re-parent on drop ----
+        Bounds2 finalB = hitShape ? hitShape->bounds : hitFrame->bounds;
+        Point center;
+        center.h = static_cast<short>(finalB.x + finalB.w / 2);
+        center.v = static_cast<short>(finalB.y + finalB.h / 2);
+
+        if (hitShape) {
+            Frame* newParent = DeepestFrameAt(center);
+            if (newParent != origParent) {
+                auto owned = ExtractShape(hitShape, origParent);
+                if (owned) {
+                    if (newParent) newParent->children.push_back(std::move(owned));
+                    else           gDocument->rootShapes.push_back(std::move(owned));
+                    gSelectedFrame = newParent;
+                    // gSelectedShape raw ptr still valid — object lives on
+                }
+            }
+        } else {
+            // Moving a frame: check if it should become a child of another frame
+            Frame* newParent = DeepestFrameAt(center, hitFrame);
+            if (newParent != hitFrame->parent) {
+                auto owned = ExtractFrame(hitFrame);
+                if (owned) {
+                    Frame* raw = owned.get();
+                    if (newParent) {
+                        owned->parent = newParent;
+                        newParent->childFrames.push_back(std::move(owned));
+                    } else {
+                        owned->parent = nullptr;
+                        gDocument->frames.push_back(std::move(owned));
+                    }
+                    gSelectedFrame = raw;
+                }
             }
         }
     }
@@ -313,50 +375,29 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal) {
 }
 
 // --------------------------------------------------------------------------
-// Shape/Frame creation: rubber-band drag with active tool
+// Shape / Frame creation: rubber-band drag with active tool
 // --------------------------------------------------------------------------
-
-// Return the frame whose bounds contain point pt (last / topmost wins).
-// Returns null if pt is not inside any frame.
-static Frame* FrameAtPoint(Point pt) {
-    Frame* result = nullptr;
-    for (const auto& frame : gDocument->frames) {
-        Rect r = ToMacRect(frame->bounds);
-        if (PtInRect(pt, &r))
-            result = frame.get();
-    }
-    return result;
-}
 
 void HandleCanvasCreate(WindowRef win, Point startGlobal) {
     if (!gDocument) return;
 
     SetPortWindowPort(win);
-
     Point startPt = startGlobal;
     GlobalToLocal(&startPt);
 
-    Point prevPt = startPt;
-    Point currPt = startPt;
+    Point prevPt = startPt, currPt = startPt;
 
     while (Button()) {
         GetMouse(&currPt);
-
         if (currPt.h != prevPt.h || currPt.v != prevPt.v) {
             DrawWindowContent(win);
-
-            Rect rb;
-            rb.top    = sMin(startPt.v, currPt.v);
-            rb.left   = sMin(startPt.h, currPt.h);
-            rb.bottom = sMax(startPt.v, currPt.v);
-            rb.right  = sMax(startPt.h, currPt.h);
-
+            Rect rb = {
+                sMin(startPt.v, currPt.v), sMin(startPt.h, currPt.h),
+                sMax(startPt.v, currPt.v), sMax(startPt.h, currPt.h)
+            };
             if (rb.right > rb.left && rb.bottom > rb.top) {
                 RGBColor blue = { 0x1177, 0x55AA, 0xFFFF };
-                RGBForeColor(&blue);
-                PenSize(1, 1);
-                FrameRect(&rb);
-                PenNormal();
+                RGBForeColor(&blue); PenSize(1,1); FrameRect(&rb); PenNormal();
             }
             prevPt = currPt;
         }
@@ -369,13 +410,11 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
         Bounds2 b;
         b.x = sMin(startPt.h, currPt.h);
         b.y = sMin(startPt.v, currPt.v);
-        b.w = dw;
-        b.h = dh;
+        b.w = dw; b.h = dh;
 
-        // Point at center of drawn rect — used to find parent frame
-        Point centerPt;
-        centerPt.h = static_cast<short>(b.x + b.w / 2);
-        centerPt.v = static_cast<short>(b.y + b.h / 2);
+        Point center;
+        center.h = static_cast<short>(b.x + b.w / 2);
+        center.v = static_cast<short>(b.y + b.h / 2);
 
         gSelectedShape = nullptr;
         gSelectedFrame = nullptr;
@@ -383,51 +422,53 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
         if (gActiveTool == Tool::Frame) {
             static int sFrameN = 2;
             auto f = std::make_unique<Frame>();
-            f->name   = "Frame " + istr(sFrameN++);
-            f->bounds = b;
-            RGBColor white = { 0xFFFF, 0xFFFF, 0xFFFF };
-            f->backgroundColor = white;
-            gSelectedFrame = f.get();
-            gDocument->frames.push_back(std::move(f));
+            f->name           = "Frame " + istr(sFrameN++);
+            f->bounds         = b;
+            f->backgroundColor = { 0xFFFF, 0xFFFF, 0xFFFF };
 
-        } else if (gActiveTool == Tool::Rectangle) {
-            // Add to the frame that contains the center of the drawn rect
-            Frame* target = FrameAtPoint(centerPt);
-            if (!target && !gDocument->frames.empty())
-                target = gDocument->frames.front().get();
-            if (target) {
-                auto shape      = std::make_unique<RectShape>();
-                shape->name     = "Rectangle";
-                shape->bounds   = b;
-                RGBColor fc     = { 0xCCCC, 0xDDDD, 0xFFFF };
-                shape->fillColor  = fc;
-                shape->hasFill    = true;
-                shape->hasStroke  = false;
-                gSelectedShape  = shape.get();
-                gSelectedFrame  = target;
-                target->children.push_back(std::move(shape));
+            Frame* parent = DeepestFrameAt(center);  // nest inside containing frame if any
+            Frame* raw    = f.get();
+            if (parent) {
+                f->parent = parent;
+                parent->childFrames.push_back(std::move(f));
+            } else {
+                f->parent = nullptr;
+                gDocument->frames.push_back(std::move(f));
+            }
+            gSelectedFrame = raw;
+
+        } else {
+            // Rectangle or Ellipse — place inside deepest containing frame,
+            // or at canvas root if drawn on bare canvas.
+            Frame* target = DeepestFrameAt(center);
+
+            std::unique_ptr<Shape> shape;
+            if (gActiveTool == Tool::Rectangle) {
+                auto r        = std::make_unique<RectShape>();
+                r->name       = "Rectangle";
+                r->bounds     = b;
+                r->fillColor  = { 0xCCCC, 0xDDDD, 0xFFFF };
+                r->hasFill    = true;
+                r->hasStroke  = false;
+                shape = std::move(r);
+            } else {
+                auto e        = std::make_unique<EllipseShape>();
+                e->name       = "Ellipse";
+                e->bounds     = b;
+                e->fillColor  = { 0xCCCC, 0xFFFF, 0xEEEE };
+                e->hasFill    = true;
+                e->hasStroke  = false;
+                shape = std::move(e);
             }
 
-        } else if (gActiveTool == Tool::Ellipse) {
-            Frame* target = FrameAtPoint(centerPt);
-            if (!target && !gDocument->frames.empty())
-                target = gDocument->frames.front().get();
-            if (target) {
-                auto shape      = std::make_unique<EllipseShape>();
-                shape->name     = "Ellipse";
-                shape->bounds   = b;
-                RGBColor fc     = { 0xCCCC, 0xFFFF, 0xEEEE };
-                shape->fillColor  = fc;
-                shape->hasFill    = true;
-                shape->hasStroke  = false;
-                gSelectedShape  = shape.get();
-                gSelectedFrame  = target;
-                target->children.push_back(std::move(shape));
-            }
+            gSelectedShape = shape.get();
+            gSelectedFrame = target;
+
+            if (target) target->children.push_back(std::move(shape));
+            else        gDocument->rootShapes.push_back(std::move(shape));
         }
 
-        // Auto-switch to Select so the user can immediately move what they drew
-        gActiveTool = Tool::Select;
+        gActiveTool = Tool::Select;  // auto-switch so object is immediately moveable
     }
 
     Rect portRect;
@@ -440,14 +481,11 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
 // --------------------------------------------------------------------------
 
 void HandleWindowGrow(WindowRef win, Point where) {
-    Rect sizeConstraints = { 300, 400, 2000, 4000 };
-    long newSize = GrowWindow(win, where, &sizeConstraints);
-    if (newSize == 0) return;
-
-    SInt16 newW = static_cast<SInt16>(newSize & 0xFFFF);
-    SInt16 newH = static_cast<SInt16>((newSize >> 16) & 0xFFFF);
-    SizeWindow(win, newW, newH, true);
-
+    Rect c = { 300, 400, 2000, 4000 };
+    long sz = GrowWindow(win, where, &c);
+    if (!sz) return;
+    SizeWindow(win, static_cast<SInt16>(sz & 0xFFFF),
+                    static_cast<SInt16>((sz >> 16) & 0xFFFF), true);
     Rect portRect;
     GetWindowPortBounds(win, &portRect);
     InvalWindowRect(win, &portRect);
@@ -460,16 +498,6 @@ void HandleWindowGrow(WindowRef win, Point where) {
 void HandleMenuCommand(long menuResult) {
     short menuID   = static_cast<short>(menuResult >> 16);
     short menuItem = static_cast<short>(menuResult & 0xFFFF);
-
-    switch (menuID) {
-        case kFileMenuID:
-            switch (menuItem) {
-                case kFileQuit:
-                    gQuitFlag = true;
-                    break;
-            }
-            break;
-    }
-
+    if (menuID == kFileMenuID && menuItem == kFileQuit) gQuitFlag = true;
     HiliteMenu(0);
 }
