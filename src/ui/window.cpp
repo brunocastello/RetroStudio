@@ -860,6 +860,31 @@ static void NewDocument() {
     UpdateWindowTitle();
 }
 
+void DeleteSelected() {
+    if (!gDocument) return;
+    bool changed = false;
+
+    if (gSelectedShape) {
+        // Works for both in-frame children and floating rootShapes
+        auto& vec = gSelectedFrame ? gSelectedFrame->children : gDocument->rootShapes;
+        for (auto it = vec.begin(); it != vec.end(); ++it) {
+            if (it->get() == gSelectedShape) { vec.erase(it); changed = true; break; }
+        }
+        gSelectedShape = nullptr;
+    } else if (gSelectedFrame) {
+        // ExtractFrame handles both top-level and nested (child) frames
+        auto owned = ExtractFrame(gSelectedFrame);
+        if (owned) changed = true;
+        gSelectedFrame = nullptr;
+    }
+
+    if (changed) {
+        Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
+        RefreshLayersPanel();
+        RefreshInspector();
+    }
+}
+
 void HandleMenuCommand(long menuResult) {
     short menuID   = static_cast<short>(menuResult >> 16);
     short menuItem = static_cast<short>(menuResult & 0xFFFF);
