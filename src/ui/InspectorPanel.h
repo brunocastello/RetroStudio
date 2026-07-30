@@ -1,0 +1,16 @@
+#pragma once
+#include <Carbon.h>
+#include "../core/Document.h"
+
+// Floating Inspector panel — shows fill color, X/Y/W/H, and name of the
+// currently selected Frame or Shape.  Clicking the fill swatch opens the
+// native Mac OS 9 Color Picker dialog.
+
+static const short kInspectorWidth = 176;
+
+extern WindowRef gInspectorWindow;
+
+void SetupInspectorPanel();
+void DrawInspectorPanel();
+void HandleInspectorClick(Point localPt);
+void RefreshInspector();

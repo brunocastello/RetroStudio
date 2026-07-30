@@ -38,7 +38,7 @@ void SetupLayersPanel() {
     pr.top    = tr.v;
     pr.left   = static_cast<short>(tr.h + 4);
     pr.right  = static_cast<short>(pr.left + kLayersPanelWidth);
-    pr.bottom = static_cast<short>(pr.top + (mb.bottom - mb.top));
+    pr.bottom = static_cast<short>(pr.top + kLayersPanelHeight);
 
     gLayersWindow = NewCWindow(nullptr, &pr, "\pLayers", true,
                                noGrowDocProc, (WindowRef)-1L, true, 0);

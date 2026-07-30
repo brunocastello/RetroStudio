@@ -6,8 +6,9 @@
 // Clicking a row selects the object on the canvas (syncs gSelectedFrame /
 // gSelectedShape).  Mirrors Figma's Layers panel paradigm.
 
-static const short kLayersPanelWidth = 176;
-static const short kLayerRowH        = 20;
+static const short kLayersPanelWidth  = 176;
+static const short kLayersPanelHeight = 260;   // capped so Inspector fits below on 768px screens
+static const short kLayerRowH         = 20;
 
 extern WindowRef gLayersWindow;
 

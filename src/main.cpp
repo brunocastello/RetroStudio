@@ -2,6 +2,7 @@
 #include "ui/window.h"
 #include "ui/Palette.h"
 #include "ui/LayersPanel.h"
+#include "ui/InspectorPanel.h"
 
 static void InitializeMacintosh() {
     InitCursor();
@@ -11,8 +12,9 @@ int main(int argc, char* argv[]) {
     InitializeMacintosh();
     SetupMenus();
     SetupWindow();
-    SetupPalette();       // positioned relative to main window
-    SetupLayersPanel();   // positioned relative to main window
+    SetupPalette();          // positioned relative to main window
+    SetupLayersPanel();      // positioned relative to main window
+    SetupInspectorPanel();   // positioned below layers panel
 
     EventRecord event;
 
@@ -46,19 +48,28 @@ int main(int argc, char* argv[]) {
                                 SetPortWindowPort(gLayersWindow);
                                 GlobalToLocal(&localPt);
                                 HandleLayersPanelClick(localPt);
+                                RefreshInspector();
+                            } else if (win == gInspectorWindow) {
+                                if (win != FrontWindow()) SelectWindow(win);
+                                Point localPt = event.where;
+                                SetPortWindowPort(gInspectorWindow);
+                                GlobalToLocal(&localPt);
+                                HandleInspectorClick(localPt);
                             } else if (win == gMainWindow) {
                                 if (win != FrontWindow()) { SelectWindow(win); break; }
                                 switch (gActiveTool) {
                                     case Tool::Select:
                                         HandleCanvasSelect(win, event.where);
-                                        RefreshLayersPanel();  // selection may have changed
+                                        RefreshLayersPanel();
+                                        RefreshInspector();
                                         break;
                                     case Tool::Frame:
                                     case Tool::Rectangle:
                                     case Tool::Ellipse:
                                         HandleCanvasCreate(win, event.where);
                                         DrawPalette();         // tool auto-switched to Select
-                                        RefreshLayersPanel();  // new layer added
+                                        RefreshLayersPanel();
+                                        RefreshInspector();
                                         break;
                                     default:
                                         break;
@@ -74,6 +85,8 @@ int main(int argc, char* argv[]) {
                                     HideWindow(gPaletteWindow);
                                 else if (win == gLayersWindow)
                                     HideWindow(gLayersWindow);
+                                else if (win == gInspectorWindow)
+                                    HideWindow(gInspectorWindow);
                             }
                             break;
                         case inZoomIn:
@@ -108,6 +121,7 @@ int main(int argc, char* argv[]) {
                                 GetWindowPortBounds(gMainWindow, &r);
                                 InvalWindowRect(gMainWindow, &r);
                                 RefreshLayersPanel();
+                                RefreshInspector();
                                 break;
                             }
 
@@ -142,6 +156,7 @@ int main(int argc, char* argv[]) {
                                     GetWindowPortBounds(gMainWindow, &r);
                                     InvalWindowRect(gMainWindow, &r);
                                     RefreshLayersPanel();
+                                    RefreshInspector();
                                 }
                                 break;
                             }
@@ -159,6 +174,8 @@ int main(int argc, char* argv[]) {
                         DrawPalette();
                     else if (win == gLayersWindow)
                         DrawLayersPanel();
+                    else if (win == gInspectorWindow)
+                        DrawInspectorPanel();
                     else
                         DrawWindowContent(win);
                     EndUpdate(win);
