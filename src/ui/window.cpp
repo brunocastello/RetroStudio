@@ -280,7 +280,104 @@ static std::unique_ptr<Frame> ExtractFrame(Frame* f) {
 }
 
 // --------------------------------------------------------------------------
-// Select tool: click-to-select + drag-to-move + drop-to-reparent
+// Resize handle hit-test + drag
+// --------------------------------------------------------------------------
+
+// Returns the handle index (0-7) if pt lands on one of the 8 selection
+// handles drawn by DrawSelectionHighlight, or -1 if nothing selected / miss.
+// Handle order: 0=TL 1=TC 2=TR 3=MR 4=BR 5=BC 6=BL 7=ML
+static int HitTestHandles(Point pt) {
+    if (!gSelectedFrame && !gSelectedShape) return -1;
+    Rect r = gSelectedShape
+        ? ToMacRect(gSelectedShape->bounds)
+        : ToMacRect(gSelectedFrame->bounds);
+
+    static const short kHW = 4;
+    short cx = static_cast<short>((r.left + r.right)  / 2);
+    short cy = static_cast<short>((r.top  + r.bottom) / 2);
+    const short hx[8] = { r.left, cx, r.right, r.right,  r.right,  cx,     r.left,  r.left };
+    const short hy[8] = { r.top,  r.top, r.top, cy,      r.bottom, r.bottom, r.bottom, cy   };
+
+    for (int i = 0; i < 8; ++i) {
+        Rect h = {
+            static_cast<short>(hy[i] - kHW), static_cast<short>(hx[i] - kHW),
+            static_cast<short>(hy[i] + kHW), static_cast<short>(hx[i] + kHW)
+        };
+        if (PtInRect(pt, &h)) return i;
+    }
+    return -1;
+}
+
+// Drag the selected object's bounds by moving only the edge(s) implied by
+// handleIdx, then redraw live.  Minimum dimension: 10px.
+static void HandleResizeDrag(WindowRef win, int hi, Point startPt) {
+    // Which edges each handle moves
+    // Index:           0      1      2      3      4      5      6      7
+    static const bool bL[8]={ true,  false, false, false, false, false, true,  true  };
+    static const bool bT[8]={ true,  true,  true,  false, false, false, false, false };
+    static const bool bR[8]={ false, false, true,  true,  true,  false, false, false };
+    static const bool bB[8]={ false, false, false, false, true,  true,  true,  false };
+
+    Bounds2* b = gSelectedShape
+        ? &gSelectedShape->bounds
+        : &gSelectedFrame->bounds;
+
+    static const SInt32 kMin = 10;
+    Point prev = startPt, curr = startPt;
+
+    while (Button()) {
+        GetMouse(&curr);
+        if (curr.h != prev.h || curr.v != prev.v) {
+            short dx = static_cast<short>(curr.h - prev.h);
+            short dy = static_cast<short>(curr.v - prev.v);
+
+            if (bL[hi]) { b->x += dx; b->w -= dx; }
+            if (bT[hi]) { b->y += dy; b->h -= dy; }
+            if (bR[hi])   b->w += dx;
+            if (bB[hi])   b->h += dy;
+
+            if (b->w < kMin) { if (bL[hi]) b->x -= (kMin - b->w); b->w = kMin; }
+            if (b->h < kMin) { if (bT[hi]) b->y -= (kMin - b->h); b->h = kMin; }
+
+            DrawWindowContent(win);
+            prev = curr;
+        }
+    }
+    Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
+}
+
+// --------------------------------------------------------------------------
+// Frame name-label hit-test (recursive)
+// --------------------------------------------------------------------------
+
+// Returns the innermost Frame whose name label (rendered above its top-left
+// corner) contains pt, or nullptr.  Port must already be set to main window.
+static Frame* HitTestFrameLabel(Frame* f, Point pt) {
+    Rect fr = ToMacRect(f->bounds);
+
+    Str255 pn; pn[0] = 0;
+    const char* nm = f->name.c_str();
+    for (int i = 0; nm[i] && i < 63; ++i) { pn[i+1] = (unsigned char)nm[i]; pn[0]++; }
+
+    TextSize(10);
+    short tw = StringWidth(pn);
+    TextSize(12);
+
+    Rect label = {
+        static_cast<short>(fr.top - 16), fr.left,
+        static_cast<short>(fr.top -  1), static_cast<short>(fr.left + tw + 4)
+    };
+    if (PtInRect(pt, &label)) return f;
+
+    for (auto it = f->childFrames.rbegin(); it != f->childFrames.rend(); ++it) {
+        Frame* res = HitTestFrameLabel(it->get(), pt);
+        if (res) return res;
+    }
+    return nullptr;
+}
+
+// --------------------------------------------------------------------------
+// Select tool: resize handles → name labels → body hit-test → move + reparent
 // --------------------------------------------------------------------------
 
 void HandleCanvasSelect(WindowRef win, Point startGlobal) {
@@ -290,16 +387,30 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal) {
     Point pt = startGlobal;
     GlobalToLocal(&pt);
 
+    // ---- 1. Resize handle (only when something is already selected) ----
+    int handleIdx = HitTestHandles(pt);
+    if (handleIdx >= 0) {
+        HandleResizeDrag(win, handleIdx, pt);
+        return;  // selection unchanged; no re-parent after resize
+    }
+
     Frame* hitFrame = nullptr;
     Shape* hitShape = nullptr;
     bool   found    = false;
 
-    // Search top-level frames recursively (last = topmost z-order)
+    // ---- 2. Name label (frames only — labels are visible on canvas) ----
     for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend() && !found; ++it) {
-        HitResult res = HitTestFrame(it->get(), pt);
-        if (res.found) { hitFrame = res.frame; hitShape = res.shape; found = true; }
+        Frame* lf = HitTestFrameLabel(it->get(), pt);
+        if (lf) { hitFrame = lf; found = true; }
     }
-    // Search root shapes
+
+    // ---- 3. Regular body hit-test ----
+    if (!found) {
+        for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend() && !found; ++it) {
+            HitResult res = HitTestFrame(it->get(), pt);
+            if (res.found) { hitFrame = res.frame; hitShape = res.shape; found = true; }
+        }
+    }
     if (!found) {
         for (auto it = gDocument->rootShapes.rbegin(); it != gDocument->rootShapes.rend(); ++it) {
             Rect r = ToMacRect((*it)->bounds);
@@ -311,7 +422,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal) {
     gSelectedShape = hitShape;
 
     if (found) {
-        Frame* origParent = hitFrame;  // remember parent before drag
+        Frame* origParent = hitFrame;
         Point prevPt = pt, currPt = pt;
 
         while (Button()) {
@@ -346,11 +457,9 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal) {
                     if (newParent) newParent->children.push_back(std::move(owned));
                     else           gDocument->rootShapes.push_back(std::move(owned));
                     gSelectedFrame = newParent;
-                    // gSelectedShape raw ptr still valid — object lives on
                 }
             }
         } else {
-            // Moving a frame: check if it should become a child of another frame
             Frame* newParent = DeepestFrameAt(center, hitFrame);
             if (newParent != hitFrame->parent) {
                 auto owned = ExtractFrame(hitFrame);
