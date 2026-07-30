@@ -101,6 +101,39 @@ int main(int argc, char* argv[]) {
                                 InvalWindowRect(gMainWindow, &r);
                                 break;
                             }
+                            case 0x08:          // Delete (backspace)
+                            case 0x7F: {        // Forward Delete
+                                bool changed = false;
+                                if (gSelectedShape && gSelectedFrame) {
+                                    // Remove shape from its parent frame
+                                    auto& ch = gSelectedFrame->children;
+                                    for (auto it = ch.begin(); it != ch.end(); ++it) {
+                                        if (it->get() == gSelectedShape) {
+                                            ch.erase(it);
+                                            changed = true;
+                                            break;
+                                        }
+                                    }
+                                    gSelectedShape = nullptr;
+                                } else if (gSelectedFrame) {
+                                    // Remove the frame itself from the document
+                                    auto& fr = gDocument->frames;
+                                    for (auto it = fr.begin(); it != fr.end(); ++it) {
+                                        if (it->get() == gSelectedFrame) {
+                                            fr.erase(it);
+                                            changed = true;
+                                            break;
+                                        }
+                                    }
+                                    gSelectedFrame = nullptr;
+                                }
+                                if (changed) {
+                                    Rect r;
+                                    GetWindowPortBounds(gMainWindow, &r);
+                                    InvalWindowRect(gMainWindow, &r);
+                                }
+                                break;
+                            }
                         }
                         if (gActiveTool != prev)
                             DrawPalette();
