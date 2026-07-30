@@ -810,7 +810,6 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
             else        gDocument->rootShapes.push_back(std::move(shape));
         }
 
-        gActiveTool = Tool::Select;  // auto-switch so object is immediately moveable
     }
 
     Rect portRect;
