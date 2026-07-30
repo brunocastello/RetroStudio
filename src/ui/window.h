@@ -12,6 +12,7 @@ extern Document*  gDocument;
 extern Frame*     gSelectedFrame;
 extern Shape*     gSelectedShape;
 extern int        gNextFrameNum;
+extern bool       gIsDoubleClick;
 
 void SetupMenus();
 void SetupWindow();

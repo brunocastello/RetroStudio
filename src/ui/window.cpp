@@ -1,6 +1,7 @@
 #include "window.h"
 #include "LayersPanel.h"
 #include "InspectorPanel.h"
+#include "RenameDialog.h"
 #include "../export/DocumentSerializer.h"
 
 WindowRef  gMainWindow    = nullptr;
@@ -11,6 +12,7 @@ Document*  gDocument      = nullptr;
 Frame*     gSelectedFrame = nullptr;
 Shape*     gSelectedShape = nullptr;
 int        gNextFrameNum  = 2;   // auto-name counter for new frames
+bool       gIsDoubleClick = false;
 
 static const short kZoomDocProc = 8;
 static const short kFileMenuID  = 129;
@@ -91,6 +93,28 @@ void SetupWindow() {
 // Rendering — direct QuickDraw into window port
 // --------------------------------------------------------------------------
 
+// Build a Pascal string from a C++ string (max 63 visible chars)
+static void ToPStr(const std::string& src, Str255& dst) {
+    dst[0] = 0;
+    for (int i = 0; src[i] && i < 63; ++i) {
+        dst[i + 1] = static_cast<unsigned char>(src[i]); dst[0]++;
+    }
+}
+
+static void DrawShapeNameLabel(const Shape& shape) {
+    Rect r = ToMacRect(shape.bounds);
+    std::string label = shape.name;
+    if (label.empty())
+        label = (shape.GetType() == Shape::kEllipse) ? "Ellipse" : "Rectangle";
+    Str255 pn; ToPStr(label, pn);
+    TextSize(10);
+    RGBColor lc = { 0x8888, 0x8888, 0x8888 };
+    RGBForeColor(&lc);
+    MoveTo(r.left, static_cast<short>(r.top - 5));
+    DrawString(pn);
+    TextSize(12);
+}
+
 static void DrawShape(const Shape& shape) {
     if (!shape.visible) return;
     Rect r = ToMacRect(shape.bounds);
@@ -118,6 +142,7 @@ static void DrawShape(const Shape& shape) {
             break;
         default: break;
     }
+    DrawShapeNameLabel(shape);
 }
 
 // Forward-declare so DrawFrame can call itself recursively
@@ -149,9 +174,7 @@ static void DrawFrame(const Frame& frame) {
     RGBColor lc = { 0x4444, 0x4444, 0x4444 };
     RGBForeColor(&lc);
     TextSize(10);
-    Str255 pn; pn[0] = 0;
-    const char* s = frame.name.c_str();
-    for (int i = 0; s[i] && i < 63; ++i) { pn[i+1] = (unsigned char)s[i]; pn[0]++; }
+    Str255 pn; ToPStr(frame.name, pn);
     MoveTo(r.left, static_cast<short>(r.top - 5));
     DrawString(pn);
     TextSize(12);
@@ -355,8 +378,34 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt) {
 }
 
 // --------------------------------------------------------------------------
-// Frame name-label hit-test (recursive)
+// Name-label hit-tests (canvas coordinate space, port = main window)
 // --------------------------------------------------------------------------
+
+// Returns the Shape whose name label contains pt, searching recursively
+// through the given frame and its children.
+static Shape* HitTestShapeLabel(const Frame* f, Point pt) {
+    for (auto it = f->children.rbegin(); it != f->children.rend(); ++it) {
+        Shape* s = it->get();
+        Rect r = ToMacRect(s->bounds);
+        std::string label = s->name;
+        if (label.empty())
+            label = (s->GetType() == Shape::kEllipse) ? "Ellipse" : "Rectangle";
+        Str255 pn; ToPStr(label, pn);
+        TextSize(10);
+        short tw = StringWidth(pn);
+        TextSize(12);
+        Rect lr = {
+            static_cast<short>(r.top  - 16), r.left,
+            static_cast<short>(r.top  -  1), static_cast<short>(r.left + tw + 4)
+        };
+        if (PtInRect(pt, &lr)) return s;
+    }
+    for (auto it = f->childFrames.rbegin(); it != f->childFrames.rend(); ++it) {
+        Shape* s = HitTestShapeLabel(it->get(), pt);
+        if (s) return s;
+    }
+    return nullptr;
+}
 
 // Returns the innermost Frame whose name label (rendered above its top-left
 // corner) contains pt, or nullptr.  Port must already be set to main window.
@@ -428,6 +477,44 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal) {
 
     gSelectedFrame = hitFrame;
     gSelectedShape = hitShape;
+
+    // ---- Double-click: rename the hit object ----
+    if (found && gIsDoubleClick) {
+        // Determine which object's name to edit.
+        // Priority: shape label > frame label > any body hit
+        std::string* targetName = nullptr;
+
+        // Check shape labels across all frames first
+        for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend() && !targetName; ++it) {
+            Shape* sl = HitTestShapeLabel(it->get(), pt);
+            if (sl) { targetName = &sl->name; }
+        }
+        // Check frame labels
+        if (!targetName) {
+            for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend() && !targetName; ++it) {
+                Frame* fl = HitTestFrameLabel(it->get(), pt);
+                if (fl) { targetName = &fl->name; }
+            }
+        }
+        // Fall back to whatever body was hit
+        if (!targetName) {
+            if (gSelectedShape) targetName = &gSelectedShape->name;
+            else if (gSelectedFrame) targetName = &gSelectedFrame->name;
+        }
+
+        if (targetName) {
+            Point globalPt = pt;
+            LocalToGlobal(&globalPt);
+            std::string newName = ShowRenameDialog(*targetName, globalPt);
+            if (!newName.empty()) *targetName = newName;
+            Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
+            RefreshLayersPanel();
+            RefreshInspector();
+        }
+        gIsDoubleClick = false;
+        return;
+    }
+    gIsDoubleClick = false;
 
     if (found) {
         Frame* origParent = hitFrame;

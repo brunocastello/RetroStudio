@@ -1,4 +1,5 @@
 #include "DocumentSerializer.h"
+#include "../ui/RenameDialog.h"
 #include <Carbon.h>
 #include <cstring>
 
@@ -158,14 +159,30 @@ static std::unique_ptr<Frame> ReadFrame(Reader& r, Frame* parent) {
 }
 
 // --------------------------------------------------------------------------
-// Pascal string helper
+// FSSpec helpers — saves/loads relative to the Desktop folder
 // --------------------------------------------------------------------------
 
-static void ToPStr(const char* src, Str255& dst) {
+// Ensure filename ends with ".rsd"
+static std::string EnsureRsdExtension(const std::string& name) {
+    if (name.size() >= 4 && name.substr(name.size() - 4) == ".rsd")
+        return name;
+    return name + ".rsd";
+}
+
+// Build a Pascal filename from a C++ string (max 31 chars for HFS)
+static void ToPStr31(const std::string& src, Str255& dst) {
     dst[0] = 0;
-    for (int i = 0; src[i] && i < 63; ++i) {
-        dst[i + 1] = static_cast<unsigned char>(src[i]);
-        dst[0]++;
+    for (int i = 0; src[i] && i < 31; ++i) {
+        dst[i + 1] = static_cast<unsigned char>(src[i]); dst[0]++;
+    }
+}
+
+// Locate the Desktop folder; falls back to startup disk root on error.
+static void GetDesktopSpec(short& outVRefNum, long& outDirID) {
+    if (FindFolder(kOnSystemDisk, kDesktopFolderType, kDontCreateFolder,
+                   &outVRefNum, &outDirID) != noErr) {
+        outVRefNum = 0;      // default volume
+        outDirID   = fsRtDirID;
     }
 }
 
@@ -176,82 +193,71 @@ static void ToPStr(const char* src, Str255& dst) {
 bool SaveDocument(Document* doc) {
     if (!doc) return false;
 
-    Str255 defName;
-    ToPStr(doc->name.c_str(), defName);
+    // Ask user for a filename via the shared rename-style popup
+    Point anchor = { 300, 350 };  // roughly screen center
+    std::string suggested = EnsureRsdExtension(doc->name);
+    std::string filename  = ShowRenameDialog(suggested, anchor);
+    if (filename.empty()) return false;  // user cancelled
+    filename = EnsureRsdExtension(filename);
 
-    StandardFileReply reply;
-    StandardPutFile("\pSave document as:", defName, &reply);
-    if (!reply.sfGood) return false;
+    short vRefNum; long dirID;
+    GetDesktopSpec(vRefNum, dirID);
 
-    // Delete existing file so we can replace it cleanly
-    FSpDelete(&reply.sfFile);
-    if (FSpCreate(&reply.sfFile, kCreator, kDocType, smSystemScript) != noErr)
+    Str255 pname; ToPStr31(filename, pname);
+    FSSpec spec;
+    FSMakeFSSpec(vRefNum, dirID, pname, &spec);
+
+    // Replace existing file if present
+    FSpDelete(&spec);
+    if (FSpCreate(&spec, kCreator, kDocType, smSystemScript) != noErr)
         return false;
 
     short refNum;
-    if (FSpOpenDF(&reply.sfFile, fsRdWrPerm, &refNum) != noErr)
-        return false;
+    if (FSpOpenDF(&spec, fsRdWrPerm, &refNum) != noErr) return false;
 
-    Writer w;
-    w.ref = refNum;
+    Writer w; w.ref = refNum;
 
-    // Header
     w.write(&kMagic, 4);
     w.w16(kVersion);
-
-    // Document name
     w.wStr(doc->name);
 
-    // Root shapes (canvas-level, outside any frame)
     w.w16(static_cast<UInt16>(doc->rootShapes.size()));
-    for (const auto& s : doc->rootShapes)
-        WriteShape(w, *s);
+    for (const auto& s : doc->rootShapes) WriteShape(w, *s);
 
-    // Top-level frames
     w.w16(static_cast<UInt16>(doc->frames.size()));
-    for (const auto& f : doc->frames)
-        WriteFrame(w, *f);
+    for (const auto& f : doc->frames) WriteFrame(w, *f);
 
     FSClose(refNum);
 
-    // Update window title to match saved filename
-    if (w.ok) {
-        // reply.sfFile.name is a Pascal string (the filename)
-        // We can update doc->name from it
-        char buf[64] = {};
-        UInt8 len = reply.sfFile.name[0] > 63 ? 63 : reply.sfFile.name[0];
-        for (int i = 0; i < len; ++i)
-            buf[i] = static_cast<char>(reply.sfFile.name[i + 1]);
-        doc->name = std::string(buf, len);
-    }
-
+    if (w.ok) doc->name = filename;
     return w.ok;
 }
 
 bool LoadDocument(Document*& doc) {
-    StandardFileReply reply;
-    // numTypes=-1 → show all files; no extension filtering needed
-    StandardGetFile(nullptr, -1, nullptr, &reply);
-    if (!reply.sfGood) return false;
+    // Ask user for the filename
+    Point anchor = { 300, 350 };
+    std::string filename = ShowRenameDialog("", anchor);
+    if (filename.empty()) return false;
+    filename = EnsureRsdExtension(filename);
+
+    short vRefNum; long dirID;
+    GetDesktopSpec(vRefNum, dirID);
+
+    Str255 pname; ToPStr31(filename, pname);
+    FSSpec spec;
+    if (FSMakeFSSpec(vRefNum, dirID, pname, &spec) != noErr) return false;
 
     short refNum;
-    if (FSpOpenDF(&reply.sfFile, fsRdPerm, &refNum) != noErr)
-        return false;
+    if (FSpOpenDF(&spec, fsRdPerm, &refNum) != noErr) return false;
 
-    Reader r;
-    r.ref = refNum;
+    Reader r; r.ref = refNum;
 
-    // Verify header
-    UInt32 magic = 0;
-    r.read(&magic, 4);
-    UInt16 ver = r.r16();
-    if (!r.ok || magic != kMagic || ver != kVersion) {
-        FSClose(refNum);
-        return false;
-    }
+    UInt32 magic = 0; r.read(&magic, 4);
+    UInt16 ver   = r.r16();
+    if (!r.ok || magic != kMagic || ver != kVersion) { FSClose(refNum); return false; }
 
-    auto newDoc     = std::make_unique<Document>();
-    newDoc->name    = r.rStr();
+    auto newDoc  = std::make_unique<Document>();
+    newDoc->name = r.rStr();
 
     UInt16 nRoots = r.r16();
     for (UInt16 i = 0; i < nRoots && r.ok; ++i) {
@@ -266,10 +272,8 @@ bool LoadDocument(Document*& doc) {
     }
 
     FSClose(refNum);
-
     if (!r.ok) return false;
 
-    // Replace the current document
     delete doc;
     doc = newDoc.release();
     return true;

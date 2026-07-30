@@ -1,5 +1,7 @@
 #include "LayersPanel.h"
 #include "window.h"
+#include "RenameDialog.h"
+#include "InspectorPanel.h"
 
 WindowRef gLayersWindow = nullptr;
 
@@ -199,6 +201,11 @@ void HandleLayersPanelClick(Point localPt) {
     Rect portRect;
     GetWindowPortBounds(gLayersWindow, &portRect);
 
+    // Double-click detection: same object clicked twice within GetDblTime()
+    static UInt32  sLastWhen  = 0;
+    static Frame*  sLastFrame = nullptr;
+    static Shape*  sLastShape = nullptr;
+
     short y = 2;
 
     // Root shapes
@@ -208,7 +215,8 @@ void HandleLayersPanelClick(Point localPt) {
                      static_cast<short>(portRect.right - 2) };
         if (PtInRect(localPt, &row)) {
             gSelectedFrame = nullptr; gSelectedShape = s;
-            InvalidateLayers(); InvalidateMain(); return;
+            InvalidateLayers(); InvalidateMain();
+            goto check_dbl;
         }
         y = static_cast<short>(y + kLayerRowH);
     }
@@ -216,12 +224,43 @@ void HandleLayersPanelClick(Point localPt) {
     // Top-level frames
     for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend(); ++it) {
         y = HitTestFrameRows(it->get(), y, 0, localPt, portRect);
-        if (y == -1) return;
+        if (y == -1) goto check_dbl;
     }
 
     // Empty area — deselect
     gSelectedFrame = nullptr; gSelectedShape = nullptr;
+    sLastWhen = 0; sLastFrame = nullptr; sLastShape = nullptr;
     InvalidateLayers(); InvalidateMain();
+    return;
+
+check_dbl: {
+        UInt32 now = static_cast<UInt32>(TickCount());
+        bool isDbl = (gSelectedFrame == sLastFrame && gSelectedShape == sLastShape
+                      && (now - sLastWhen) <= static_cast<UInt32>(GetDblTime())
+                      && (gSelectedFrame != nullptr || gSelectedShape != nullptr));
+        sLastWhen  = now;
+        sLastFrame = gSelectedFrame;
+        sLastShape = gSelectedShape;
+
+        if (isDbl) {
+            std::string* targetName = gSelectedShape
+                ? &gSelectedShape->name
+                : &gSelectedFrame->name;
+
+            // Anchor popup at the mouse position in global coords
+            Point globalPt = localPt;
+            SetPortWindowPort(gLayersWindow);
+            LocalToGlobal(&globalPt);
+
+            std::string newName = ShowRenameDialog(*targetName, globalPt);
+            if (!newName.empty()) {
+                *targetName = newName;
+                InvalidateLayers(); InvalidateMain();
+                RefreshInspector();
+            }
+            sLastWhen = 0;  // reset so triple-click doesn't re-trigger
+        }
+    }
 }
 
 void RefreshLayersPanel() { InvalidateLayers(); }

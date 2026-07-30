@@ -18,11 +18,25 @@ int main(int argc, char* argv[]) {
 
     EventRecord event;
 
+    // Double-click detection state
+    static UInt32 sLastClickWhen  = 0;
+    static Point  sLastClickWhere = { 0, 0 };
+
     while (!gQuitFlag) {
         if (WaitNextEvent(everyEvent, &event, 15, nullptr)) {
             switch (event.what) {
 
                 case mouseDown: {
+                    // Detect double-click: same spot, within GetDblTime() ticks
+                    {
+                        short dx = static_cast<short>(event.where.h - sLastClickWhere.h);
+                        short dy = static_cast<short>(event.where.v - sLastClickWhere.v);
+                        gIsDoubleClick = ((event.when - sLastClickWhen) <= static_cast<UInt32>(GetDblTime()))
+                                         && (dx*dx + dy*dy <= 25);  // within ~5px radius
+                        sLastClickWhen  = event.when;
+                        sLastClickWhere = event.where;
+                    }
+
                     WindowRef win;
                     short part = FindWindow(event.where, &win);
                     switch (part) {
