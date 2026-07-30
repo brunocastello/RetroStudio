@@ -286,11 +286,22 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal) {
                 short dx = currPt.h - prevPt.h;
                 short dy = currPt.v - prevPt.v;
 
-                Bounds2& b = hitShape ? hitShape->bounds : hitFrame->bounds;
-                b.x += dx;
-                b.y += dy;
+                if (hitShape) {
+                    hitShape->bounds.x += dx;
+                    hitShape->bounds.y += dy;
+                } else {
+                    // Move the frame and drag all its children with it —
+                    // children use absolute canvas coords, so they need the
+                    // same delta applied or they appear to "stay behind".
+                    hitFrame->bounds.x += dx;
+                    hitFrame->bounds.y += dy;
+                    for (auto& child : hitFrame->children) {
+                        child->bounds.x += dx;
+                        child->bounds.y += dy;
+                    }
+                }
 
-                DrawWindowContent(win);  // also draws selection highlight
+                DrawWindowContent(win);
                 prevPt = currPt;
             }
         }
