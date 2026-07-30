@@ -868,6 +868,45 @@ static void NewDocument() {
     UpdateWindowTitle();
 }
 
+// Collect every name currently used in the document (all frames + shapes, recursive)
+static void CollectNamesFromFrame(const Frame* f, std::vector<std::string>& out) {
+    out.push_back(f->name);
+    for (const auto& s : f->children)     out.push_back(s->name);
+    for (const auto& cf : f->childFrames) CollectNamesFromFrame(cf.get(), out);
+}
+static void CollectAllNames(std::vector<std::string>& out) {
+    if (!gDocument) return;
+    for (const auto& s : gDocument->rootShapes) out.push_back(s->name);
+    for (const auto& f : gDocument->frames)     CollectNamesFromFrame(f.get(), out);
+}
+
+// If name ends with " <N>", return the same base with the lowest M > N
+// that doesn't already exist in the document. Otherwise return name unchanged.
+static std::string NextAvailableName(const std::string& name) {
+    int i = static_cast<int>(name.size()) - 1;
+    while (i >= 0 && name[i] >= '0' && name[i] <= '9') --i;
+    if (i < 0 || i >= static_cast<int>(name.size()) - 1 || name[i] != ' ')
+        return name;  // no trailing " N" — keep as-is
+
+    std::string base = name.substr(0, static_cast<size_t>(i + 1)); // e.g. "Frame "
+    int num = 0;
+    for (int j = i + 1; j < static_cast<int>(name.size()); ++j)
+        num = num * 10 + (name[j] - '0');
+
+    std::vector<std::string> existing;
+    CollectAllNames(existing);
+
+    int candidate = num + 1;
+    while (candidate < 10000) {
+        std::string cn = base + istr(candidate);
+        bool taken = false;
+        for (const auto& n : existing) { if (n == cn) { taken = true; break; } }
+        if (!taken) return cn;
+        ++candidate;
+    }
+    return base + istr(candidate);
+}
+
 // Deep-copy a frame tree (children have absolute canvas coords, so no coord fixup needed)
 static std::unique_ptr<Frame> CloneFrame(const Frame* src, Frame* newParent) {
     auto f = std::make_unique<Frame>();
@@ -903,6 +942,7 @@ void PasteClipboard() {
 
     if (sClipShape) {
         auto copy = sClipShape->Clone();
+        copy->name     = NextAvailableName(copy->name);
         copy->bounds.x = sClipShape->bounds.x + off;
         copy->bounds.y = sClipShape->bounds.y + off;
         Shape* raw = copy.get();
@@ -911,6 +951,7 @@ void PasteClipboard() {
         gSelectedShape = raw;
     } else {
         auto copy = CloneFrame(sClipFrame.get(), nullptr);
+        copy->name = NextAvailableName(copy->name);
         MoveFrameTree(copy.get(), off, off);  // shifts frame + all children
         Frame* raw = copy.get();
         gDocument->frames.push_back(std::move(copy));
