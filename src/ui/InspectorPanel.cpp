@@ -69,22 +69,21 @@ static short DrawSectionHeader(short y, const char* title, const Rect& pr) {
 // --------------------------------------------------------------------------
 
 void SetupInspectorPanel() {
-    if (!gLayersWindow) return;
+    if (!gMainWindow) return;
 
-    // Find global position of the layers panel content area
-    Rect lb;
-    GetWindowPortBounds(gLayersWindow, &lb);
-    Point topLeft = {0, 0};
-    SetPortWindowPort(gLayersWindow);
-    LocalToGlobal(&topLeft);
-
-    // Inspector content rect: starts below the layers window.
-    // Add ~24px for the inspector's own title bar so it appears fully below layers.
-    short layersContentBottom = static_cast<short>(topLeft.v + lb.bottom);
+    // Mirror the same anchor SetupLayersPanel uses: the main window's top-right
+    // corner in global coordinates.  Inspector content starts below the Layers
+    // panel content area (kLayersPanelHeight) plus ~24 px for the Inspector's
+    // own title bar chrome, so the two windows never overlap.
+    Rect mb;
+    GetWindowPortBounds(gMainWindow, &mb);
+    Point tr = { mb.top, mb.right };
+    SetPortWindowPort(gMainWindow);
+    LocalToGlobal(&tr);
 
     Rect pr;
-    pr.top    = static_cast<short>(layersContentBottom + 24);
-    pr.left   = topLeft.h;
+    pr.top    = static_cast<short>(tr.v + kLayersPanelHeight + 24);
+    pr.left   = static_cast<short>(tr.h + 4);
     pr.right  = static_cast<short>(pr.left + kInspectorWidth);
     pr.bottom = static_cast<short>(pr.top + 180);
 
