@@ -5,6 +5,11 @@ static const short kW        = 210;
 static const short kH        = 22;
 static const short kPad      =  4;
 
+// Helper to draw the TE record (TEDraw is not in Retro68 Carbon; use TEUpdate)
+static void DrawTE(TEHandle teh, const Rect& portR) {
+    TEUpdate(&portR, teh);
+}
+
 std::string ShowRenameDialog(const std::string& current, Point globalAnchor) {
     // Position popup just below the anchor point, clamped to a 1024×768 screen
     short wx = globalAnchor.h;
@@ -13,7 +18,10 @@ std::string ShowRenameDialog(const std::string& current, Point globalAnchor) {
     if (wy + kH > 768)  wy = static_cast<short>(globalAnchor.v - kH - 2);
 
     Rect wr = { wy, wx, static_cast<short>(wy + kH), static_cast<short>(wx + kW) };
-    WindowRef popup = NewCWindow(nullptr, &wr, "\p", true,
+
+    // Use a mutable Str255 for the window title (avoids const char* → Ptr error)
+    Str255 emptyTitle = { 0 };
+    WindowRef popup = NewCWindow(nullptr, &wr, emptyTitle, true,
                                  kDBoxProc, (WindowRef)-1L, false, 0);
     if (!popup) return "";
 
@@ -35,8 +43,9 @@ std::string ShowRenameDialog(const std::string& current, Point globalAnchor) {
     if (!teh) { DisposeWindow(popup); return ""; }
 
     // Pre-fill text and select all so the user can type immediately
+    // TESetText takes Ptr (char*) in Retro68 headers, not const char*
     if (!current.empty())
-        TESetText(current.c_str(), static_cast<long>(current.size()), teh);
+        TESetText(const_cast<Ptr>(current.c_str()), static_cast<long>(current.size()), teh);
     TESetSelect(0, static_cast<long>((*teh)->teLength), teh);
     TEActivate(teh);
 
@@ -46,9 +55,9 @@ std::string ShowRenameDialog(const std::string& current, Point globalAnchor) {
     RGBColor blue  = { 0x1177, 0x55AA, 0xFFFF };
     RGBBackColor(&white); RGBForeColor(&black);
     EraseRect(&portR);
-    RGBForeColor(&blue); FrameRect(&portR);  // blue border to signal edit mode
+    RGBForeColor(&blue); FrameRect(&portR);  // blue border = edit mode
     RGBForeColor(&black);
-    TEDraw(teh);
+    DrawTE(teh, portR);
 
     // Wait for the triggering mouse-up before entering the loop
     while (Button()) {}
@@ -77,7 +86,7 @@ std::string ShowRenameDialog(const std::string& current, Point globalAnchor) {
                         EraseRect(&portR);
                         RGBForeColor(&blue); FrameRect(&portR);
                         RGBForeColor(&black);
-                        TEDraw(teh);
+                        DrawTE(teh, portR);
                     }
                     break;
                 }
@@ -96,7 +105,7 @@ std::string ShowRenameDialog(const std::string& current, Point globalAnchor) {
                         EraseRect(&portR);
                         RGBForeColor(&blue); FrameRect(&portR);
                         RGBForeColor(&black);
-                        TEDraw(teh);
+                        DrawTE(teh, portR);
                         EndUpdate(popup);
                     }
                     break;
@@ -110,7 +119,7 @@ std::string ShowRenameDialog(const std::string& current, Point globalAnchor) {
     }
 
     if (confirmed) {
-        Handle h  = (*teh)->hText;
+        Handle h   = (*teh)->hText;
         long   len = (*teh)->teLength;
         if (h && len > 0) {
             HLock(h);
