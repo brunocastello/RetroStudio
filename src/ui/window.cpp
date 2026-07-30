@@ -66,7 +66,8 @@ void SetupMenus() {
 // --------------------------------------------------------------------------
 
 void SetupWindow() {
-    Rect bounds = { 50, 60, 580, 960 };
+    // 640 px wide — leaves room for the Layers panel on the right on 1024×768
+    Rect bounds = { 50, 80, 580, 720 };
     gMainWindow = NewCWindow(
         nullptr,
         &bounds,
@@ -385,6 +386,7 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
                 target = gDocument->frames.front().get();
             if (target) {
                 auto shape      = std::make_unique<RectShape>();
+                shape->name     = "Rectangle";
                 shape->bounds   = b;
                 RGBColor fc     = { 0xCCCC, 0xDDDD, 0xFFFF };
                 shape->fillColor  = fc;
@@ -401,6 +403,7 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
                 target = gDocument->frames.front().get();
             if (target) {
                 auto shape      = std::make_unique<EllipseShape>();
+                shape->name     = "Ellipse";
                 shape->bounds   = b;
                 RGBColor fc     = { 0xCCCC, 0xFFFF, 0xEEEE };
                 shape->fillColor  = fc;

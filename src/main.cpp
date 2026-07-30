@@ -1,6 +1,7 @@
 #include <Carbon.h>
 #include "ui/window.h"
 #include "ui/Palette.h"
+#include "ui/LayersPanel.h"
 
 static void InitializeMacintosh() {
     InitCursor();
@@ -10,7 +11,8 @@ int main(int argc, char* argv[]) {
     InitializeMacintosh();
     SetupMenus();
     SetupWindow();
-    SetupPalette();   // palette must come after SetupWindow (uses main window coords)
+    SetupPalette();       // positioned relative to main window
+    SetupLayersPanel();   // positioned relative to main window
 
     EventRecord event;
 
@@ -33,27 +35,30 @@ int main(int argc, char* argv[]) {
                             break;
                         case inContent: {
                             if (win == gPaletteWindow) {
-                                // Palette is always responsive even when in background
                                 if (win != FrontWindow()) SelectWindow(win);
                                 Point localPt = event.where;
                                 SetPortWindowPort(gPaletteWindow);
                                 GlobalToLocal(&localPt);
                                 HandlePaletteClick(localPt);
+                            } else if (win == gLayersWindow) {
+                                if (win != FrontWindow()) SelectWindow(win);
+                                Point localPt = event.where;
+                                SetPortWindowPort(gLayersWindow);
+                                GlobalToLocal(&localPt);
+                                HandleLayersPanelClick(localPt);
                             } else if (win == gMainWindow) {
-                                // Background click just brings window to front
                                 if (win != FrontWindow()) { SelectWindow(win); break; }
                                 switch (gActiveTool) {
                                     case Tool::Select:
                                         HandleCanvasSelect(win, event.where);
-                                        // Sync palette in case selection changed active tool state
-                                        DrawPalette();
+                                        RefreshLayersPanel();  // selection may have changed
                                         break;
                                     case Tool::Frame:
                                     case Tool::Rectangle:
                                     case Tool::Ellipse:
                                         HandleCanvasCreate(win, event.where);
-                                        // HandleCanvasCreate auto-switches to Select
-                                        DrawPalette();
+                                        DrawPalette();         // tool auto-switched to Select
+                                        RefreshLayersPanel();  // new layer added
                                         break;
                                     default:
                                         break;
@@ -67,6 +72,8 @@ int main(int argc, char* argv[]) {
                                     gQuitFlag = true;
                                 else if (win == gPaletteWindow)
                                     HideWindow(gPaletteWindow);
+                                else if (win == gLayersWindow)
+                                    HideWindow(gLayersWindow);
                             }
                             break;
                         case inZoomIn:
@@ -84,28 +91,32 @@ int main(int argc, char* argv[]) {
                     if (event.modifiers & cmdKey) {
                         HandleMenuCommand(MenuKey(key));
                     } else {
-                        // Figma-style tool shortcuts
                         Tool prev = gActiveTool;
                         switch (key) {
+                            // Figma-style tool shortcuts — work regardless of front window
                             case 'v': case 'V': gActiveTool = Tool::Select;    break;
                             case 'f': case 'F': gActiveTool = Tool::Frame;     break;
                             case 'r': case 'R': gActiveTool = Tool::Rectangle; break;
                             case 'o': case 'O': gActiveTool = Tool::Ellipse;   break;
                             case 't': case 'T': gActiveTool = Tool::Text;      break;
                             case 'h': case 'H': gActiveTool = Tool::Hand;      break;
+
                             case 0x1B: {        // Escape — deselect
                                 gSelectedFrame = nullptr;
                                 gSelectedShape = nullptr;
                                 Rect r;
                                 GetWindowPortBounds(gMainWindow, &r);
                                 InvalWindowRect(gMainWindow, &r);
+                                RefreshLayersPanel();
                                 break;
                             }
-                            case 0x08:          // Delete (backspace)
-                            case 0x7F: {        // Forward Delete
+
+                            // Delete key — always acts on the selected object even
+                            // when the Palette or Layers panel is the front window.
+                            case 0x08:   // Backspace / Delete
+                            case 0x7F: { // Forward Delete
                                 bool changed = false;
                                 if (gSelectedShape && gSelectedFrame) {
-                                    // Remove shape from its parent frame
                                     auto& ch = gSelectedFrame->children;
                                     for (auto it = ch.begin(); it != ch.end(); ++it) {
                                         if (it->get() == gSelectedShape) {
@@ -116,7 +127,6 @@ int main(int argc, char* argv[]) {
                                     }
                                     gSelectedShape = nullptr;
                                 } else if (gSelectedFrame) {
-                                    // Remove the frame itself from the document
                                     auto& fr = gDocument->frames;
                                     for (auto it = fr.begin(); it != fr.end(); ++it) {
                                         if (it->get() == gSelectedFrame) {
@@ -131,6 +141,7 @@ int main(int argc, char* argv[]) {
                                     Rect r;
                                     GetWindowPortBounds(gMainWindow, &r);
                                     InvalWindowRect(gMainWindow, &r);
+                                    RefreshLayersPanel();
                                 }
                                 break;
                             }
@@ -146,6 +157,8 @@ int main(int argc, char* argv[]) {
                     BeginUpdate(win);
                     if (win == gPaletteWindow)
                         DrawPalette();
+                    else if (win == gLayersWindow)
+                        DrawLayersPanel();
                     else
                         DrawWindowContent(win);
                     EndUpdate(win);
