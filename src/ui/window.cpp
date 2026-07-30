@@ -1,4 +1,7 @@
 #include "window.h"
+#include "LayersPanel.h"
+#include "InspectorPanel.h"
+#include "../export/DocumentSerializer.h"
 
 WindowRef  gMainWindow    = nullptr;
 Boolean    gQuitFlag      = false;
@@ -7,13 +10,15 @@ Renderer*  gRenderer      = nullptr;
 Document*  gDocument      = nullptr;
 Frame*     gSelectedFrame = nullptr;
 Shape*     gSelectedShape = nullptr;
+int        gNextFrameNum  = 2;   // auto-name counter for new frames
 
 static const short kZoomDocProc = 8;
 static const short kFileMenuID  = 129;
 static const short kEditMenuID  = 130;
 static const short kFileNew     = 1;
 static const short kFileOpen    = 2;
-static const short kFileQuit    = 4;
+static const short kFileSave    = 4;
+static const short kFileQuit    = 6;
 
 // --------------------------------------------------------------------------
 // Small helpers
@@ -39,6 +44,9 @@ void SetupMenus() {
     SetItemCmd(fileMenu, kFileNew, 'N');
     AppendMenu(fileMenu, "\pOpen...");
     SetItemCmd(fileMenu, kFileOpen, 'O');
+    AppendMenu(fileMenu, "\p-");
+    AppendMenu(fileMenu, "\pSave...");
+    SetItemCmd(fileMenu, kFileSave, 'S');
     AppendMenu(fileMenu, "\p-");
     AppendMenu(fileMenu, "\pQuit");
     SetItemCmd(fileMenu, kFileQuit, 'Q');
@@ -529,9 +537,8 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
         gSelectedFrame = nullptr;
 
         if (gActiveTool == Tool::Frame) {
-            static int sFrameN = 2;
             auto f = std::make_unique<Frame>();
-            f->name           = "Frame " + istr(sFrameN++);
+            f->name           = "Frame " + istr(gNextFrameNum++);
             f->bounds         = b;
             f->backgroundColor = { 0xFFFF, 0xFFFF, 0xFFFF };
 
@@ -604,9 +611,52 @@ void HandleWindowGrow(WindowRef win, Point where) {
 // Menu commands
 // --------------------------------------------------------------------------
 
+static void NewDocument() {
+    delete gDocument;
+    gDocument     = new Document();
+    gDocument->name = "Untitled";
+
+    auto frame           = std::make_unique<Frame>();
+    frame->name          = "Screen 1";
+    frame->bounds        = { 40, 40, 390, 480 };
+    frame->backgroundColor = { 0xFFFF, 0xFFFF, 0xFFFF };
+    gDocument->frames.push_back(std::move(frame));
+
+    gSelectedFrame = nullptr;
+    gSelectedShape = nullptr;
+    gNextFrameNum  = 2;
+
+    Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
+}
+
 void HandleMenuCommand(long menuResult) {
     short menuID   = static_cast<short>(menuResult >> 16);
     short menuItem = static_cast<short>(menuResult & 0xFFFF);
-    if (menuID == kFileMenuID && menuItem == kFileQuit) gQuitFlag = true;
+
+    if (menuID == kFileMenuID) {
+        switch (menuItem) {
+            case kFileNew:
+                NewDocument();
+                RefreshLayersPanel();
+                RefreshInspector();
+                break;
+            case kFileOpen:
+                if (LoadDocument(gDocument)) {
+                    gSelectedFrame = nullptr;
+                    gSelectedShape = nullptr;
+                    gNextFrameNum  = static_cast<int>(gDocument->frames.size()) + 2;
+                    Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
+                    RefreshLayersPanel();
+                    RefreshInspector();
+                }
+                break;
+            case kFileSave:
+                SaveDocument(gDocument);
+                break;
+            case kFileQuit:
+                gQuitFlag = true;
+                break;
+        }
+    }
     HiliteMenu(0);
 }
