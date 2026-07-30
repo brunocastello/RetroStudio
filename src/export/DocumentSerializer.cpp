@@ -8,6 +8,12 @@ static const OSType kDocType = 'RSD ';
 static const UInt32 kMagic   = 0x52535444;  // 'RSTD'
 static const UInt16 kVersion = 1;
 
+// Folder Manager constants — defined here because Retro68 Carbon headers
+// don't always expose <Folders.h> constants via <Carbon.h>.
+static const short  kRsdOnSystemDisk      = static_cast<short>(-32768); // kOnSystemDisk
+static const OSType kRsdDesktopFolderType = 'desk';
+static const long   kRsdFsRtDirID        = 2L;                          // fsRtDirID
+
 // --------------------------------------------------------------------------
 // Byte-stream writer (wraps an open FSSpec data fork)
 // --------------------------------------------------------------------------
@@ -179,10 +185,10 @@ static void ToPStr31(const std::string& src, Str255& dst) {
 
 // Locate the Desktop folder; falls back to startup disk root on error.
 static void GetDesktopSpec(short& outVRefNum, long& outDirID) {
-    if (FindFolder(kOnSystemDisk, kDesktopFolderType, kDontCreateFolder,
+    if (FindFolder(kRsdOnSystemDisk, kRsdDesktopFolderType, false,
                    &outVRefNum, &outDirID) != noErr) {
-        outVRefNum = 0;      // default volume
-        outDirID   = fsRtDirID;
+        outVRefNum = 0;             // default volume
+        outDirID   = kRsdFsRtDirID;
     }
 }
 
