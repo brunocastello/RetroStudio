@@ -217,7 +217,8 @@ void HandleInspectorClick(Point localPt) {
 
         RGBColor newColor;
         Point where = {-1, -1};   // -1,-1 = center the dialog on screen
-        if (GetColor(where, "\pChoose Color", &currentColor, &newColor)) {
+        Str255 prompt; PStrC("Choose Color", prompt);
+        if (GetColor(where, prompt, &currentColor, &newColor)) {
             if (gSelectedShape)
                 gSelectedShape->fillColor = newColor;
             else
