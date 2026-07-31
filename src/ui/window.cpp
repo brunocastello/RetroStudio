@@ -499,11 +499,12 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt) {
 
     static const SInt32 kMin = 10;
     Point prev = startPt, curr = startPt;
+    bool pushedUndo = false;
 
-    PushUndo();
     while (Button()) {
         GetMouse(&curr);
         if (curr.h != prev.h || curr.v != prev.v) {
+            if (!pushedUndo) { PushUndo(); pushedUndo = true; }
             // Convert screen pixel delta → canvas pixel delta
             SInt32 dx = SInt32(curr.h - prev.h) * 100 / gCanvasZoom;
             SInt32 dy = SInt32(curr.v - prev.v) * 100 / gCanvasZoom;
@@ -665,11 +666,12 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal) {
     if (found) {
         Frame* origParent = hitFrame;
         Point prevPt = pt, currPt = pt;
+        bool pushedUndo = false;
 
-        PushUndo();
         while (Button()) {
             GetMouse(&currPt);
             if (currPt.h != prevPt.h || currPt.v != prevPt.v) {
+                if (!pushedUndo) { PushUndo(); pushedUndo = true; }
                 // Convert screen pixel delta → canvas pixel delta
                 SInt32 dx = SInt32(currPt.h - prevPt.h) * 100 / gCanvasZoom;
                 SInt32 dy = SInt32(currPt.v - prevPt.v) * 100 / gCanvasZoom;
