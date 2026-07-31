@@ -612,7 +612,7 @@ void HandleInspectorClick(Point localPt) {
         DeleteMenu(5001);
         DisposeMenu(popMenu);
 
-        short item = LoWord(result);
+        short item = static_cast<short>(result & 0xFFFF);
         if (item > 0) {
             UInt8 newAlign = (item == 1) ? 2 : (item == 3) ? 1 : 0;
             PushUndo();
