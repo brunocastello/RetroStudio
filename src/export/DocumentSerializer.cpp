@@ -6,7 +6,7 @@
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
 static const UInt32 kMagic   = 0x52535444;  // 'RSTD'
-static const UInt16 kVersion = 2;
+static const UInt16 kVersion = 3;
 
 // Folder Manager constants — defined here because Retro68 Carbon headers
 // don't always expose <Folders.h> constants via <Carbon.h>.
@@ -78,6 +78,7 @@ static void WriteShape(Writer& w, const Shape& s) {
     w.w8(s.hasFill    ? 1 : 0);
     w.w8(s.hasStroke  ? 1 : 0);
     w.w8(s.visible    ? 1 : 0);
+    w.w8(s.locked     ? 1 : 0);
     w.w16(s.strokeWidth);
     w.w8(s.strokeAlign);
     if (s.GetType() == Shape::kRectangle)
@@ -95,6 +96,7 @@ static std::unique_ptr<Shape> ReadShape(Reader& r) {
     bool hasFill    = r.r8() != 0;
     bool hasStroke  = r.r8() != 0;
     bool visible    = r.r8() != 0;
+    bool locked     = r.r8() != 0;
     UInt16 sw       = r.r16();
     UInt8  sa       = r.r8();
 
@@ -115,6 +117,7 @@ static std::unique_ptr<Shape> ReadShape(Reader& r) {
     shape->hasFill     = hasFill;
     shape->hasStroke   = hasStroke;
     shape->visible     = visible;
+    shape->locked      = locked;
     shape->strokeWidth = sw;
     shape->strokeAlign = sa;
     shape->name        = r.rStr();
@@ -135,6 +138,7 @@ static void WriteFrame(Writer& w, const Frame& f) {
     w.w16(f.strokeWidth);
     w.w8(f.strokeAlign);
     w.w8(f.visible     ? 1 : 0);
+    w.w8(f.locked      ? 1 : 0);
     w.w8(f.clipContent ? 1 : 0);
 
     w.w16(static_cast<UInt16>(f.children.size()));
@@ -158,6 +162,7 @@ static std::unique_ptr<Frame> ReadFrame(Reader& r, Frame* parent) {
     f->strokeWidth = r.r16();
     f->strokeAlign = r.r8();
     f->visible     = r.r8() != 0;
+    f->locked      = r.r8() != 0;
     f->clipContent = r.r8() != 0;
 
     UInt16 nShapes = r.r16();

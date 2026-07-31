@@ -36,6 +36,7 @@ public:
     UInt16      strokeWidth = 1;
     UInt8       strokeAlign = 0;  // 0=center 1=inside 2=outside
     bool        visible     = true;
+    bool        locked      = false;
     std::string name;
 };
 

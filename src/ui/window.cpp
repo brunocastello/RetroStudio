@@ -640,6 +640,10 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal) {
         }
     }
 
+    // Locked objects cannot be selected
+    if (hitShape && hitShape->locked) { hitFrame = nullptr; hitShape = nullptr; found = false; }
+    else if (!hitShape && hitFrame && hitFrame->locked) { hitFrame = nullptr; found = false; }
+
     gSelectedFrame = hitFrame;
     gSelectedShape = hitShape;
 
@@ -955,6 +959,7 @@ static std::unique_ptr<Frame> CloneFrame(const Frame* src, Frame* newParent) {
     f->strokeWidth     = src->strokeWidth;
     f->strokeAlign     = src->strokeAlign;
     f->visible         = src->visible;
+    f->locked          = src->locked;
     f->clipContent     = src->clipContent;
     f->parent          = newParent;
     for (const auto& s : src->children)

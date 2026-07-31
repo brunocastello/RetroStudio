@@ -25,7 +25,8 @@ static void InvalidateLayers() {
     Rect r; GetWindowPortBounds(gLayersWindow, &r); InvalWindowRect(gLayersWindow, &r);
 }
 
-static const short kEyeColW = 18;  // rightmost N pixels reserved for eye toggle
+static const short kEyeColW  = 18;  // rightmost N pixels: eye toggle
+static const short kLockColW = 18;  // next N pixels left of eye: lock toggle
 
 // --------------------------------------------------------------------------
 // Setup
@@ -51,6 +52,32 @@ void SetupLayersPanel() {
 // --------------------------------------------------------------------------
 // Row rendering
 // --------------------------------------------------------------------------
+
+static void DrawLock(short midX, short midY, bool locked, bool selected) {
+    RGBColor clr = selected ? RGBColor{ 0xFFFF, 0xFFFF, 0xFFFF }
+                            : RGBColor{ 0x9999, 0x9999, 0x9999 };
+    RGBForeColor(&clr);
+
+    // Body — small filled rectangle
+    Rect body = { static_cast<short>(midY),     static_cast<short>(midX - 4),
+                  static_cast<short>(midY + 4), static_cast<short>(midX + 4) };
+    PaintRect(&body);
+
+    // Shackle — inverted U drawn with lines
+    if (locked) {
+        // Closed: shackle sits just above body
+        MoveTo(static_cast<short>(midX - 3), midY);
+        LineTo(static_cast<short>(midX - 3), static_cast<short>(midY - 3));
+        LineTo(static_cast<short>(midX + 3), static_cast<short>(midY - 3));
+        LineTo(static_cast<short>(midX + 3), midY);
+    } else {
+        // Open: right leg raised and disconnected
+        MoveTo(static_cast<short>(midX - 3), midY);
+        LineTo(static_cast<short>(midX - 3), static_cast<short>(midY - 3));
+        LineTo(static_cast<short>(midX + 3), static_cast<short>(midY - 3));
+        LineTo(static_cast<short>(midX + 3), static_cast<short>(midY - 5));
+    }
+}
 
 static void DrawEye(short midX, short midY, bool visible, bool selected) {
     RGBColor clr = selected ? RGBColor{ 0xFFFF, 0xFFFF, 0xFFFF }
@@ -79,7 +106,7 @@ static void DrawEye(short midX, short midY, bool visible, bool selected) {
 
 static short DrawRow(short y, short indent,
                      const std::string& label, bool selected,
-                     Shape::Type shapeType, bool isFrame, bool visible,
+                     Shape::Type shapeType, bool isFrame, bool visible, bool locked,
                      const Rect& portRect) {
     Rect row = { y, 2,
                  static_cast<short>(y + kLayerRowH - 1),
@@ -128,7 +155,11 @@ static short DrawRow(short y, short indent,
     MoveTo(static_cast<short>(iconX + 12), static_cast<short>(y + kLayerRowH - 6));
     DrawString(ps);
 
-    // Eye icon — right column
+    // Lock icon — second column from right
+    short lockMidX = static_cast<short>(portRect.right - kEyeColW - kLockColW / 2);
+    DrawLock(lockMidX, midY, locked, selected);
+
+    // Eye icon — rightmost column
     short eyeMidX = static_cast<short>(portRect.right - kEyeColW / 2);
     DrawEye(eyeMidX, midY, visible, selected);
 
@@ -139,7 +170,7 @@ static short DrawRow(short y, short indent,
 static short DrawFrameRows(const Frame* frame, short y, short indent, const Rect& portRect) {
     bool fsel = (gSelectedFrame == frame && gSelectedShape == nullptr);
     y = DrawRow(y, indent, frame->name, fsel, Shape::kRectangle, true,
-                frame->visible, portRect);
+                frame->visible, frame->locked, portRect);
 
     for (auto it = frame->childFrames.rbegin(); it != frame->childFrames.rend(); ++it)
         y = DrawFrameRows(it->get(), y, static_cast<short>(indent + 10), portRect);
@@ -150,7 +181,7 @@ static short DrawFrameRows(const Frame* frame, short y, short indent, const Rect
         std::string lbl = s->name;
         if (lbl.empty()) lbl = (s->GetType() == Shape::kEllipse) ? "Ellipse" : "Rectangle";
         y = DrawRow(y, static_cast<short>(indent + 10), lbl, ssel, s->GetType(), false,
-                    s->visible, portRect);
+                    s->visible, s->locked, portRect);
     }
     return y;
 }
@@ -176,7 +207,7 @@ void DrawLayersPanel() {
         bool sel = (gSelectedShape == s && gSelectedFrame == nullptr);
         std::string lbl = s->name;
         if (lbl.empty()) lbl = (s->GetType() == Shape::kEllipse) ? "Ellipse" : "Rectangle";
-        y = DrawRow(y, 0, lbl, sel, s->GetType(), false, s->visible, portRect);
+        y = DrawRow(y, 0, lbl, sel, s->GetType(), false, s->visible, s->locked, portRect);
     }
 
     for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend(); ++it)
@@ -192,14 +223,17 @@ void DrawLayersPanel() {
 // --------------------------------------------------------------------------
 
 static short HitTestFrameRows(Frame* frame, short y, short indent,
-                               Point pt, const Rect& portRect, bool eyeZone) {
+                               Point pt, const Rect& portRect,
+                               bool eyeZone, bool lockZone) {
     Rect row = { y, 2,
                  static_cast<short>(y + kLayerRowH - 1),
                  static_cast<short>(portRect.right - 2) };
     if (PtInRect(pt, &row)) {
         if (eyeZone) {
-            PushUndo();
-            frame->visible = !frame->visible;
+            PushUndo(); frame->visible = !frame->visible;
+            InvalidateLayers(); InvalidateMain();
+        } else if (lockZone) {
+            PushUndo(); frame->locked = !frame->locked;
             InvalidateLayers(); InvalidateMain();
         } else {
             gSelectedFrame = frame; gSelectedShape = nullptr;
@@ -211,7 +245,7 @@ static short HitTestFrameRows(Frame* frame, short y, short indent,
 
     for (auto it = frame->childFrames.rbegin(); it != frame->childFrames.rend(); ++it) {
         y = HitTestFrameRows(it->get(), y, static_cast<short>(indent + 10),
-                             pt, portRect, eyeZone);
+                             pt, portRect, eyeZone, lockZone);
         if (y == -1) return -1;
     }
     for (auto it = frame->children.rbegin(); it != frame->children.rend(); ++it) {
@@ -221,8 +255,10 @@ static short HitTestFrameRows(Frame* frame, short y, short indent,
                     static_cast<short>(portRect.right - 2) };
         if (PtInRect(pt, &sr)) {
             if (eyeZone) {
-                PushUndo();
-                s->visible = !s->visible;
+                PushUndo(); s->visible = !s->visible;
+                InvalidateLayers(); InvalidateMain();
+            } else if (lockZone) {
+                PushUndo(); s->locked = !s->locked;
                 InvalidateLayers(); InvalidateMain();
             } else {
                 gSelectedFrame = frame; gSelectedShape = s;
@@ -242,7 +278,8 @@ void HandleLayersPanelClick(Point localPt) {
     Rect portRect;
     GetWindowPortBounds(gLayersWindow, &portRect);
 
-    bool eyeZone = (localPt.h >= portRect.right - kEyeColW);
+    bool eyeZone  = (localPt.h >= portRect.right - kEyeColW);
+    bool lockZone = !eyeZone && (localPt.h >= portRect.right - kEyeColW - kLockColW);
 
     // Double-click detection (only meaningful for selection clicks, not eye)
     static UInt32  sLastWhen  = 0;
@@ -258,10 +295,11 @@ void HandleLayersPanelClick(Point localPt) {
                      static_cast<short>(portRect.right - 2) };
         if (PtInRect(localPt, &row)) {
             if (eyeZone) {
-                PushUndo();
-                s->visible = !s->visible;
-                InvalidateLayers(); InvalidateMain();
-                return;
+                PushUndo(); s->visible = !s->visible;
+                InvalidateLayers(); InvalidateMain(); return;
+            } else if (lockZone) {
+                PushUndo(); s->locked = !s->locked;
+                InvalidateLayers(); InvalidateMain(); return;
             }
             gSelectedFrame = nullptr; gSelectedShape = s;
             InvalidateLayers(); InvalidateMain();
@@ -272,7 +310,7 @@ void HandleLayersPanelClick(Point localPt) {
 
     // Top-level frames
     for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend(); ++it) {
-        y = HitTestFrameRows(it->get(), y, 0, localPt, portRect, eyeZone);
+        y = HitTestFrameRows(it->get(), y, 0, localPt, portRect, eyeZone, lockZone);
         if (y == -1) {
             if (eyeZone) return;
             goto check_dbl;
