@@ -71,6 +71,7 @@ int main(int argc, char* argv[]) {
                                 HandleInspectorClick(localPt);
                             } else if (win == gMainWindow) {
                                 if (win != FrontWindow()) { SelectWindow(win); break; }
+                                CancelInspectorEdit();
                                 switch (gActiveTool) {
                                     case Tool::Select:
                                         HandleCanvasSelect(win, event.where);
@@ -118,6 +119,8 @@ int main(int argc, char* argv[]) {
                 case keyDown:
                 case autoKey: {
                     char key = static_cast<char>(event.message & charCodeMask);
+                    // Inspector numeric-field edit mode captures non-cmd keys first
+                    if (!(event.modifiers & cmdKey) && HandleInspectorKey(key)) break;
                     if (event.modifiers & cmdKey) {
                         // Cmd+Shift+Z = Redo (secondary shortcut; primary is Cmd+Y via menu)
                         if ((event.modifiers & shiftKey) && (key == 'Z' || key == 'z')) {

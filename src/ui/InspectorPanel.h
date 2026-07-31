@@ -14,3 +14,10 @@ void SetupInspectorPanel();
 void DrawInspectorPanel();
 void HandleInspectorClick(Point localPt);
 void RefreshInspector();
+
+// Inline numeric field editing — call HandleInspectorKey from the main keyDown
+// handler (before menu shortcuts) when no modifier keys are held.
+// Returns true if the key was consumed by an active edit field.
+bool HandleInspectorKey(char key);
+bool InspectorInEditMode();
+void CancelInspectorEdit();  // discard any in-progress edit (e.g. on canvas click)

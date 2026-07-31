@@ -9,6 +9,10 @@ public:
     std::string name            = "Screen";
     Bounds2     bounds          = { 20, 20, 390, 844 };
     RGBColor    backgroundColor = { 0xFFFF, 0xFFFF, 0xFFFF };
+    bool        hasStroke       = false;
+    RGBColor    strokeColor     = { 0, 0, 0 };
+    UInt16      strokeWidth     = 1;
+    UInt8       strokeAlign     = 0;  // 0=center 1=inside 2=outside
     bool        visible         = true;
     bool        clipContent     = true;
 

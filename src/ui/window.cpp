@@ -274,8 +274,11 @@ static void DrawShape(const Shape& shape) {
             }
             if (shape.hasStroke) {
                 RGBColor c = shape.strokeColor; RGBForeColor(&c);
-                PenSize(shape.strokeWidth, shape.strokeWidth);
-                FrameRect(&r); PenSize(1,1);
+                short sw = static_cast<short>(shape.strokeWidth);
+                Rect sr = r;
+                if (shape.strokeAlign == 2) { sr.top-=sw; sr.left-=sw; sr.bottom+=sw; sr.right+=sw; }
+                else if (shape.strokeAlign == 0) { short e=sw/2; sr.top-=e; sr.left-=e; sr.bottom+=e; sr.right+=e; }
+                PenSize(sw, sw); FrameRect(&sr); PenSize(1, 1);
             }
             break;
         case Shape::kEllipse:
@@ -284,8 +287,11 @@ static void DrawShape(const Shape& shape) {
             }
             if (shape.hasStroke) {
                 RGBColor c = shape.strokeColor; RGBForeColor(&c);
-                PenSize(shape.strokeWidth, shape.strokeWidth);
-                FrameOval(&r); PenSize(1,1);
+                short sw = static_cast<short>(shape.strokeWidth);
+                Rect sr = r;
+                if (shape.strokeAlign == 2) { sr.top-=sw; sr.left-=sw; sr.bottom+=sw; sr.right+=sw; }
+                else if (shape.strokeAlign == 0) { short e=sw/2; sr.top-=e; sr.left-=e; sr.bottom+=e; sr.right+=e; }
+                PenSize(sw, sw); FrameOval(&sr); PenSize(1, 1);
             }
             break;
         default: break;
@@ -313,10 +319,18 @@ static void DrawFrame(const Frame& frame) {
     for (const auto& cf : frame.childFrames)
         DrawFrame(*cf);
 
-    // Thin border (on top of everything in this frame)
-    RGBColor border = { 0xBBBB, 0xBBBB, 0xBBBB };
-    RGBForeColor(&border);
-    FrameRect(&r);
+    // Stroke or default thin border
+    if (frame.hasStroke) {
+        RGBColor c = frame.strokeColor; RGBForeColor(&c);
+        short sw = static_cast<short>(frame.strokeWidth);
+        Rect sr = r;
+        if (frame.strokeAlign == 2) { sr.top-=sw; sr.left-=sw; sr.bottom+=sw; sr.right+=sw; }
+        else if (frame.strokeAlign == 0) { short e=sw/2; sr.top-=e; sr.left-=e; sr.bottom+=e; sr.right+=e; }
+        PenSize(sw, sw); FrameRect(&sr); PenSize(1, 1);
+    } else {
+        RGBColor border = { 0xBBBB, 0xBBBB, 0xBBBB };
+        RGBForeColor(&border); FrameRect(&r);
+    }
 
     // Name label above top-left corner
     RGBColor lc = { 0x4444, 0x4444, 0x4444 };
@@ -936,6 +950,10 @@ static std::unique_ptr<Frame> CloneFrame(const Frame* src, Frame* newParent) {
     f->name            = src->name;
     f->bounds          = src->bounds;
     f->backgroundColor = src->backgroundColor;
+    f->hasStroke       = src->hasStroke;
+    f->strokeColor     = src->strokeColor;
+    f->strokeWidth     = src->strokeWidth;
+    f->strokeAlign     = src->strokeAlign;
     f->visible         = src->visible;
     f->clipContent     = src->clipContent;
     f->parent          = newParent;
