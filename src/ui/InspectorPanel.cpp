@@ -19,9 +19,7 @@ static Rect sStrokeToggleRect    = {0, 0, 0, 0};
 static Rect sStrokeSwatchRect    = {0, 0, 0, 0};
 static Rect sStrokeWidthDownRect = {0, 0, 0, 0};
 static Rect sStrokeWidthUpRect   = {0, 0, 0, 0};
-static Rect sStrokeAlignOutRect  = {0, 0, 0, 0};
-static Rect sStrokeAlignCtrRect  = {0, 0, 0, 0};
-static Rect sStrokeAlignInRect   = {0, 0, 0, 0};
+static Rect sStrokeAlignRect     = {0, 0, 0, 0};  // popup dropdown trigger
 static Rect sFieldXRect          = {0, 0, 0, 0};
 static Rect sFieldYRect          = {0, 0, 0, 0};
 static Rect sFieldWRect          = {0, 0, 0, 0};
@@ -105,8 +103,8 @@ static short DrawSectionHeader(short y, const char* title, const Rect& pr) {
 static short DrawNumField(short x, short y, short boxW, EditField field,
                           SInt32 value, Rect& outRect) {
     Str255 ps;
-    outRect = { static_cast<short>(y - 1), static_cast<short>(x - 2),
-                static_cast<short>(y + 13), static_cast<short>(x + boxW) };
+    outRect = { static_cast<short>(y - 10), static_cast<short>(x - 2),
+                static_cast<short>(y + 3),  static_cast<short>(x + boxW) };
 
     if (sActiveField == field) {
         RGBColor bg = { 0xFFFF, 0xFFFF, 0xFFFF };
@@ -262,7 +260,7 @@ void DrawInspectorPanel() {
     // Reset all hit-test rects each frame
     sFillSwatchRect = sStrokeToggleRect = sStrokeSwatchRect = {0,0,0,0};
     sStrokeWidthDownRect = sStrokeWidthUpRect = {0,0,0,0};
-    sStrokeAlignOutRect = sStrokeAlignCtrRect = sStrokeAlignInRect = {0,0,0,0};
+    sStrokeAlignRect = {0,0,0,0};
     sFieldXRect = sFieldYRect = sFieldWRect = sFieldHRect = sFieldSwRect = {0,0,0,0};
 
     if (!gSelectedFrame && !gSelectedShape) {
@@ -365,31 +363,34 @@ void DrawInspectorPanel() {
 
         y = static_cast<short>(y + 22);
 
-        // Alignment buttons: [Out] [Ctr] [In]
-        RGBColor selBg  = { 0x3333, 0x6666, 0xCCCC };
-        RGBColor unsBg  = { 0xEEEE, 0xEEEE, 0xEEEE };
-        RGBColor selTc  = { 0xFFFF, 0xFFFF, 0xFFFF };
-        RGBColor unsTc  = { 0x3333, 0x3333, 0x3333 };
+        // Stroke alignment — popup dropdown control
+        const char* alignName = (strokeAlign == 2) ? "Outside" :
+                                (strokeAlign == 1) ? "Inside"  : "Center";
+        sStrokeAlignRect = { static_cast<short>(y+1), 6,
+                             static_cast<short>(y+15), 142 };
 
-        struct AlignBtn { const char* label; UInt8 val; Rect* rect; };
-        AlignBtn btns[3] = {
-            { "Out", 2, &sStrokeAlignOutRect },
-            { "Ctr", 0, &sStrokeAlignCtrRect },
-            { "In",  1, &sStrokeAlignInRect  },
-        };
-        short bx = 6;
-        for (int i = 0; i < 3; ++i) {
-            bool sel = (strokeAlign == btns[i].val);
-            *btns[i].rect = { static_cast<short>(y+1), bx,
-                               static_cast<short>(y+15), static_cast<short>(bx+42) };
-            RGBForeColor(sel ? &selBg : &unsBg); PaintRect(btns[i].rect);
-            RGBForeColor(&cbBd); FrameRect(btns[i].rect);
-            RGBForeColor(sel ? &selTc : &unsTc); TextSize(9);
-            PStrC(btns[i].label, ps);
-            MoveTo(static_cast<short>(bx+7), static_cast<short>(y+11)); DrawString(ps);
-            TextSize(11);
-            bx = static_cast<short>(bx + 46);
+        // White background + border
+        RGBColor popBg = { 0xFFFF, 0xFFFF, 0xFFFF };
+        RGBForeColor(&popBg); PaintRect(&sStrokeAlignRect);
+        RGBForeColor(&cbBd); FrameRect(&sStrokeAlignRect);
+
+        // Current selection text
+        RGBForeColor(&valueClr); TextSize(10);
+        PStrC(alignName, ps);
+        MoveTo(10, static_cast<short>(y + 12)); DrawString(ps);
+        TextSize(11);
+
+        // Separator + filled downward triangle (classic popup arrow)
+        RGBForeColor(&cbBd);
+        MoveTo(128, static_cast<short>(y+1));
+        LineTo(128, static_cast<short>(y+14));
+        RGBForeColor(&labelClr);
+        short tx = 131, ty = static_cast<short>(y + 4);
+        for (short di = 0; di < 5; ++di) {
+            MoveTo(static_cast<short>(tx + di),     static_cast<short>(ty + di));
+            LineTo(static_cast<short>(tx + 8 - di), static_cast<short>(ty + di));
         }
+
         y = static_cast<short>(y + 20);
     } else {
         RGBForeColor(&hint); TextSize(9);
@@ -592,17 +593,36 @@ void HandleInspectorClick(Point localPt) {
         return;
     }
 
-    // Stroke alignment
-    auto applyAlign = [](UInt8 align) {
-        PushUndo();
-        if (gSelectedShape) gSelectedShape->strokeAlign = align;
-        else                gSelectedFrame->strokeAlign = align;
-        InvalidateInspector();
-        if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
-    };
-    if (PtInRect(localPt, &sStrokeAlignOutRect)) { applyAlign(2); return; }
-    if (PtInRect(localPt, &sStrokeAlignCtrRect)) { applyAlign(0); return; }
-    if (PtInRect(localPt, &sStrokeAlignInRect))  { applyAlign(1); return; }
+    // Stroke alignment — popup menu dropdown
+    if (PtInRect(localPt, &sStrokeAlignRect)) {
+        MenuRef popMenu = NewMenu(5001, "\p");
+        AppendMenu(popMenu, "\pOutside");
+        AppendMenu(popMenu, "\pCenter");
+        AppendMenu(popMenu, "\pInside");
+        InsertMenu(popMenu, -1);  // insert as popup (not in menu bar)
+
+        UInt8 curAlign = gSelectedShape ? gSelectedShape->strokeAlign : gSelectedFrame->strokeAlign;
+        short popItem = (curAlign == 2) ? 1 : (curAlign == 1) ? 3 : 2;
+
+        Point popPt = { sStrokeAlignRect.top, sStrokeAlignRect.left };
+        SetPortWindowPort(gInspectorWindow);
+        LocalToGlobal(&popPt);
+
+        long result = PopUpMenuSelect(popMenu, popPt.v, popPt.h, popItem);
+        DeleteMenu(5001);
+        DisposeMenu(popMenu);
+
+        short item = LoWord(result);
+        if (item > 0) {
+            UInt8 newAlign = (item == 1) ? 2 : (item == 3) ? 1 : 0;
+            PushUndo();
+            if (gSelectedShape) gSelectedShape->strokeAlign = newAlign;
+            else                gSelectedFrame->strokeAlign = newAlign;
+            InvalidateInspector();
+            if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
+        }
+        return;
+    }
 
     // Editable numeric fields
     Bounds2 bounds = gSelectedShape ? gSelectedShape->bounds : gSelectedFrame->bounds;
