@@ -467,6 +467,15 @@ void DrawInspectorPanel() {
 bool HandleInspectorKey(char key) {
     if (sActiveField == kNoField) return false;
 
+    // If the object was locked while an edit was in progress, cancel it
+    bool isLocked = (gSelectedShape ? gSelectedShape->locked
+                                    : (gSelectedFrame ? gSelectedFrame->locked : false));
+    if (isLocked) {
+        sActiveField = kNoField; sEditLen = 0; sEditBuf[0] = '\0';
+        InvalidateInspector();
+        return false;
+    }
+
     if (key == 0x1B) {  // Escape — cancel
         sActiveField = kNoField; sEditLen = 0; sEditBuf[0] = '\0';
         InvalidateInspector();
@@ -547,6 +556,11 @@ void CancelInspectorEdit() {
 void HandleInspectorClick(Point localPt) {
     if (!gDocument) return;
     if (!gSelectedFrame && !gSelectedShape) return;
+
+    // Locked objects are read-only — no inspector edits allowed
+    bool isLocked = gSelectedShape ? gSelectedShape->locked
+                                   : gSelectedFrame->locked;
+    if (isLocked) return;
 
     // Cancel any active edit when clicking elsewhere in the inspector
     CancelInspectorEdit();
