@@ -119,12 +119,12 @@ int main(int argc, char* argv[]) {
                 case autoKey: {
                     char key = static_cast<char>(event.message & charCodeMask);
                     if (event.modifiers & cmdKey) {
-                        // Cmd+Shift+Z = Redo (not expressible as a plain menu cmd key)
-                        if ((event.modifiers & shiftKey) && key == 'Z') {
+                        // Cmd+Shift+Z = Redo (secondary shortcut; primary is Cmd+Y via menu)
+                        if ((event.modifiers & shiftKey) && (key == 'Z' || key == 'z')) {
                             PerformRedo();
                             HiliteMenu(0);
                         } else {
-                        HandleMenuCommand(MenuKey(key));
+                            HandleMenuCommand(MenuKey(key));
                         }
                     } else {
                         Tool prev = gActiveTool;

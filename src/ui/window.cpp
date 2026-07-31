@@ -44,8 +44,11 @@ static const short kViewZoomFit = 4;
 static const short kViewZoom100 = 5;
 // Edit menu items
 static const short kEditUndo    = 1;
-static const short kEditCopy    = 4;
-static const short kEditPaste   = 5;
+static const short kEditRedo    = 2;
+// item 3 = separator
+// item 4 = Cut
+static const short kEditCopy    = 5;
+static const short kEditPaste   = 6;
 
 // --------------------------------------------------------------------------
 // Small helpers
@@ -186,14 +189,16 @@ void SetupMenus() {
 
     MenuRef editMenu = NewMenu(kEditMenuID, "\pEdit");
     AppendMenu(editMenu, "\pUndo");
-    SetItemCmd(editMenu, 1, 'Z');
+    SetItemCmd(editMenu, kEditUndo, 'Z');
+    AppendMenu(editMenu, "\pRedo");
+    SetItemCmd(editMenu, kEditRedo, 'Y');
     AppendMenu(editMenu, "\p-");
     AppendMenu(editMenu, "\pCut");
-    SetItemCmd(editMenu, 3, 'X');
+    SetItemCmd(editMenu, 4, 'X');
     AppendMenu(editMenu, "\pCopy");
-    SetItemCmd(editMenu, 4, 'C');
+    SetItemCmd(editMenu, kEditCopy, 'C');
     AppendMenu(editMenu, "\pPaste");
-    SetItemCmd(editMenu, 5, 'V');
+    SetItemCmd(editMenu, kEditPaste, 'V');
     InsertMenu(editMenu, 0);
 
     MenuRef viewMenu = NewMenu(kViewMenuID, "\pView");
@@ -960,13 +965,12 @@ void PushUndo() {
         sUndoStack.erase(sUndoStack.begin());
 }
 
-static void RestoreSnapshot(std::vector<std::unique_ptr<Document>>& from,
-                             std::vector<std::unique_ptr<Document>>& to) {
-    if (from.empty()) return;
-    to.push_back(CloneDocument(gDocument));
+void PerformUndo() {
+    if (sUndoStack.empty()) return;
+    sRedoStack.push_back(CloneDocument(gDocument));
     delete gDocument;
-    gDocument      = from.back().release();
-    from.pop_back();
+    gDocument = sUndoStack.back().release();
+    sUndoStack.pop_back();
     gSelectedFrame = nullptr;
     gSelectedShape = nullptr;
     Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
@@ -974,8 +978,18 @@ static void RestoreSnapshot(std::vector<std::unique_ptr<Document>>& from,
     RefreshInspector();
 }
 
-void PerformUndo() { RestoreSnapshot(sUndoStack, sRedoStack); }
-void PerformRedo() { RestoreSnapshot(sRedoStack, sUndoStack); }
+void PerformRedo() {
+    if (sRedoStack.empty()) return;
+    sUndoStack.push_back(CloneDocument(gDocument));
+    delete gDocument;
+    gDocument = sRedoStack.back().release();
+    sRedoStack.pop_back();
+    gSelectedFrame = nullptr;
+    gSelectedShape = nullptr;
+    Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
+    RefreshLayersPanel();
+    RefreshInspector();
+}
 
 void CopySelected() {
     sClipFrame.reset();
@@ -1084,8 +1098,9 @@ void HandleMenuCommand(long menuResult) {
         }
     } else if (menuID == kEditMenuID) {
         switch (menuItem) {
-            case kEditUndo:  PerformUndo();   break;
-            case kEditCopy:  CopySelected();  break;
+            case kEditUndo:  PerformUndo();    break;
+            case kEditRedo:  PerformRedo();    break;
+            case kEditCopy:  CopySelected();   break;
             case kEditPaste: PasteClipboard(); break;
         }
     } else if (menuID == kViewMenuID) {
