@@ -382,8 +382,8 @@ void DrawInspectorPanel() {
             bool sel = (strokeAlign == btns[i].val);
             *btns[i].rect = { static_cast<short>(y+1), bx,
                                static_cast<short>(y+15), static_cast<short>(bx+42) };
-            RGBForeColor(sel ? &selBg : &unsBg); PaintRect(*btns[i].rect);
-            RGBForeColor(&cbBd); FrameRect(*btns[i].rect);
+            RGBForeColor(sel ? &selBg : &unsBg); PaintRect(btns[i].rect);
+            RGBForeColor(&cbBd); FrameRect(btns[i].rect);
             RGBForeColor(sel ? &selTc : &unsTc); TextSize(9);
             PStrC(btns[i].label, ps);
             MoveTo(static_cast<short>(bx+7), static_cast<short>(y+11)); DrawString(ps);
