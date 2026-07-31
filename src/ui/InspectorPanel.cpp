@@ -11,33 +11,6 @@
 #include "../core/Shape.h"
 #include <string>
 
-// Appearance Manager — types and DrawThemeButton not exposed by Retro68 Carbon
-// headers, but the symbol is present in CarbonLib at link time.
-typedef UInt16 ThemeButtonKind;
-typedef UInt16 ThemeDrawState;
-typedef UInt16 ThemeButtonValue;
-typedef UInt16 ThemeButtonAdornment;
-
-struct ThemeButtonDrawInfo {
-    ThemeDrawState       state;
-    ThemeButtonValue     value;
-    ThemeButtonAdornment adornment;
-};
-
-enum { kThemeStateActive = 0 };
-enum { kThemeButtonOff   = 0 };
-enum { kThemeAdornmentNone = 0 };
-enum { kThemePopupButton = 6 };
-
-extern "C" long DrawThemeButton(
-    const Rect*                bounds,
-    ThemeButtonKind            kind,
-    const ThemeButtonDrawInfo* info,
-    void*                      eraseProc,
-    void*                      labelProc,
-    unsigned long              userData,
-    long                       labelData);
-
 WindowRef gInspectorWindow = nullptr;
 
 // Hit-test rects — rebuilt every draw; {0,0,0,0} = not clickable this frame
@@ -390,22 +363,66 @@ void DrawInspectorPanel() {
 
         y = static_cast<short>(y + 22);
 
-        // Stroke alignment — native system popup button (Appearance Manager)
+        // Stroke alignment — Platinum-style popup button (QuickDraw)
         const char* alignName = (strokeAlign == 2) ? "Outside" :
                                 (strokeAlign == 1) ? "Inside"  : "Center";
         sStrokeAlignRect = { static_cast<short>(y+1), 6,
                              static_cast<short>(y+18), 142 };
 
         {
-            ThemeButtonDrawInfo btnInfo;
-            btnInfo.state     = kThemeStateActive;
-            btnInfo.value     = kThemeButtonOff;
-            btnInfo.adornment = kThemeAdornmentNone;
-            DrawThemeButton(&sStrokeAlignRect, kThemePopupButton,
-                            &btnInfo, nullptr, nullptr, 0, 0);
+            short aL = sStrokeAlignRect.left,  aT = sStrokeAlignRect.top;
+            short aR = sStrokeAlignRect.right, aB = sStrokeAlignRect.bottom;
 
-            RGBColor blk = { 0, 0, 0 }; RGBForeColor(&blk);
-            TextSize(11);
+            // Body fill: system gray
+            RGBColor platGray = { 0xCCCC, 0xCCCC, 0xCCCC };
+            RGBForeColor(&platGray); PaintRect(&sStrokeAlignRect);
+
+            // Outer black border
+            RGBColor blk = { 0, 0, 0 };
+            RGBForeColor(&blk); FrameRect(&sStrokeAlignRect);
+
+            // Top+left white inner bevel
+            RGBColor wht  = { 0xFFFF, 0xFFFF, 0xFFFF };
+            RGBColor shad = { 0x5555, 0x5555, 0x5555 };
+            RGBForeColor(&wht);
+            MoveTo(static_cast<short>(aL+1), static_cast<short>(aB-2));
+            LineTo(static_cast<short>(aL+1), static_cast<short>(aT+1));
+            LineTo(static_cast<short>(aR-2), static_cast<short>(aT+1));
+            // Bottom+right dark inner bevel
+            RGBForeColor(&shad);
+            MoveTo(static_cast<short>(aL+2), static_cast<short>(aB-1));
+            LineTo(static_cast<short>(aR-1), static_cast<short>(aB-1));
+            LineTo(static_cast<short>(aR-1), static_cast<short>(aT+2));
+
+            // Arrow section separator (16px from right)
+            short sepX = static_cast<short>(aR - 17);
+            RGBForeColor(&blk);
+            MoveTo(sepX, static_cast<short>(aT+1));
+            LineTo(sepX, static_cast<short>(aB-1));
+
+            // ▲▼ stacked triangles in right section
+            short arrX = static_cast<short>((sepX + aR) / 2);
+            short arrY = static_cast<short>((aT + aB) / 2);
+            RGBForeColor(&blk);
+
+            PolyHandle upPoly = OpenPoly();
+            MoveTo(arrX,                         static_cast<short>(arrY-4));
+            LineTo(static_cast<short>(arrX+3),   static_cast<short>(arrY-1));
+            LineTo(static_cast<short>(arrX-3),   static_cast<short>(arrY-1));
+            LineTo(arrX,                         static_cast<short>(arrY-4));
+            ClosePoly();
+            PaintPoly(upPoly); KillPoly(upPoly);
+
+            PolyHandle dnPoly = OpenPoly();
+            MoveTo(arrX,                         static_cast<short>(arrY+4));
+            LineTo(static_cast<short>(arrX+3),   static_cast<short>(arrY+1));
+            LineTo(static_cast<short>(arrX-3),   static_cast<short>(arrY+1));
+            LineTo(arrX,                         static_cast<short>(arrY+4));
+            ClosePoly();
+            PaintPoly(dnPoly); KillPoly(dnPoly);
+
+            // Selection text
+            RGBForeColor(&blk); TextSize(11);
             PStrC(alignName, ps);
             MoveTo(10, static_cast<short>(y + 13)); DrawString(ps);
         }
