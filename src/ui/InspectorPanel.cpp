@@ -29,14 +29,14 @@ enum { kThemeButtonOff   = 0 };
 enum { kThemeAdornmentNone = 0 };
 enum { kThemePopupButton = 6 };
 
-extern "C" OSStatus DrawThemeButton(
+extern "C" long DrawThemeButton(
     const Rect*                bounds,
     ThemeButtonKind            kind,
     const ThemeButtonDrawInfo* info,
     void*                      eraseProc,
     void*                      labelProc,
-    UInt32                     userData,
-    SInt32                     labelData);
+    unsigned long              userData,
+    long                       labelData);
 
 WindowRef gInspectorWindow = nullptr;
 
