@@ -612,8 +612,10 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal) {
     // ---- 1. Resize handle (only when something is already selected) ----
     int handleIdx = HitTestHandles(pt);
     if (handleIdx >= 0) {
-        HandleResizeDrag(win, handleIdx, pt);
-        return;  // selection unchanged; no re-parent after resize
+        bool selLocked = gSelectedShape ? gSelectedShape->locked
+                                        : (gSelectedFrame ? gSelectedFrame->locked : false);
+        if (!selLocked) HandleResizeDrag(win, handleIdx, pt);
+        return;
     }
 
     Frame* hitFrame = nullptr;
