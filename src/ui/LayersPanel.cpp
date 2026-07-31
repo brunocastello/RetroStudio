@@ -234,7 +234,6 @@ static short HitTestFrameRows(Frame* frame, short y, short indent,
             InvalidateLayers(); InvalidateMain();
         } else if (lockZone) {
             PushUndo(); frame->locked = !frame->locked;
-            if (frame->locked) { gSelectedFrame = nullptr; gSelectedShape = nullptr; }
             InvalidateLayers(); InvalidateMain();
         } else {
             gSelectedFrame = frame; gSelectedShape = nullptr;
@@ -260,7 +259,6 @@ static short HitTestFrameRows(Frame* frame, short y, short indent,
                 InvalidateLayers(); InvalidateMain();
             } else if (lockZone) {
                 PushUndo(); s->locked = !s->locked;
-                if (s->locked) { gSelectedShape = nullptr; gSelectedFrame = nullptr; }
                 InvalidateLayers(); InvalidateMain();
             } else {
                 gSelectedFrame = frame; gSelectedShape = s;
@@ -301,7 +299,6 @@ void HandleLayersPanelClick(Point localPt) {
                 InvalidateLayers(); InvalidateMain(); return;
             } else if (lockZone) {
                 PushUndo(); s->locked = !s->locked;
-                if (s->locked) { gSelectedShape = nullptr; gSelectedFrame = nullptr; }
                 InvalidateLayers(); InvalidateMain(); return;
             }
             gSelectedFrame = nullptr; gSelectedShape = s;

@@ -642,10 +642,6 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal) {
         }
     }
 
-    // Locked objects cannot be selected
-    if (hitShape && hitShape->locked) { hitFrame = nullptr; hitShape = nullptr; found = false; }
-    else if (!hitShape && hitFrame && hitFrame->locked) { hitFrame = nullptr; found = false; }
-
     gSelectedFrame = hitFrame;
     gSelectedShape = hitShape;
 
