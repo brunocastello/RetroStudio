@@ -13,8 +13,12 @@
 
 WindowRef gInspectorWindow = nullptr;
 
-// Hit-test rect for the fill/background color swatch — rebuilt each draw
-static Rect sFillSwatchRect = {0, 0, 0, 0};
+// Hit-test rects — rebuilt each draw; {0,0,0,0} = not visible/clickable this frame
+static Rect sFillSwatchRect      = {0, 0, 0, 0};
+static Rect sStrokeToggleRect    = {0, 0, 0, 0};
+static Rect sStrokeSwatchRect    = {0, 0, 0, 0};
+static Rect sStrokeWidthDownRect = {0, 0, 0, 0};
+static Rect sStrokeWidthUpRect   = {0, 0, 0, 0};
 
 // dBoxProc = 1  (shadowed dialog box, no title bar)
 static const short kDBoxProc = 1;
@@ -146,9 +150,9 @@ static void DrawSwatchPicker(WindowRef win) {
 }
 
 // Returns true and fills outColor if the user clicked a swatch; false = cancelled.
-static bool ShowColorSwatchPicker(RGBColor& outColor) {
-    // Anchor picker near the color swatch in the Inspector
-    Point anchor = { sFillSwatchRect.bottom, sFillSwatchRect.right };
+static bool ShowColorSwatchPicker(const Rect& anchorRect, RGBColor& outColor) {
+    // Anchor picker just below/left of the clicked swatch
+    Point anchor = { anchorRect.bottom, anchorRect.right };
     SetPortWindowPort(gInspectorWindow);
     LocalToGlobal(&anchor);
 
@@ -245,7 +249,7 @@ void SetupInspectorPanel() {
     pr.top    = static_cast<short>(tr.v + kLayersPanelHeight + 24);
     pr.left   = static_cast<short>(tr.h + 4);
     pr.right  = static_cast<short>(pr.left + kInspectorWidth);
-    pr.bottom = static_cast<short>(pr.top + 180);
+    pr.bottom = static_cast<short>(pr.top + 240);
 
     gInspectorWindow = NewCWindow(nullptr, &pr, "\pInspector", true,
                                   noGrowDocProc, (WindowRef)-1L, true, 0);
@@ -298,6 +302,12 @@ void DrawInspectorPanel() {
         objName   = gSelectedFrame->name;
     }
 
+    // Reset stroke hit-test rects every draw so stale clicks are ignored
+    sStrokeToggleRect    = {0, 0, 0, 0};
+    sStrokeSwatchRect    = {0, 0, 0, 0};
+    sStrokeWidthDownRect = {0, 0, 0, 0};
+    sStrokeWidthUpRect   = {0, 0, 0, 0};
+
     short y = 4;
 
     // ---------------------------------------------------------------- FILL --
@@ -322,6 +332,72 @@ void DrawInspectorPanel() {
     TextSize(11);
 
     y = static_cast<short>(y + 26);
+
+    // --------------------------------------------------------------- STROKE --
+    // Only shapes have stroke; frames don't expose it.
+    if (gSelectedShape) {
+        y = DrawSectionHeader(y, "STROKE", portRect);
+        y = static_cast<short>(y + 5);
+
+        bool hs = gSelectedShape->hasStroke;
+
+        // Checkbox toggle
+        sStrokeToggleRect = { static_cast<short>(y + 2), 5,
+                              static_cast<short>(y + 14), 17 };
+        RGBColor cbBorder = { 0x7777, 0x7777, 0x7777 };
+        RGBForeColor(&cbBorder);
+        FrameRect(&sStrokeToggleRect);
+        if (hs) {
+            // Filled square = "on"
+            RGBColor checked = { 0x3333, 0x6666, 0xCCCC };
+            RGBForeColor(&checked);
+            Rect inner = { static_cast<short>(y + 4), 7,
+                           static_cast<short>(y + 12), 15 };
+            PaintRect(&inner);
+        }
+
+        if (hs) {
+            // Stroke color swatch
+            sStrokeSwatchRect = { y, 22, static_cast<short>(y + 18), 58 };
+            RGBForeColor(&gSelectedShape->strokeColor);
+            PaintRect(&sStrokeSwatchRect);
+            RGBColor swBorder = { 0x7777, 0x7777, 0x7777 };
+            RGBForeColor(&swBorder);
+            FrameRect(&sStrokeSwatchRect);
+
+            // Width label + value
+            RGBColor labelClr2 = { 0x6666, 0x6666, 0x6666 };
+            RGBColor valueClr2 = { 0x1111, 0x1111, 0x1111 };
+            RGBForeColor(&labelClr2);
+            PStrC("W", ps); MoveTo(64, static_cast<short>(y + 13)); DrawString(ps);
+            RGBForeColor(&valueClr2);
+            PStr(numStr(static_cast<SInt32>(gSelectedShape->strokeWidth)), ps);
+            MoveTo(78, static_cast<short>(y + 13)); DrawString(ps);
+
+            // Minus button
+            sStrokeWidthDownRect = { static_cast<short>(y + 2), 106,
+                                     static_cast<short>(y + 14), 118 };
+            RGBForeColor(&cbBorder); FrameRect(&sStrokeWidthDownRect);
+            RGBForeColor(&valueClr2);
+            PStrC("-", ps); MoveTo(110, static_cast<short>(y + 12)); DrawString(ps);
+
+            // Plus button
+            sStrokeWidthUpRect = { static_cast<short>(y + 2), 121,
+                                   static_cast<short>(y + 14), 133 };
+            RGBForeColor(&cbBorder); FrameRect(&sStrokeWidthUpRect);
+            RGBForeColor(&valueClr2);
+            PStrC("+", ps); MoveTo(125, static_cast<short>(y + 12)); DrawString(ps);
+        } else {
+            // Stroke off — dim "None" hint
+            RGBColor hint = { 0x9999, 0x9999, 0x9999 };
+            RGBForeColor(&hint);
+            TextSize(9);
+            PStrC("None", ps); MoveTo(22, static_cast<short>(y + 12)); DrawString(ps);
+            TextSize(11);
+        }
+
+        y = static_cast<short>(y + 26);
+    }
 
     // ---------------------------------------------------------- POSITION --
     y = DrawSectionHeader(y, "POSITION", portRect);
@@ -386,7 +462,7 @@ void HandleInspectorClick(Point localPt) {
         changed = GetColor(where, prompt, &currentColor, &newColor);
 #else
         // Emulator-safe built-in swatch picker (24 presets, no extensions)
-        changed = ShowColorSwatchPicker(newColor);
+        changed = ShowColorSwatchPicker(sFillSwatchRect, newColor);
 #endif
 
         if (changed) {
@@ -402,6 +478,57 @@ void HandleInspectorClick(Point localPt) {
                 InvalWindowRect(gMainWindow, &r);
             }
         }
+    }
+
+    // Stroke toggle checkbox
+    if (gSelectedShape && PtInRect(localPt, &sStrokeToggleRect)) {
+        PushUndo();
+        gSelectedShape->hasStroke = !gSelectedShape->hasStroke;
+        InvalidateInspector();
+        if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
+        return;
+    }
+
+    // Stroke color swatch
+    if (gSelectedShape && gSelectedShape->hasStroke && PtInRect(localPt, &sStrokeSwatchRect)) {
+        RGBColor newColor = gSelectedShape->strokeColor;
+        bool changed = false;
+#ifdef USE_SYSTEM_COLOR_PICKER
+        Str255 prompt; PStrC("Choose Stroke Color", prompt);
+        Point where = {-1, -1};
+        changed = GetColor(where, prompt, &newColor, &newColor);
+#else
+        changed = ShowColorSwatchPicker(sStrokeSwatchRect, newColor);
+#endif
+        if (changed) {
+            PushUndo();
+            gSelectedShape->strokeColor = newColor;
+            InvalidateInspector();
+            if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
+        }
+        return;
+    }
+
+    // Stroke width decrease
+    if (gSelectedShape && gSelectedShape->hasStroke && PtInRect(localPt, &sStrokeWidthDownRect)) {
+        if (gSelectedShape->strokeWidth > 1) {
+            PushUndo();
+            gSelectedShape->strokeWidth = static_cast<UInt16>(gSelectedShape->strokeWidth - 1);
+            InvalidateInspector();
+            if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
+        }
+        return;
+    }
+
+    // Stroke width increase
+    if (gSelectedShape && gSelectedShape->hasStroke && PtInRect(localPt, &sStrokeWidthUpRect)) {
+        if (gSelectedShape->strokeWidth < 20) {
+            PushUndo();
+            gSelectedShape->strokeWidth = static_cast<UInt16>(gSelectedShape->strokeWidth + 1);
+            InvalidateInspector();
+            if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
+        }
+        return;
     }
 }
 
