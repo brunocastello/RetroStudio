@@ -363,35 +363,26 @@ void DrawInspectorPanel() {
 
         y = static_cast<short>(y + 22);
 
-        // Stroke alignment — popup dropdown control
+        // Stroke alignment — native system popup button via Appearance Manager
         const char* alignName = (strokeAlign == 2) ? "Outside" :
                                 (strokeAlign == 1) ? "Inside"  : "Center";
         sStrokeAlignRect = { static_cast<short>(y+1), 6,
-                             static_cast<short>(y+15), 142 };
+                             static_cast<short>(y+18), 142 };
 
-        // White background + border
-        RGBColor popBg = { 0xFFFF, 0xFFFF, 0xFFFF };
-        RGBForeColor(&popBg); PaintRect(&sStrokeAlignRect);
-        RGBForeColor(&cbBd); FrameRect(&sStrokeAlignRect);
+        ThemeButtonDrawInfo btnInfo;
+        btnInfo.state     = kThemeStateActive;
+        btnInfo.value     = kThemeButtonOff;
+        btnInfo.adornment = kThemeAdornmentNone;
+        DrawThemeButton(&sStrokeAlignRect, kThemePopupButton,
+                        &btnInfo, nullptr, nullptr, 0, 0);
 
-        // Current selection text
-        RGBForeColor(&valueClr); TextSize(10);
-        PStrC(alignName, ps);
-        MoveTo(10, static_cast<short>(y + 12)); DrawString(ps);
+        // Draw current selection text over the native chrome
+        RGBColor tc = {0, 0, 0}; RGBForeColor(&tc);
         TextSize(11);
+        PStrC(alignName, ps);
+        MoveTo(10, static_cast<short>(y + 13)); DrawString(ps);
 
-        // Separator + filled downward triangle (classic popup arrow)
-        RGBForeColor(&cbBd);
-        MoveTo(128, static_cast<short>(y+1));
-        LineTo(128, static_cast<short>(y+14));
-        RGBForeColor(&labelClr);
-        short tx = 131, ty = static_cast<short>(y + 4);
-        for (short di = 0; di < 5; ++di) {
-            MoveTo(static_cast<short>(tx + di),     static_cast<short>(ty + di));
-            LineTo(static_cast<short>(tx + 8 - di), static_cast<short>(ty + di));
-        }
-
-        y = static_cast<short>(y + 20);
+        y = static_cast<short>(y + 22);
     } else {
         RGBForeColor(&hint); TextSize(9);
         PStrC("None", ps); MoveTo(22, static_cast<short>(y+12)); DrawString(ps);
