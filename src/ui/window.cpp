@@ -191,7 +191,6 @@ void SetupMenus() {
     AppendMenu(editMenu, "\pUndo");
     SetItemCmd(editMenu, kEditUndo, 'Z');
     AppendMenu(editMenu, "\pRedo");
-    SetItemCmd(editMenu, kEditRedo, 'Y');
     AppendMenu(editMenu, "\p-");
     AppendMenu(editMenu, "\pCut");
     SetItemCmd(editMenu, 4, 'X');
