@@ -116,7 +116,7 @@ int main(int argc, char* argv[]) {
                                 else if (win == gInspectorWindow)
                                     HideWindow(gInspectorWindow);
                                 else if (win == gTypographyWindow)
-                                    HideWindow(gTypographyWindow);
+                                    ToggleTypographyPanel();  // also clears visibility flag
                             }
                             break;
                         case inZoomIn:

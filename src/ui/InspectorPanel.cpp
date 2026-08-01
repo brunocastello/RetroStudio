@@ -334,7 +334,7 @@ void DrawInspectorPanel() {
         sTypographyBtnRect = { static_cast<short>(y-16+1), static_cast<short>(portRect.right-26),
                                static_cast<short>(y-1),    static_cast<short>(portRect.right-2) };
         {
-            bool open = gTypographyWindow && IsWindowVisible(gTypographyWindow);
+            bool open = IsTypographyPanelVisible();
             if (open) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
             else      { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
             PaintRect(&sTypographyBtnRect);

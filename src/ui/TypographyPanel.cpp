@@ -5,6 +5,9 @@
 #include "../core/Shape.h"
 
 WindowRef gTypographyWindow = nullptr;
+static bool sTypographyVisible = false;
+
+bool IsTypographyPanelVisible() { return sTypographyVisible; }
 
 // --------------------------------------------------------------------------
 // Font + style name lists
@@ -312,10 +315,13 @@ void RefreshTypographyPanel() { InvalidateTypo(); }
 
 void ToggleTypographyPanel() {
     if (!gTypographyWindow) return;
-    if (IsWindowVisible(gTypographyWindow))
+    if (sTypographyVisible) {
         HideWindow(gTypographyWindow);
-    else
+        sTypographyVisible = false;
+    } else {
         ShowWindow(gTypographyWindow);
+        sTypographyVisible = true;
+    }
 }
 
 void CancelTypographyEdit() {

@@ -13,5 +13,6 @@ void HandleTypographyPanelClick(Point localPt);
 bool HandleTypographyPanelKey(char key);
 void RefreshTypographyPanel();
 void ToggleTypographyPanel();
+bool IsTypographyPanelVisible();
 void CancelTypographyEdit();
 bool TypographyInEditMode();
