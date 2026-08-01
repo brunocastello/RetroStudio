@@ -7,6 +7,7 @@
 
 #include "InspectorPanel.h"
 #include "LayersPanel.h"
+#include "TypographyPanel.h"
 #include "window.h"
 #include "../core/Shape.h"
 #include <string>
@@ -28,6 +29,7 @@ static Rect sFieldSwRect         = {0, 0, 0, 0};
 static Rect sFontSizeRect        = {0, 0, 0, 0};
 static Rect sBoldRect            = {0, 0, 0, 0};
 static Rect sItalicRect          = {0, 0, 0, 0};
+static Rect sTypographyBtnRect   = {0, 0, 0, 0};
 
 // Inline text-edit state for numeric fields
 enum EditField { kNoField, kFieldX, kFieldY, kFieldW, kFieldH, kFieldStrokeWidth, kFieldFontSize };
@@ -74,6 +76,7 @@ static void InvalidateInspector() {
 
 // Enter edit mode for a numeric field, pre-filling the buffer with its current value
 static void StartEdit(EditField field, SInt32 val) {
+    CancelTypographyEdit();
     sActiveField = field;
     sEditLen = 0;
     std::string s = numStr(val);
@@ -265,7 +268,7 @@ void DrawInspectorPanel() {
     sStrokeWidthDownRect = sStrokeWidthUpRect = {0,0,0,0};
     sStrokeAlignRect = {0,0,0,0};
     sFieldXRect = sFieldYRect = sFieldWRect = sFieldHRect = sFieldSwRect = {0,0,0,0};
-    sFontSizeRect = sBoldRect = sItalicRect = {0,0,0,0};
+    sFontSizeRect = sBoldRect = sItalicRect = sTypographyBtnRect = {0,0,0,0};
 
     if (!gSelectedFrame && !gSelectedShape) {
         RGBColor gray = { 0x9999, 0x9999, 0x9999 }; RGBForeColor(&gray); TextSize(10);
@@ -326,6 +329,23 @@ void DrawInspectorPanel() {
     if (isTextShape) {
         const TextShape& ts = static_cast<const TextShape&>(*gSelectedShape);
         y = DrawSectionHeader(y, "TEXT", portRect);
+
+        // "Aa" button in right corner of TEXT header opens/closes Typography panel
+        sTypographyBtnRect = { static_cast<short>(y-16+1), static_cast<short>(portRect.right-26),
+                               static_cast<short>(y-1),    static_cast<short>(portRect.right-2) };
+        {
+            bool open = gTypographyWindow && IsWindowVisible(gTypographyWindow);
+            if (open) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
+            else      { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
+            PaintRect(&sTypographyBtnRect);
+            RGBColor bd={0x7777,0x7777,0x7777}; RGBForeColor(&bd); FrameRect(&sTypographyBtnRect);
+            if (open) { RGBColor tc={0xFFFF,0xFFFF,0xFFFF}; RGBForeColor(&tc); }
+            else      { RGBColor tc={0x3333,0x3333,0x3333}; RGBForeColor(&tc); }
+            TextSize(9); PStrC("Aa", ps);
+            MoveTo(static_cast<short>(sTypographyBtnRect.left+3),
+                   static_cast<short>(sTypographyBtnRect.bottom-3));
+            DrawString(ps); TextSize(11);
+        }
         y = static_cast<short>(y + 5);
 
         // Font size field
@@ -731,6 +751,13 @@ void HandleInspectorClick(Point localPt) {
             InvalidateInspector();
             if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
         }
+        return;
+    }
+
+    // Aa button — toggle Typography panel
+    if (PtInRect(localPt, &sTypographyBtnRect)) {
+        ToggleTypographyPanel();
+        InvalidateInspector();
         return;
     }
 

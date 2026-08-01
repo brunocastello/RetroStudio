@@ -3,6 +3,7 @@
 #include "ui/Palette.h"
 #include "ui/LayersPanel.h"
 #include "ui/InspectorPanel.h"
+#include "ui/TypographyPanel.h"
 
 static void InitializeMacintosh() {
     InitCursor();
@@ -15,6 +16,7 @@ int main(int argc, char* argv[]) {
     SetupPalette();          // positioned relative to main window
     SetupLayersPanel();      // positioned relative to main window
     SetupInspectorPanel();   // positioned below layers panel
+    SetupTypographyPanel();  // positioned right of inspector (hidden initially)
 
     EventRecord event;
 
@@ -63,6 +65,13 @@ int main(int argc, char* argv[]) {
                                 GlobalToLocal(&localPt);
                                 HandleLayersPanelClick(localPt);
                                 RefreshInspector();
+                            } else if (win == gTypographyWindow) {
+                                if (win != FrontWindow()) SelectWindow(win);
+                                Point localPt = event.where;
+                                SetPortWindowPort(gTypographyWindow);
+                                GlobalToLocal(&localPt);
+                                HandleTypographyPanelClick(localPt);
+                                RefreshInspector();
                             } else if (win == gInspectorWindow) {
                                 if (win != FrontWindow()) SelectWindow(win);
                                 Point localPt = event.where;
@@ -106,6 +115,8 @@ int main(int argc, char* argv[]) {
                                     HideWindow(gLayersWindow);
                                 else if (win == gInspectorWindow)
                                     HideWindow(gInspectorWindow);
+                                else if (win == gTypographyWindow)
+                                    HideWindow(gTypographyWindow);
                             }
                             break;
                         case inZoomIn:
@@ -120,7 +131,8 @@ int main(int argc, char* argv[]) {
                 case keyDown:
                 case autoKey: {
                     char key = static_cast<char>(event.message & charCodeMask);
-                    // Inspector numeric-field edit mode captures non-cmd keys first
+                    // Inspector / Typography field edit modes capture non-cmd keys first
+                    if (!(event.modifiers & cmdKey) && HandleTypographyPanelKey(key)) break;
                     if (!(event.modifiers & cmdKey) && HandleInspectorKey(key)) break;
                     if (event.modifiers & cmdKey) {
                         // Cmd+Shift+Z = Redo (secondary shortcut; primary is Cmd+Y via menu)
@@ -173,6 +185,8 @@ int main(int argc, char* argv[]) {
                         DrawLayersPanel();
                     else if (win == gInspectorWindow)
                         DrawInspectorPanel();
+                    else if (win == gTypographyWindow)
+                        DrawTypographyPanel();
                     else
                         DrawWindowContent(win);
                     EndUpdate(win);

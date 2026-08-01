@@ -53,13 +53,17 @@ public:
     std::unique_ptr<Shape> Clone() const override { return std::make_unique<EllipseShape>(*this); }
 };
 
-// fillColor = text color; hasFill = true always; hasStroke = optional bounding-box border
+// fillColor = text color; hasStroke → QuickDraw outline rendered on text glyphs (not bounding box)
 class TextShape : public Shape {
 public:
     Type GetType() const override { return kText; }
     std::unique_ptr<Shape> Clone() const override { return std::make_unique<TextShape>(*this); }
 
-    std::string text     = "Text";
-    SInt16      fontSize = 14;
-    UInt8       fontFace = 0;  // QuickDraw style bits: bold=1, italic=2, underline=4
+    std::string text          = "Text";
+    SInt16      fontSize      = 14;
+    UInt8       fontFace      = 0;    // QuickDraw style bits: bold=1, italic=2, underline=4
+    std::string fontFamily    = "";   // empty = system font; "Helvetica" etc.
+    UInt8       textAlign     = 0;    // 0=left, 1=center, 2=right
+    UInt16      lineHeight    = 120;  // percent of font size (120 = 1.2em)
+    SInt16      letterSpacing = 0;    // extra canvas-px between characters (0=normal)
 };

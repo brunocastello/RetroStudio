@@ -300,11 +300,40 @@ static void DrawShape(const Shape& shape) {
             short scaledSize = static_cast<short>(SInt32(t.fontSize) * gCanvasZoom / 100);
             if (scaledSize < 4)   scaledSize = 4;
             if (scaledSize > 127) scaledSize = 127;
-            RGBColor tc = shape.fillColor; RGBForeColor(&tc);
-            TextFont(0); TextSize(scaledSize); TextFace(t.fontFace);
+
+            // Resolve font family → QuickDraw font ID
+            short fontID = 0;
+            if (!t.fontFamily.empty()) {
+                Str255 fname; fname[0] = 0;
+                for (int i = 0; i < (int)t.fontFamily.size() && i < 63; ++i) {
+                    fname[i+1] = static_cast<unsigned char>(t.fontFamily[i]); fname[0]++;
+                }
+                GetFNum(fname, &fontID);
+            }
+            TextFont(fontID); TextSize(scaledSize);
+
+            // Stroke renders as QuickDraw outline on glyphs (backColor=fill, foreColor=stroke)
+            // so the outline follows letter shapes rather than a bounding rectangle.
+            if (shape.hasStroke) {
+                RGBColor fc = shape.hasFill ? shape.fillColor : RGBColor{0xFFFF,0xFFFF,0xFFFF};
+                RGBBackColor(&fc);
+                RGBColor sc = shape.strokeColor; RGBForeColor(&sc);
+                TextFace(static_cast<short>(t.fontFace | 8));  // QuickDraw outline bit
+            } else if (shape.hasFill) {
+                RGBColor tc = shape.fillColor; RGBForeColor(&tc);
+                RGBColor wh = {0xFFFF,0xFFFF,0xFFFF}; RGBBackColor(&wh);
+                TextFace(t.fontFace);
+            } else {
+                TextFont(0); TextSize(12); break;  // nothing to draw
+            }
+
             const std::string& str = t.text;
-            short lineH = static_cast<short>(scaledSize + 2);
-            short drawY = static_cast<short>(r.top + scaledSize);
+            short lineH = static_cast<short>(SInt32(scaledSize) * t.lineHeight / 100);
+            if (lineH < 1) lineH = 1;
+            short drawY   = static_cast<short>(r.top + scaledSize);
+            short boxW    = static_cast<short>(r.right - r.left);
+            short lsxPx   = static_cast<short>(SInt32(t.letterSpacing) * gCanvasZoom / 100);
+
             if (!str.empty()) {
                 size_t pos = 0;
                 do {
@@ -315,20 +344,39 @@ static void DrawShape(const Shape& shape) {
                         for (size_t ci = 0; ci < len && ci < 63; ++ci) {
                             pline[ci+1] = static_cast<unsigned char>(str[pos+ci]); pline[0]++;
                         }
-                        MoveTo(r.left, drawY);
-                        DrawString(pline);
+                        // Line width for alignment
+                        short lw;
+                        if (lsxPx == 0) {
+                            lw = StringWidth(pline);
+                        } else {
+                            lw = 0;
+                            for (int ci = 1; ci <= pline[0]; ++ci)
+                                lw = static_cast<short>(lw + CharWidth((char)pline[ci]) + lsxPx);
+                        }
+                        // Alignment → start X
+                        short sx;
+                        if (t.textAlign == 1)      sx = static_cast<short>(r.left + (boxW - lw) / 2);
+                        else if (t.textAlign == 2) sx = static_cast<short>(r.right - lw);
+                        else                       sx = r.left;
+                        // Draw line
+                        if (lsxPx == 0) {
+                            MoveTo(sx, drawY); DrawString(pline);
+                        } else {
+                            short px = sx;
+                            for (int ci = 1; ci <= pline[0]; ++ci) {
+                                Str255 sc; sc[0]=1; sc[1]=pline[ci];
+                                MoveTo(px, drawY); DrawString(sc);
+                                px = static_cast<short>(px + CharWidth((char)pline[ci]) + lsxPx);
+                            }
+                        }
                     }
                     if (nl == std::string::npos) break;
-                    pos  = nl + 1;
+                    pos   = nl + 1;
                     drawY = static_cast<short>(drawY + lineH);
                 } while (pos < str.size());
             }
             TextFace(0); TextSize(12); TextFont(0);
-            if (shape.hasStroke) {
-                RGBColor sc = shape.strokeColor; RGBForeColor(&sc);
-                PenSize(shape.strokeWidth, shape.strokeWidth);
-                FrameRect(&r); PenSize(1, 1);
-            }
+            RGBColor wh = {0xFFFF,0xFFFF,0xFFFF}; RGBBackColor(&wh);
             break;
         }
         default: break;
@@ -590,8 +638,11 @@ static Shape* HitTestShapeLabel(const Frame* f, Point pt) {
         Shape* s = it->get();
         Rect r = CanvasRect(s->bounds);
         std::string label = s->name;
-        if (label.empty())
-            label = (s->GetType() == Shape::kEllipse) ? "Ellipse" : "Rectangle";
+        if (label.empty()) {
+            if      (s->GetType() == Shape::kEllipse) label = "Ellipse";
+            else if (s->GetType() == Shape::kText)    label = "Text";
+            else                                      label = "Rectangle";
+        }
         Str255 pn; ToPStr(label, pn);
         TextSize(10);
         short tw = StringWidth(pn);
@@ -635,6 +686,32 @@ static Frame* HitTestFrameLabel(Frame* f, Point pt) {
     return nullptr;
 }
 
+// Returns the shape and its immediate parent frame when the click hits a shape
+// name label, enabling drag-from-label (same as frames already support).
+struct ShapeLabelHit { Shape* shape = nullptr; Frame* parent = nullptr; };
+static ShapeLabelHit HitTestShapeLabelInFrame(Frame* f, Point pt) {
+    for (auto it = f->children.rbegin(); it != f->children.rend(); ++it) {
+        Shape* s = it->get();
+        Rect r = CanvasRect(s->bounds);
+        std::string lbl = s->name;
+        if (lbl.empty()) {
+            if      (s->GetType() == Shape::kEllipse) lbl = "Ellipse";
+            else if (s->GetType() == Shape::kText)    lbl = "Text";
+            else                                      lbl = "Rectangle";
+        }
+        Str255 pn; ToPStr(lbl, pn);
+        TextSize(10); short tw = StringWidth(pn); TextSize(12);
+        Rect lr = { static_cast<short>(r.top-16), r.left,
+                    static_cast<short>(r.top-1),  static_cast<short>(r.left+tw+4) };
+        if (PtInRect(pt, &lr)) return { s, f };
+    }
+    for (auto it = f->childFrames.rbegin(); it != f->childFrames.rend(); ++it) {
+        auto res = HitTestShapeLabelInFrame(it->get(), pt);
+        if (res.shape) return res;
+    }
+    return {};
+}
+
 // --------------------------------------------------------------------------
 // Select tool: resize handles → name labels → body hit-test → move + reparent
 // --------------------------------------------------------------------------
@@ -659,10 +736,36 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal) {
     Shape* hitShape = nullptr;
     bool   found    = false;
 
-    // ---- 2. Name label (frames only — labels are visible on canvas) ----
-    for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend() && !found; ++it) {
-        Frame* lf = HitTestFrameLabel(it->get(), pt);
-        if (lf) { hitFrame = lf; found = true; }
+    // ---- 2. Name label: shapes first (enables drag-from-label), then frames ----
+    if (!found) {
+        for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend() && !found; ++it) {
+            auto res = HitTestShapeLabelInFrame(it->get(), pt);
+            if (res.shape) { hitShape = res.shape; hitFrame = res.parent; found = true; }
+        }
+    }
+    if (!found) {
+        // rootShapes name labels
+        for (auto it = gDocument->rootShapes.rbegin(); it != gDocument->rootShapes.rend(); ++it) {
+            Shape* s = it->get();
+            Rect sr = CanvasRect(s->bounds);
+            std::string lbl = s->name;
+            if (lbl.empty()) {
+                if      (s->GetType() == Shape::kEllipse) lbl = "Ellipse";
+                else if (s->GetType() == Shape::kText)    lbl = "Text";
+                else                                      lbl = "Rectangle";
+            }
+            Str255 pn; ToPStr(lbl, pn);
+            TextSize(10); short tw = StringWidth(pn); TextSize(12);
+            Rect lr = { static_cast<short>(sr.top-16), sr.left,
+                        static_cast<short>(sr.top-1),  static_cast<short>(sr.left+tw+4) };
+            if (PtInRect(pt, &lr)) { hitShape = s; hitFrame = nullptr; found = true; break; }
+        }
+    }
+    if (!found) {
+        for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend() && !found; ++it) {
+            Frame* lf = HitTestFrameLabel(it->get(), pt);
+            if (lf) { hitFrame = lf; found = true; }
+        }
     }
 
     // ---- 3. Regular body hit-test ----
