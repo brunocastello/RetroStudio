@@ -18,6 +18,7 @@ extern SInt32     gCanvasOffsetY;
 extern int        gCanvasZoom;      // percent: 100 = 1:1, 200 = 2:1, 50 = 0.5:1
 extern int        gNextRectNum;
 extern int        gNextEllipseNum;
+extern int        gNextTextNum;
 
 // Canvas ↔ screen coordinate transforms
 Rect  CanvasRect(const Bounds2& b);  // canvas-space bounds → screen-space Mac Rect

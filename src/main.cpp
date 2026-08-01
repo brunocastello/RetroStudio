@@ -81,6 +81,7 @@ int main(int argc, char* argv[]) {
                                     case Tool::Frame:
                                     case Tool::Rectangle:
                                     case Tool::Ellipse:
+                                    case Tool::Text:
                                         HandleCanvasCreate(win, event.where);
                                         DrawPalette();
                                         RefreshLayersPanel();

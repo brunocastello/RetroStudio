@@ -16,8 +16,9 @@ bool       gIsDoubleClick = false;
 SInt32     gCanvasOffsetX = 0;
 SInt32     gCanvasOffsetY = 0;
 int        gCanvasZoom    = 100;
-int        gNextRectNum   = 1;
+int        gNextRectNum    = 1;
 int        gNextEllipseNum = 1;
+int        gNextTextNum    = 1;
 
 // In-memory clipboard (one item — either a frame or a shape, never both)
 static std::unique_ptr<Frame> sClipFrame;
@@ -294,6 +295,42 @@ static void DrawShape(const Shape& shape) {
                 PenSize(sw, sw); FrameOval(&sr); PenSize(1, 1);
             }
             break;
+        case Shape::kText: {
+            const TextShape& t = static_cast<const TextShape&>(shape);
+            short scaledSize = static_cast<short>(SInt32(t.fontSize) * gCanvasZoom / 100);
+            if (scaledSize < 4)   scaledSize = 4;
+            if (scaledSize > 127) scaledSize = 127;
+            RGBColor tc = shape.fillColor; RGBForeColor(&tc);
+            TextFont(0); TextSize(scaledSize); TextFace(t.fontFace);
+            const std::string& str = t.text;
+            short lineH = static_cast<short>(scaledSize + 2);
+            short drawY = static_cast<short>(r.top + scaledSize);
+            if (!str.empty()) {
+                size_t pos = 0;
+                do {
+                    size_t nl  = str.find('\n', pos);
+                    size_t len = (nl == std::string::npos) ? str.size() - pos : nl - pos;
+                    if (len > 0) {
+                        Str255 pline; pline[0] = 0;
+                        for (size_t ci = 0; ci < len && ci < 63; ++ci) {
+                            pline[ci+1] = static_cast<unsigned char>(str[pos+ci]); pline[0]++;
+                        }
+                        MoveTo(r.left, drawY);
+                        DrawString(pline);
+                    }
+                    if (nl == std::string::npos) break;
+                    pos  = nl + 1;
+                    drawY = static_cast<short>(drawY + lineH);
+                } while (pos < str.size());
+            }
+            TextFace(0); TextSize(12); TextFont(0);
+            if (shape.hasStroke) {
+                RGBColor sc = shape.strokeColor; RGBForeColor(&sc);
+                PenSize(shape.strokeWidth, shape.strokeWidth);
+                FrameRect(&r); PenSize(1, 1);
+            }
+            break;
+        }
         default: break;
     }
     DrawShapeNameLabel(shape);
@@ -750,6 +787,40 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal) {
 }
 
 // --------------------------------------------------------------------------
+// Text placement: click-to-place with inline TENew popup
+// --------------------------------------------------------------------------
+
+static void HandleTextPlace(WindowRef win, Point localPt, Point globalPt) {
+    std::string text = ShowRenameDialog("", globalPt);
+    if (text.empty()) return;
+
+    PushUndo();
+    Point cPt = ScreenToCanvas(localPt);
+
+    auto t       = std::make_unique<TextShape>();
+    t->name      = "Text " + istr(gNextTextNum++);
+    t->text      = text;
+    t->fontSize  = 14;
+    t->fontFace  = 0;
+    SInt32 tw = static_cast<SInt32>(text.size()) * 7 + 16;
+    if (tw < 40) tw = 40;
+    t->bounds    = { cPt.h, cPt.v, tw, 20 };
+    t->fillColor = { 0, 0, 0 };  // black text color
+    t->hasFill   = true;
+    t->hasStroke = false;
+
+    Frame* target  = DeepestFrameAt(localPt);
+    gSelectedShape = t.get();
+    gSelectedFrame = target;
+    if (target) target->children.push_back(std::move(t));
+    else        gDocument->rootShapes.push_back(std::move(t));
+
+    Rect portRect;
+    GetWindowPortBounds(win, &portRect);
+    InvalWindowRect(win, &portRect);
+}
+
+// --------------------------------------------------------------------------
 // Shape / Frame creation: rubber-band drag with active tool
 // --------------------------------------------------------------------------
 
@@ -759,6 +830,12 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
     SetPortWindowPort(win);
     Point startPt = startGlobal;
     GlobalToLocal(&startPt);
+
+    // Text tool: click-to-place (no rubber-band)
+    if (gActiveTool == Tool::Text) {
+        HandleTextPlace(win, startPt, startGlobal);
+        return;
+    }
 
     Point prevPt = startPt, currPt = startPt;
 
@@ -891,6 +968,7 @@ static void NewDocument() {
     gNextFrameNum   = 2;
     gNextRectNum    = 1;
     gNextEllipseNum = 1;
+    gNextTextNum    = 1;
     gCanvasOffsetX  = 0;
     gCanvasOffsetY  = 0;
     gCanvasZoom     = 100;

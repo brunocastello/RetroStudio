@@ -6,7 +6,7 @@
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
 static const UInt32 kMagic   = 0x52535444;  // 'RSTD'
-static const UInt16 kVersion = 3;
+static const UInt16 kVersion = 4;
 
 // Folder Manager constants — defined here because Retro68 Carbon headers
 // don't always expose <Folders.h> constants via <Carbon.h>.
@@ -83,6 +83,12 @@ static void WriteShape(Writer& w, const Shape& s) {
     w.w8(s.strokeAlign);
     if (s.GetType() == Shape::kRectangle)
         w.w16(static_cast<UInt16>(static_cast<const RectShape&>(s).cornerRadius));
+    else if (s.GetType() == Shape::kText) {
+        const TextShape& ts = static_cast<const TextShape&>(s);
+        w.w16(static_cast<UInt16>(ts.fontSize));
+        w.w8(ts.fontFace);
+        w.wStr(ts.text);
+    }
     w.wStr(s.name);
 }
 
@@ -106,6 +112,12 @@ static std::unique_ptr<Shape> ReadShape(Reader& r) {
         auto rs = std::make_unique<RectShape>();
         rs->cornerRadius = cr;
         shape = std::move(rs);
+    } else if (type == Shape::kText) {
+        auto ts    = std::make_unique<TextShape>();
+        ts->fontSize = static_cast<SInt16>(r.r16());
+        ts->fontFace = r.r8();
+        ts->text     = r.rStr();
+        shape = std::move(ts);
     } else {
         shape = std::make_unique<EllipseShape>();
     }

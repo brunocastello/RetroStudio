@@ -52,3 +52,14 @@ public:
     Type GetType() const override { return kEllipse; }
     std::unique_ptr<Shape> Clone() const override { return std::make_unique<EllipseShape>(*this); }
 };
+
+// fillColor = text color; hasFill = true always; hasStroke = optional bounding-box border
+class TextShape : public Shape {
+public:
+    Type GetType() const override { return kText; }
+    std::unique_ptr<Shape> Clone() const override { return std::make_unique<TextShape>(*this); }
+
+    std::string text     = "Text";
+    SInt16      fontSize = 14;
+    UInt8       fontFace = 0;  // QuickDraw style bits: bold=1, italic=2, underline=4
+};

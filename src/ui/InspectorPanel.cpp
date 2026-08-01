@@ -25,9 +25,12 @@ static Rect sFieldYRect          = {0, 0, 0, 0};
 static Rect sFieldWRect          = {0, 0, 0, 0};
 static Rect sFieldHRect          = {0, 0, 0, 0};
 static Rect sFieldSwRect         = {0, 0, 0, 0};
+static Rect sFontSizeRect        = {0, 0, 0, 0};
+static Rect sBoldRect            = {0, 0, 0, 0};
+static Rect sItalicRect          = {0, 0, 0, 0};
 
 // Inline text-edit state for numeric fields
-enum EditField { kNoField, kFieldX, kFieldY, kFieldW, kFieldH, kFieldStrokeWidth };
+enum EditField { kNoField, kFieldX, kFieldY, kFieldW, kFieldH, kFieldStrokeWidth, kFieldFontSize };
 static EditField sActiveField = kNoField;
 static char      sEditBuf[12] = {};
 static int       sEditLen     = 0;
@@ -262,6 +265,7 @@ void DrawInspectorPanel() {
     sStrokeWidthDownRect = sStrokeWidthUpRect = {0,0,0,0};
     sStrokeAlignRect = {0,0,0,0};
     sFieldXRect = sFieldYRect = sFieldWRect = sFieldHRect = sFieldSwRect = {0,0,0,0};
+    sFontSizeRect = sBoldRect = sItalicRect = {0,0,0,0};
 
     if (!gSelectedFrame && !gSelectedShape) {
         RGBColor gray = { 0x9999, 0x9999, 0x9999 }; RGBForeColor(&gray); TextSize(10);
@@ -289,8 +293,11 @@ void DrawInspectorPanel() {
         strokeAlign = gSelectedShape->strokeAlign;
         bounds      = gSelectedShape->bounds;
         objName     = gSelectedShape->name;
-        if (objName.empty())
-            objName = (gSelectedShape->GetType() == Shape::kEllipse) ? "Ellipse" : "Rectangle";
+        if (objName.empty()) {
+            if      (gSelectedShape->GetType() == Shape::kEllipse) objName = "Ellipse";
+            else if (gSelectedShape->GetType() == Shape::kText)    objName = "Text";
+            else                                                    objName = "Rectangle";
+        }
     } else {
         fillColor   = gSelectedFrame->backgroundColor;
         hasStroke   = gSelectedFrame->hasStroke;
@@ -306,6 +313,7 @@ void DrawInspectorPanel() {
     RGBColor valueClr = { 0x1111, 0x1111, 0x1111 };
     RGBColor hint     = { 0x9999, 0x9999, 0x9999 };
     short y = 4;
+    bool isTextShape = (gSelectedShape && gSelectedShape->GetType() == Shape::kText);
 
     // ---------------------------------------------------------------- NAME --
     y = DrawSectionHeader(y, "NAME", portRect);
@@ -314,8 +322,51 @@ void DrawInspectorPanel() {
     PStr(objName, ps); MoveTo(6, static_cast<short>(y + 12)); DrawString(ps);
     y = static_cast<short>(y + 22);
 
-    // ---------------------------------------------------------------- FILL --
-    y = DrawSectionHeader(y, "FILL", portRect);
+    // ---------------------------------------------------------------- TEXT (TextShape only) --
+    if (isTextShape) {
+        const TextShape& ts = static_cast<const TextShape&>(*gSelectedShape);
+        y = DrawSectionHeader(y, "TEXT", portRect);
+        y = static_cast<short>(y + 5);
+
+        // Font size field
+        RGBForeColor(&labelClr);
+        PStrC("Size", ps); MoveTo(6, static_cast<short>(y + 12)); DrawString(ps);
+        DrawNumField(36, static_cast<short>(y + 12), 36, kFieldFontSize,
+                     static_cast<SInt32>(ts.fontSize), sFontSizeRect);
+
+        // Bold toggle button
+        sBoldRect = { static_cast<short>(y+1), 80, static_cast<short>(y+15), 96 };
+        {
+            bool bold = (ts.fontFace & 1) != 0;
+            if (bold) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
+            else      { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
+            PaintRect(&sBoldRect);
+            RGBColor bd={0x7777,0x7777,0x7777}; RGBForeColor(&bd); FrameRect(&sBoldRect);
+            if (bold) { RGBColor tc={0xFFFF,0xFFFF,0xFFFF}; RGBForeColor(&tc); }
+            else      { RGBColor tc={0,0,0}; RGBForeColor(&tc); }
+            TextFace(1); PStrC("B", ps); MoveTo(84, static_cast<short>(y + 12)); DrawString(ps);
+            TextFace(0);
+        }
+
+        // Italic toggle button
+        sItalicRect = { static_cast<short>(y+1), 100, static_cast<short>(y+15), 116 };
+        {
+            bool ital = (ts.fontFace & 2) != 0;
+            if (ital) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
+            else      { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
+            PaintRect(&sItalicRect);
+            RGBColor bd={0x7777,0x7777,0x7777}; RGBForeColor(&bd); FrameRect(&sItalicRect);
+            if (ital) { RGBColor tc={0xFFFF,0xFFFF,0xFFFF}; RGBForeColor(&tc); }
+            else      { RGBColor tc={0,0,0}; RGBForeColor(&tc); }
+            TextFace(2); PStrC("I", ps); MoveTo(104, static_cast<short>(y + 12)); DrawString(ps);
+            TextFace(0);
+        }
+
+        y = static_cast<short>(y + 22);
+    }
+
+    // ---------------------------------------------------------------- FILL / COLOR --
+    y = DrawSectionHeader(y, isTextShape ? "COLOR" : "FILL", portRect);
     y = static_cast<short>(y + 6);
 
     sFillSwatchRect = { y, 6, static_cast<short>(y + 18), 42 };
@@ -511,6 +562,15 @@ bool HandleInspectorKey(char key) {
             UInt16 nv = static_cast<UInt16>(val);
             if (nv != *sw) { PushUndo(); *sw = nv; changed = true; }
         }
+        if (sActiveField == kFieldFontSize && gSelectedShape &&
+                gSelectedShape->GetType() == Shape::kText) {
+            if (val < 4)   val = 4;
+            if (val > 144) val = 144;
+            TextShape& ts = static_cast<TextShape&>(*gSelectedShape);
+            if (val != static_cast<SInt32>(ts.fontSize)) {
+                PushUndo(); ts.fontSize = static_cast<SInt16>(val); changed = true;
+            }
+        }
 
         sActiveField = kNoField; sEditLen = 0; sEditBuf[0] = '\0';
         InvalidateInspector();
@@ -672,6 +732,26 @@ void HandleInspectorClick(Point localPt) {
             if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
         }
         return;
+    }
+
+    // Text-specific controls (only active when a TextShape is selected)
+    if (gSelectedShape && gSelectedShape->GetType() == Shape::kText) {
+        TextShape& ts = static_cast<TextShape&>(*gSelectedShape);
+        if (PtInRect(localPt, &sFontSizeRect)) {
+            StartEdit(kFieldFontSize, static_cast<SInt32>(ts.fontSize)); return;
+        }
+        if (PtInRect(localPt, &sBoldRect)) {
+            PushUndo(); ts.fontFace ^= 1;
+            InvalidateInspector();
+            if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow,&r); InvalWindowRect(gMainWindow,&r); }
+            return;
+        }
+        if (PtInRect(localPt, &sItalicRect)) {
+            PushUndo(); ts.fontFace ^= 2;
+            InvalidateInspector();
+            if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow,&r); InvalWindowRect(gMainWindow,&r); }
+            return;
+        }
     }
 
     // Editable numeric fields
