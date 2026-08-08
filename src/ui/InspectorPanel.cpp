@@ -107,6 +107,43 @@ static void StartEdit(EditField field, SInt32 val) {
     InvalidateInspector();
 }
 
+static void StartEditStr(EditField field, const char* str) {
+    CancelTypographyEdit();
+    sActiveField = field;
+    sEditLen = 0;
+    for (int i = 0; str[i] && sEditLen < 11; ++i)
+        sEditBuf[sEditLen++] = str[i];
+    sEditBuf[sEditLen] = '\0';
+    InvalidateInspector();
+}
+
+// Returns "a" when a==b, or "a, b" when they differ (for compact padding display)
+static std::string padCompactStr(UInt8 a, UInt8 b) {
+    if (a == b) return numStr(static_cast<SInt32>(a));
+    return numStr(static_cast<SInt32>(a)) + ", " + numStr(static_cast<SInt32>(b));
+}
+
+// Like DrawNumField but displays a custom string when not in edit mode
+static short DrawStrField(short x, short y, short boxW, EditField field,
+                          const char* display, Rect& outRect) {
+    Str255 ps;
+    outRect = { static_cast<short>(y-10), static_cast<short>(x-2),
+                static_cast<short>(y+3),  static_cast<short>(x+boxW) };
+    if (sActiveField == field) {
+        RGBColor bg = {0xFFFF,0xFFFF,0xFFFF}; RGBForeColor(&bg); PaintRect(&outRect);
+        RGBColor bd = {0x3333,0x6666,0xCCCC}; RGBForeColor(&bd); FrameRect(&outRect);
+        RGBColor tc = {0,0,0}; RGBForeColor(&tc);
+        std::string d(sEditBuf, sEditLen); d += '_';
+        PStr(d, ps); MoveTo(x, y); DrawString(ps);
+    } else {
+        RGBColor tc = {0x1111,0x1111,0x1111}; RGBForeColor(&tc);
+        PStrC(display, ps); MoveTo(x, y); DrawString(ps);
+        RGBColor ul = {0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&ul);
+        MoveTo(outRect.left, outRect.bottom); LineTo(outRect.right, outRect.bottom);
+    }
+    return outRect.right;
+}
+
 // Draw a section header bar; returns y after the bar
 static short DrawSectionHeader(short y, const char* title, const Rect& pr) {
     RGBColor bg  = { 0xEEEE, 0xEEEE, 0xEEEE };
@@ -723,13 +760,19 @@ void DrawInspectorPanel() {
                 short col2X  = static_cast<short>(col1X + halfW + 2);
 
                 if (!sMixedPadding) {
-                    // Compact: H (left+right) | V (top+bottom)
+                    // Compact: H (left+right) | V (top+bottom) — shows "a, b" when sides differ
                     DrawPadIcon(col1X, static_cast<short>(y+2), 0x0A);  // left+right
-                    DrawNumField(static_cast<short>(col1X+icoW), static_cast<short>(y+12), fldW,
-                                 kFieldPadH, static_cast<SInt32>(lf->paddingLeft), sPadHRect);
+                    {
+                        std::string sh = padCompactStr(lf->paddingLeft, lf->paddingRight);
+                        DrawStrField(static_cast<short>(col1X+icoW), static_cast<short>(y+12), fldW,
+                                     kFieldPadH, sh.c_str(), sPadHRect);
+                    }
                     DrawPadIcon(col2X, static_cast<short>(y+2), 0x05);  // top+bottom
-                    DrawNumField(static_cast<short>(col2X+icoW), static_cast<short>(y+12), fldW,
-                                 kFieldPadV, static_cast<SInt32>(lf->paddingTop), sPadVRect);
+                    {
+                        std::string sv = padCompactStr(lf->paddingTop, lf->paddingBottom);
+                        DrawStrField(static_cast<short>(col2X+icoW), static_cast<short>(y+12), fldW,
+                                     kFieldPadV, sv.c_str(), sPadVRect);
+                    }
                     sPadTopRect = sPadRightRect = sPadBottomRect = sPadLeftRect = {0,0,0,0};
                     y = static_cast<short>(y + 18);
                 } else {
@@ -889,17 +932,41 @@ bool HandleInspectorKey(char key) {
         if (gSelectedFrame && (sActiveField == kFieldPadH || sActiveField == kFieldPadV ||
             sActiveField == kFieldPadTop   || sActiveField == kFieldPadRight  ||
             sActiveField == kFieldPadBottom || sActiveField == kFieldPadLeft)) {
-            if (val < 0) val = 0; if (val > 255) val = 255;
-            UInt8 nv = static_cast<UInt8>(val);
             PushUndo();
-            switch (sActiveField) {
-                case kFieldPadH:      gSelectedFrame->paddingLeft = nv; gSelectedFrame->paddingRight = nv; break;
-                case kFieldPadV:      gSelectedFrame->paddingTop  = nv; gSelectedFrame->paddingBottom = nv; break;
-                case kFieldPadTop:    gSelectedFrame->paddingTop    = nv; break;
-                case kFieldPadRight:  gSelectedFrame->paddingRight  = nv; break;
-                case kFieldPadBottom: gSelectedFrame->paddingBottom = nv; break;
-                case kFieldPadLeft:   gSelectedFrame->paddingLeft   = nv; break;
-                default: break;
+            if (sActiveField == kFieldPadH || sActiveField == kFieldPadV) {
+                // Parse "a" (both sides same) or "a, b" (sides independent)
+                SInt32 a = 0, b = 0;
+                int sepIdx = -1;
+                for (int i = 0; i < sEditLen; ++i)
+                    if (sEditBuf[i] == ',') { sepIdx = i; break; }
+                int end1 = (sepIdx >= 0) ? sepIdx : sEditLen;
+                for (int i = 0; i < end1; ++i)
+                    if (sEditBuf[i] >= '0' && sEditBuf[i] <= '9') a = a*10 + (sEditBuf[i]-'0');
+                if (sepIdx >= 0) {
+                    int s2 = sepIdx + 1;
+                    while (s2 < sEditLen && sEditBuf[s2] == ' ') ++s2;
+                    for (int i = s2; i < sEditLen; ++i)
+                        if (sEditBuf[i] >= '0' && sEditBuf[i] <= '9') b = b*10 + (sEditBuf[i]-'0');
+                } else { b = a; }
+                if (a < 0) a = 0; if (a > 255) a = 255;
+                if (b < 0) b = 0; if (b > 255) b = 255;
+                if (sActiveField == kFieldPadH) {
+                    gSelectedFrame->paddingLeft  = static_cast<UInt8>(a);
+                    gSelectedFrame->paddingRight = static_cast<UInt8>(b);
+                } else {
+                    gSelectedFrame->paddingTop    = static_cast<UInt8>(a);
+                    gSelectedFrame->paddingBottom = static_cast<UInt8>(b);
+                }
+            } else {
+                if (val < 0) val = 0; if (val > 255) val = 255;
+                UInt8 nv = static_cast<UInt8>(val);
+                switch (sActiveField) {
+                    case kFieldPadTop:    gSelectedFrame->paddingTop    = nv; break;
+                    case kFieldPadRight:  gSelectedFrame->paddingRight  = nv; break;
+                    case kFieldPadBottom: gSelectedFrame->paddingBottom = nv; break;
+                    case kFieldPadLeft:   gSelectedFrame->paddingLeft   = nv; break;
+                    default: break;
+                }
             }
             changed = true;
         }
@@ -916,10 +983,24 @@ bool HandleInspectorKey(char key) {
         return true;
     }
 
-    if (key >= '0' && key <= '9' && sEditLen < 7) {
-        sEditBuf[sEditLen++] = key; sEditBuf[sEditLen] = '\0';
-        InvalidateInspector();
-        return true;
+    // Allow comma separator in compact padding fields ("a, b" format)
+    if (key == ',' && (sActiveField == kFieldPadH || sActiveField == kFieldPadV) && sEditLen < 9) {
+        bool hasComma = false;
+        for (int i = 0; i < sEditLen; ++i) if (sEditBuf[i] == ',') { hasComma = true; break; }
+        if (!hasComma && sEditLen > 0) {
+            sEditBuf[sEditLen++] = ','; sEditBuf[sEditLen++] = ' '; sEditBuf[sEditLen] = '\0';
+            InvalidateInspector();
+            return true;
+        }
+    }
+
+    {
+        short maxLen = (sActiveField == kFieldPadH || sActiveField == kFieldPadV) ? 10 : 7;
+        if (key >= '0' && key <= '9' && sEditLen < maxLen) {
+            sEditBuf[sEditLen++] = key; sEditBuf[sEditLen] = '\0';
+            InvalidateInspector();
+            return true;
+        }
     }
 
     if (key == '-' && sEditLen == 0 &&
@@ -1166,8 +1247,14 @@ void HandleInspectorClick(Point localPt) {
             return;
         }
         // Padding fields
-        if (PtInRect(localPt, &sPadHRect))     { StartEdit(kFieldPadH,      lf->paddingLeft);   return; }
-        if (PtInRect(localPt, &sPadVRect))     { StartEdit(kFieldPadV,      lf->paddingTop);    return; }
+        if (PtInRect(localPt, &sPadHRect)) {
+            std::string s = padCompactStr(lf->paddingLeft, lf->paddingRight);
+            StartEditStr(kFieldPadH, s.c_str()); return;
+        }
+        if (PtInRect(localPt, &sPadVRect)) {
+            std::string s = padCompactStr(lf->paddingTop, lf->paddingBottom);
+            StartEditStr(kFieldPadV, s.c_str()); return;
+        }
         if (PtInRect(localPt, &sPadTopRect))   { StartEdit(kFieldPadTop,    lf->paddingTop);    return; }
         if (PtInRect(localPt, &sPadRightRect)) { StartEdit(kFieldPadRight,  lf->paddingRight);  return; }
         if (PtInRect(localPt, &sPadBottomRect)){ StartEdit(kFieldPadBottom, lf->paddingBottom); return; }
