@@ -34,10 +34,10 @@ static Rect sTypographyBtnRect   = {0, 0, 0, 0};
 
 // Auto Layout controls (frame selected)
 static Rect sLayoutModeRect[3]       = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
-static Rect sLayoutGapRect           = {0, 0, 0, 0};
+static Rect sLayoutGapRect           = {0, 0, 0, 0};  // numeric gap field (Fixed mode)
+static Rect sLayoutGapModeRect       = {0, 0, 0, 0};  // Fixed / Auto popup
 static Rect sLayoutPadRect           = {0, 0, 0, 0};
 static Rect sAlignCellRect[9]        = {};   // 3×3 grid, index = row*3+col
-static Rect sLayoutSBRect            = {0, 0, 0, 0};  // Space Between toggle
 
 // Sizing mode popups in SIZE section (frame only)
 static Rect sWidthSizingPopupRect    = {0, 0, 0, 0};
@@ -341,7 +341,7 @@ void DrawInspectorPanel() {
     sStrokeAlignRect = {0,0,0,0};
     sFieldXRect = sFieldYRect = sFieldWRect = sFieldHRect = sFieldSwRect = {0,0,0,0};
     sFontSizeRect = sBoldRect = sItalicRect = sTypographyBtnRect = {0,0,0,0};
-    sLayoutGapRect = sLayoutPadRect = sLayoutSBRect = {0,0,0,0};
+    sLayoutGapRect = sLayoutGapModeRect = sLayoutPadRect = {0,0,0,0};
     sWidthSizingPopupRect = sHeightSizingPopupRect = {0,0,0,0};
     for (int i=0;i<3;++i) sLayoutModeRect[i]={0,0,0,0};
     for (int i=0;i<9;++i) sAlignCellRect[i]={0,0,0,0};
@@ -650,37 +650,33 @@ void DrawInspectorPanel() {
                 }
             }
 
-            // Gap field — right of grid
-            short gapX = static_cast<short>(gridX + gridSpan + 8); // x=66
+            // Gap and Padding rows — below the grid, full-width
+            y = static_cast<short>(gridY + gridSpan + 6);
+
+            // Gap row: label | Fixed/Auto popup | value field (when Fixed)
             RGBForeColor(&labelClr); TextSize(9);
-            PStrC("Gap", ps); MoveTo(gapX, static_cast<short>(gridY + 10)); DrawString(ps);
+            PStrC("Gap", ps); MoveTo(6, static_cast<short>(y+12)); DrawString(ps);
             TextSize(11);
-            short gapFieldW = static_cast<short>(portRect.right - gapX - 6);
-            DrawNumField(gapX, static_cast<short>(gridY + 26), gapFieldW,
-                         kFieldLayoutGap, static_cast<SInt32>(lf->layoutGap), sLayoutGapRect);
-
-            // SpaceBetween toggle — below the grid, same width
-            short sbY = static_cast<short>(gridY + gridSpan + 4);
-            sLayoutSBRect = { sbY, gridX, static_cast<short>(sbY+16), static_cast<short>(gridX+gridSpan) };
-            {
-                bool sbActive = isSB;
-                if (sbActive) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
-                else          { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
-                PaintRect(&sLayoutSBRect);
-                RGBColor bd={0x7777,0x7777,0x7777}; RGBForeColor(&bd); FrameRect(&sLayoutSBRect);
-                if (sbActive) { RGBColor tc={0xFFFF,0xFFFF,0xFFFF}; RGBForeColor(&tc); }
-                else          { RGBColor tc={0x3333,0x3333,0x3333}; RGBForeColor(&tc); }
-                TextSize(9); PStrC("Space Between", ps);
-                short tw = StringWidth(ps);
-                MoveTo(static_cast<short>(gridX + (gridSpan-tw)/2), static_cast<short>(sbY+12));
-                DrawString(ps); TextSize(11);
+            const char* gapModeName = isSB ? "Auto" : "Fixed";
+            DrawPlatinumBtn(34, y, 52, 16, gapModeName, sLayoutGapModeRect);
+            if (!isSB) {
+                short valW = static_cast<short>(portRect.right - 90 - 4);
+                DrawNumField(90, static_cast<short>(y+12), valW,
+                             kFieldLayoutGap, static_cast<SInt32>(lf->layoutGap), sLayoutGapRect);
+            } else {
+                sLayoutGapRect = {0,0,0,0};
             }
-            y = static_cast<short>(sbY + 22);
+            y = static_cast<short>(y + 22);
 
-            // Padding field
-            RGBForeColor(&labelClr); PStrC("Padding", ps); MoveTo(6, static_cast<short>(y+12)); DrawString(ps);
-            DrawNumField(58, static_cast<short>(y+12), 40, kFieldLayoutPad,
-                         static_cast<SInt32>(lf->paddingTop), sLayoutPadRect);
+            // Padding row: same label/field layout as Gap (no popup, just a value)
+            RGBForeColor(&labelClr); TextSize(9);
+            PStrC("Pad", ps); MoveTo(6, static_cast<short>(y+12)); DrawString(ps);
+            TextSize(11);
+            {
+                short padW = static_cast<short>(portRect.right - 34 - 4);
+                DrawNumField(34, static_cast<short>(y+12), padW,
+                             kFieldLayoutPad, static_cast<SInt32>(lf->paddingTop), sLayoutPadRect);
+            }
             y = static_cast<short>(y + 22);
         }
     }
@@ -1053,13 +1049,30 @@ void HandleInspectorClick(Point localPt) {
             }
         }
 
-        // Space Between toggle
-        if (PtInRect(localPt, &sLayoutSBRect)) {
-            PushUndo();
-            lf->primaryAlign = (lf->primaryAlign == PrimaryAlign::SpaceBetween)
-                               ? PrimaryAlign::Start : PrimaryAlign::SpaceBetween;
-            InvalidateInspector();
-            if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
+        // Gap mode popup (Fixed / Auto)
+        if (PtInRect(localPt, &sLayoutGapModeRect)) {
+            MenuRef pm = NewMenu(6004, "\p");
+            AppendMenu(pm, "\pFixed");
+            AppendMenu(pm, "\pAuto");
+            InsertMenu(pm, -1);
+            bool isSB = (lf->primaryAlign == PrimaryAlign::SpaceBetween);
+            short curItem = isSB ? 2 : 1;
+            Point pt = { sLayoutGapModeRect.top, sLayoutGapModeRect.left };
+            SetPortWindowPort(gInspectorWindow); LocalToGlobal(&pt);
+            long result = PopUpMenuSelect(pm, pt.v, pt.h, curItem);
+            DeleteMenu(6004); DisposeMenu(pm);
+            short item = static_cast<short>(result & 0xFFFF);
+            if (item > 0) {
+                PushUndo();
+                if (item == 2) {
+                    lf->primaryAlign = PrimaryAlign::SpaceBetween;
+                } else {
+                    if (lf->primaryAlign == PrimaryAlign::SpaceBetween)
+                        lf->primaryAlign = PrimaryAlign::Start;
+                }
+                InvalidateInspector();
+                if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
+            }
             return;
         }
 

@@ -382,7 +382,6 @@ static void DrawShape(const Shape& shape) {
         }
         default: break;
     }
-    DrawShapeNameLabel(shape);
 }
 
 // Forward-declare so DrawFrame can call itself recursively
@@ -418,14 +417,16 @@ static void DrawFrame(const Frame& frame) {
         RGBForeColor(&border); FrameRect(&r);
     }
 
-    // Name label above top-left corner
-    RGBColor lc = { 0x4444, 0x4444, 0x4444 };
-    RGBForeColor(&lc);
-    TextSize(10);
-    Str255 pn; ToPStr(frame.name, pn);
-    MoveTo(r.left, static_cast<short>(r.top - 5));
-    DrawString(pn);
-    TextSize(12);
+    // Name label — only on top-level frames (no parent)
+    if (frame.parent == nullptr) {
+        RGBColor lc = { 0x4444, 0x4444, 0x4444 };
+        RGBForeColor(&lc);
+        TextSize(10);
+        Str255 pn; ToPStr(frame.name, pn);
+        MoveTo(r.left, static_cast<short>(r.top - 5));
+        DrawString(pn);
+        TextSize(12);
+    }
 }
 
 static void DrawSelectionHighlight() {
@@ -476,9 +477,11 @@ void DrawWindowContent(WindowRef win) {
         for (const auto& frame : gDocument->frames)
             DrawFrame(*frame);
 
-        // Shapes floating at canvas root (outside every frame)
-        for (const auto& shape : gDocument->rootShapes)
+        // Shapes floating at canvas root (outside every frame) — labels shown here only
+        for (const auto& shape : gDocument->rootShapes) {
             DrawShape(*shape);
+            if (shape->visible) DrawShapeNameLabel(*shape);
+        }
     }
 
     DrawSelectionHighlight();
