@@ -22,3 +22,4 @@ bool HandleInspectorKey(char key, UInt16 modifiers = 0);
 bool InspectorInEditMode();
 void ApplyInspectorEdit();   // commit any in-progress edit (called on click-away)
 void CancelInspectorEdit();  // discard any in-progress edit (e.g. on Escape)
+bool IsAspectLocked();       // true when the W/H aspect ratio lock is engaged

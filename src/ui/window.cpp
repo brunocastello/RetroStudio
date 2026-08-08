@@ -396,13 +396,19 @@ static void DrawFrame(const Frame& frame) {
     RGBForeColor(&bg);
     PaintRect(&r);
 
-    // Shape children
-    for (const auto& s : frame.children)
-        DrawShape(*s);
-
-    // Nested child frames (drawn on top of shapes)
-    for (const auto& cf : frame.childFrames)
-        DrawFrame(*cf);
+    // Draw children, optionally clipped to frame bounds
+    if (frame.clipContent) {
+        RgnHandle savedClip = NewRgn();
+        GetClip(savedClip);
+        ClipRect(&r);
+        for (const auto& s : frame.children)  DrawShape(*s);
+        for (const auto& cf : frame.childFrames) DrawFrame(*cf);
+        SetClip(savedClip);
+        DisposeRgn(savedClip);
+    } else {
+        for (const auto& s : frame.children)  DrawShape(*s);
+        for (const auto& cf : frame.childFrames) DrawFrame(*cf);
+    }
 
     // Stroke or default thin border
     if (frame.hasStroke) {
@@ -608,6 +614,8 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt) {
         : &gSelectedFrame->bounds;
 
     static const SInt32 kMin = 10;
+    bool isCorner   = (hi == 0 || hi == 2 || hi == 4 || hi == 6);
+    Bounds2 origB   = *b;   // snapshot for absolute delta calculation
     Point prev = startPt, curr = startPt;
     bool pushedUndo = false;
 
@@ -615,17 +623,28 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt) {
         GetMouse(&curr);
         if (curr.h != prev.h || curr.v != prev.v) {
             if (!pushedUndo) { PushUndo(); pushedUndo = true; }
-            // Convert screen pixel delta → canvas pixel delta
-            SInt32 dx = SInt32(curr.h - prev.h) * 100 / gCanvasZoom;
-            SInt32 dy = SInt32(curr.v - prev.v) * 100 / gCanvasZoom;
 
-            if (bL[hi]) { b->x += dx; b->w -= dx; }
-            if (bT[hi]) { b->y += dy; b->h -= dy; }
-            if (bR[hi])   b->w += dx;
-            if (bB[hi])   b->h += dy;
+            // Compute total delta from drag start (avoids AR accumulation error)
+            SInt32 totalDX = SInt32(curr.h - startPt.h) * 100 / gCanvasZoom;
+            SInt32 totalDY = SInt32(curr.v - startPt.v) * 100 / gCanvasZoom;
 
-            if (b->w < kMin) { if (bL[hi]) b->x -= (kMin - b->w); b->w = kMin; }
-            if (b->h < kMin) { if (bT[hi]) b->y -= (kMin - b->h); b->h = kMin; }
+            *b = origB;
+            if (bL[hi]) { b->x = origB.x + totalDX; b->w = origB.w - totalDX; }
+            if (bT[hi]) { b->y = origB.y + totalDY; b->h = origB.h - totalDY; }
+            if (bR[hi])   b->w = origB.w + totalDX;
+            if (bB[hi])   b->h = origB.h + totalDY;
+
+            // Aspect ratio lock: inspector button OR Shift key on corner handles
+            bool lockAR = isCorner && (IsAspectLocked() ||
+                          ((GetCurrentKeyModifiers() & shiftKey) != 0));
+            if (lockAR && origB.w > 0 && origB.h > 0) {
+                SInt32 newH = b->w * origB.h / origB.w;
+                if (bT[hi]) { SInt32 bot = origB.y + origB.h; b->h = newH; b->y = bot - newH; }
+                else          b->h = newH;
+            }
+
+            if (b->w < kMin) { if (bL[hi]) b->x += (b->w - kMin); b->w = kMin; }
+            if (b->h < kMin) { if (bT[hi]) b->y += (b->h - kMin); b->h = kMin; }
 
             DrawWindowContent(win);
             prev = curr;

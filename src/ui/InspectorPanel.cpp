@@ -50,6 +50,10 @@ static Rect sPadLeftRect             = {0, 0, 0, 0};
 // Sizing mode popups in SIZE section (frame only)
 static Rect sWidthSizingPopupRect    = {0, 0, 0, 0};
 static Rect sHeightSizingPopupRect   = {0, 0, 0, 0};
+// Aspect ratio lock + clip content
+static bool sAspectLocked            = false;
+static Rect sAspectLockRect          = {0, 0, 0, 0};
+static Rect sClipContentRect         = {0, 0, 0, 0};
 
 // Inline text-edit state for numeric fields
 enum EditField { kNoField, kFieldX, kFieldY, kFieldW, kFieldH, kFieldStrokeWidth, kFieldFontSize, kFieldLayoutGap,
@@ -340,6 +344,23 @@ static void DrawPadIcon(short x, short y, UInt8 sides) {
     if (sides & 0x08) { MoveTo(x, static_cast<short>(y+1)); LineTo(x, static_cast<short>(y+9)); }
 }
 
+// Draw a 12×12 padlock icon at (x,y). Closed = locked, open shackle = unlocked.
+static void DrawLockIcon(short x, short y, bool locked) {
+    RGBColor fg = {0x3333,0x3333,0x3333}; RGBForeColor(&fg);
+    Rect body = { static_cast<short>(y+5), static_cast<short>(x+1),
+                  static_cast<short>(y+12), static_cast<short>(x+11) };
+    FrameRect(&body);
+    Rect dot  = { static_cast<short>(y+7), static_cast<short>(x+4),
+                  static_cast<short>(y+10), static_cast<short>(x+7) };
+    PaintRect(&dot);
+    // Shackle: left post always at x+3, top bar, right post locked=closes into body / unlocked=lifted
+    MoveTo(static_cast<short>(x+3), static_cast<short>(y+5));
+    LineTo(static_cast<short>(x+3), static_cast<short>(y+2));
+    LineTo(static_cast<short>(x+8), static_cast<short>(y+2));
+    if (locked) LineTo(static_cast<short>(x+8), static_cast<short>(y+5));
+    else        LineTo(static_cast<short>(x+8), static_cast<short>(y+0)); // lifted open
+}
+
 static SizingMode ShowSizingPopup(const Rect& btn, SizingMode cur, bool hasFill) {
     MenuRef pm = NewMenu(6003, "\p");
     AppendMenu(pm, "\pFixed");
@@ -402,6 +423,7 @@ void DrawInspectorPanel() {
     sPadMixedBtnRect = sPadHRect = sPadVRect = {0,0,0,0};
     sPadTopRect = sPadRightRect = sPadBottomRect = sPadLeftRect = {0,0,0,0};
     sWidthSizingPopupRect = sHeightSizingPopupRect = {0,0,0,0};
+    sAspectLockRect = sClipContentRect = {0,0,0,0};
     for (int i=0;i<3;++i) sLayoutModeRect[i]={0,0,0,0};
     for (int i=0;i<9;++i) sAlignCellRect[i]={0,0,0,0};
 
@@ -795,6 +817,20 @@ void DrawInspectorPanel() {
                 }
             }
         }
+
+        // Clip content checkbox (all frames, regardless of layout mode)
+        y = static_cast<short>(y + 4);
+        sClipContentRect = { static_cast<short>(y+2), 5, static_cast<short>(y+14), 17 };
+        RGBColor cbBd2 = {0x7777,0x7777,0x7777}; RGBForeColor(&cbBd2); FrameRect(&sClipContentRect);
+        if (lf->clipContent) {
+            RGBColor ck={0x3333,0x6666,0xCCCC}; RGBForeColor(&ck);
+            Rect inner2 = { static_cast<short>(y+4), 7, static_cast<short>(y+12), 15 };
+            PaintRect(&inner2);
+        }
+        RGBForeColor(&labelClr); TextSize(10);
+        PStrC("Clip content", ps); MoveTo(22, static_cast<short>(y+12)); DrawString(ps);
+        TextSize(11);
+        y = static_cast<short>(y + 18);
     }
 
     // ---------------------------------------------------------- POSITION --
@@ -816,11 +852,13 @@ void DrawInspectorPanel() {
     bool isFrameSel = (!gSelectedShape && gSelectedFrame);
 
     if (isFrameSel) {
-        // Frames: W and H on separate rows, each with a sizing-mode popup.
-        // Popup sits flush to the right edge; value field is left of it.
-        short popW = 70;
-        short popX = static_cast<short>(portRect.right - popW - 4);
-        short valW = static_cast<short>(popX - 20 - 4);
+        // Frames: W and H on separate rows with sizing popup. Lock button at right edge.
+        short lockW  = 14;
+        short lockX  = static_cast<short>(portRect.right - lockW - 4);
+        short popW   = 54;
+        short popX   = static_cast<short>(lockX - 4 - popW);
+        short valW   = static_cast<short>(popX - 20 - 4);
+        short yStart = y;
 
         // W row
         bool wAuto = (gSelectedFrame->widthSizing != SizingMode::Fixed);
@@ -851,12 +889,28 @@ void DrawInspectorPanel() {
                              : (gSelectedFrame->heightSizing == SizingMode::Fill) ? "Fill" : "Fixed";
         DrawPlatinumBtn(popX, y, popW, 18, hSizName, sHeightSizingPopupRect);
         y = static_cast<short>(y + 24);
+
+        // Aspect-ratio lock button — centred vertically between the two rows
+        {
+            short ly = static_cast<short>(yStart + (y - yStart - lockW) / 2);
+            sAspectLockRect = { ly, lockX, static_cast<short>(ly+lockW), static_cast<short>(lockX+lockW) };
+            if (sAspectLocked) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); PaintRect(&sAspectLockRect); }
+            else               { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); PaintRect(&sAspectLockRect); }
+            RGBColor bd={0x7777,0x7777,0x7777}; RGBForeColor(&bd); FrameRect(&sAspectLockRect);
+            DrawLockIcon(static_cast<short>(lockX+1), static_cast<short>(ly+1), sAspectLocked);
+        }
     } else {
-        // Shapes: W and H on the same row, no sizing popup.
+        // Shapes: W and H on same row with lock button between them.
         RGBForeColor(&labelClr); PStrC("W", ps); MoveTo(6, static_cast<short>(y+12)); DrawString(ps);
-        DrawNumField(20, static_cast<short>(y+12), 64, kFieldW, bounds.w, sFieldWRect);
-        RGBForeColor(&labelClr); PStrC("H", ps); MoveTo(94, static_cast<short>(y+12)); DrawString(ps);
-        DrawNumField(106, static_cast<short>(y+12), 62, kFieldH, bounds.h, sFieldHRect);
+        DrawNumField(20, static_cast<short>(y+12), 56, kFieldW, bounds.w, sFieldWRect);
+        // Lock button
+        sAspectLockRect = { static_cast<short>(y+1), 80, static_cast<short>(y+15), 94 };
+        if (sAspectLocked) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); PaintRect(&sAspectLockRect); }
+        else               { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); PaintRect(&sAspectLockRect); }
+        RGBColor bd={0x7777,0x7777,0x7777}; RGBForeColor(&bd); FrameRect(&sAspectLockRect);
+        DrawLockIcon(81, static_cast<short>(y+2), sAspectLocked);
+        RGBForeColor(&labelClr); PStrC("H", ps); MoveTo(98, static_cast<short>(y+12)); DrawString(ps);
+        DrawNumField(112, static_cast<short>(y+12), static_cast<short>(portRect.right-116), kFieldH, bounds.h, sFieldHRect);
         y = static_cast<short>(y + 22);
     }
 
@@ -1050,6 +1104,10 @@ void ApplyInspectorEdit() {
     UInt16*  sw = gSelectedShape ? &gSelectedShape->strokeWidth
                                  : (gSelectedFrame ? &gSelectedFrame->strokeWidth : nullptr);
 
+    SInt32 origW = b ? b->w : 0;
+    SInt32 origH = b ? b->h : 0;
+    EditField appliedField = sActiveField;
+
     bool changed = false;
     if (b) {
         switch (sActiveField) {
@@ -1058,6 +1116,16 @@ void ApplyInspectorEdit() {
             case kFieldW: if (val<1) val=1; if (val!=b->w){PushUndo(); b->w=val; changed=true;} break;
             case kFieldH: if (val<1) val=1; if (val!=b->h){PushUndo(); b->h=val; changed=true;} break;
             default: break;
+        }
+    }
+    // Aspect ratio lock: after W or H changes, proportionally adjust the other
+    if (sAspectLocked && changed && b && origW > 0 && origH > 0) {
+        if (appliedField == kFieldW && val > 0) {
+            b->h = val * origH / origW;
+            if (b->h < 1) b->h = 1;
+        } else if (appliedField == kFieldH && val > 0) {
+            b->w = val * origW / origH;
+            if (b->w < 1) b->w = 1;
         }
     }
     if (sw && sActiveField == kFieldStrokeWidth) {
@@ -1132,6 +1200,8 @@ void CancelInspectorEdit() {
         InvalidateInspector();
     }
 }
+
+bool IsAspectLocked() { return sAspectLocked; }
 
 // --------------------------------------------------------------------------
 // Interaction
@@ -1394,6 +1464,22 @@ void HandleInspectorClick(Point localPt) {
             }
             return;
         }
+    }
+
+    // Aspect ratio lock toggle
+    if (PtInRect(localPt, &sAspectLockRect)) {
+        sAspectLocked = !sAspectLocked;
+        InvalidateInspector();
+        return;
+    }
+
+    // Clip content toggle (frame only)
+    if (gSelectedFrame && PtInRect(localPt, &sClipContentRect)) {
+        PushUndo();
+        gSelectedFrame->clipContent = !gSelectedFrame->clipContent;
+        InvalidateInspector();
+        if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
+        return;
     }
 
     // Editable numeric fields
