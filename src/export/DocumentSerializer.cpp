@@ -6,7 +6,7 @@
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
 static const UInt32 kMagic   = 0x52535444;  // 'RSTD'
-static const UInt16 kVersion = 5;
+static const UInt16 kVersion = 6;
 
 // Folder Manager constants — defined here because Retro68 Carbon headers
 // don't always expose <Folders.h> constants via <Carbon.h>.
@@ -161,6 +161,16 @@ static void WriteFrame(Writer& w, const Frame& f) {
     w.w8(f.locked      ? 1 : 0);
     w.w8(f.clipContent ? 1 : 0);
 
+    // Auto Layout
+    w.w8(static_cast<UInt8>(f.layoutMode));
+    w.w16(f.layoutGap);
+    w.w8(f.paddingTop); w.w8(f.paddingRight);
+    w.w8(f.paddingBottom); w.w8(f.paddingLeft);
+    w.w8(static_cast<UInt8>(f.primaryAlign));
+    w.w8(static_cast<UInt8>(f.crossAlign));
+    w.w8(static_cast<UInt8>(f.widthSizing));
+    w.w8(static_cast<UInt8>(f.heightSizing));
+
     w.w16(static_cast<UInt16>(f.children.size()));
     for (const auto& s : f.children)
         WriteShape(w, *s);
@@ -184,6 +194,16 @@ static std::unique_ptr<Frame> ReadFrame(Reader& r, Frame* parent) {
     f->visible     = r.r8() != 0;
     f->locked      = r.r8() != 0;
     f->clipContent = r.r8() != 0;
+
+    // Auto Layout
+    f->layoutMode    = static_cast<LayoutMode>(r.r8());
+    f->layoutGap     = r.r16();
+    f->paddingTop    = r.r8(); f->paddingRight  = r.r8();
+    f->paddingBottom = r.r8(); f->paddingLeft   = r.r8();
+    f->primaryAlign  = static_cast<PrimaryAlign>(r.r8());
+    f->crossAlign    = static_cast<CrossAlign>(r.r8());
+    f->widthSizing   = static_cast<SizingMode>(r.r8());
+    f->heightSizing  = static_cast<SizingMode>(r.r8());
 
     UInt16 nShapes = r.r16();
     for (UInt16 i = 0; i < nShapes && r.ok; ++i) {

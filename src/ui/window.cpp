@@ -3,6 +3,7 @@
 #include "InspectorPanel.h"
 #include "RenameDialog.h"
 #include "../export/DocumentSerializer.h"
+#include "../canvas/AutoLayout.h"
 
 WindowRef  gMainWindow    = nullptr;
 Boolean    gQuitFlag      = false;
@@ -458,6 +459,9 @@ static void DrawSelectionHighlight() {
 }
 
 void DrawWindowContent(WindowRef win) {
+    // Run layout pass before every canvas render so children are positioned correctly.
+    RunDocumentLayout(gDocument);
+
     SetPortWindowPort(win);
     Rect portRect;
     GetWindowPortBounds(win, &portRect);
@@ -1140,6 +1144,16 @@ static std::unique_ptr<Frame> CloneFrame(const Frame* src, Frame* newParent) {
     f->visible         = src->visible;
     f->locked          = src->locked;
     f->clipContent     = src->clipContent;
+    f->layoutMode      = src->layoutMode;
+    f->layoutGap       = src->layoutGap;
+    f->paddingTop      = src->paddingTop;
+    f->paddingRight    = src->paddingRight;
+    f->paddingBottom   = src->paddingBottom;
+    f->paddingLeft     = src->paddingLeft;
+    f->primaryAlign    = src->primaryAlign;
+    f->crossAlign      = src->crossAlign;
+    f->widthSizing     = src->widthSizing;
+    f->heightSizing    = src->heightSizing;
     f->parent          = newParent;
     for (const auto& s : src->children)
         f->children.push_back(s->Clone());

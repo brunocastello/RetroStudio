@@ -1,6 +1,11 @@
 #pragma once
 #include "Shape.h"
 
+enum class LayoutMode   : UInt8 { None = 0, Horizontal = 1, Vertical = 2 };
+enum class PrimaryAlign : UInt8 { Start = 0, Center = 1, End = 2, SpaceBetween = 3 };
+enum class CrossAlign   : UInt8 { Start = 0, Center = 1, End = 2 };
+enum class SizingMode   : UInt8 { Fixed = 0, Hug = 1, Fill = 2 };
+
 // Frame = artboard / screen in the prototype.
 // Frames own their Shape children and can contain nested child Frames.
 // `parent` is a raw observer pointer (non-owning); null means top-level.
@@ -16,6 +21,20 @@ public:
     bool        visible         = true;
     bool        locked          = false;
     bool        clipContent     = true;
+
+    // Auto Layout — how this frame arranges its children
+    LayoutMode   layoutMode    = LayoutMode::None;
+    UInt16       layoutGap     = 0;
+    UInt8        paddingTop    = 0;
+    UInt8        paddingRight  = 0;
+    UInt8        paddingBottom = 0;
+    UInt8        paddingLeft   = 0;
+    PrimaryAlign primaryAlign  = PrimaryAlign::Start;
+    CrossAlign   crossAlign    = CrossAlign::Start;
+
+    // Auto Layout — how this frame sizes itself as a child of a layout frame
+    SizingMode   widthSizing   = SizingMode::Fixed;
+    SizingMode   heightSizing  = SizingMode::Fixed;
 
     Frame* parent = nullptr;  // null = owned by Document::frames
 
