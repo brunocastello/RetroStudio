@@ -762,10 +762,8 @@ void DrawInspectorPanel() {
             {
                 short rX      = static_cast<short>(gridX + gridSpan + 8); // x=66
                 short popW    = 46;
-                short settW   = 16;
                 short valX    = static_cast<short>(rX + popW + 4);
-                short valW    = static_cast<short>(portRect.right - valX - 4 - settW - 2);
-                short settX   = static_cast<short>(portRect.right - 2 - settW);
+                short valW    = static_cast<short>(portRect.right - valX - 4);
                 short gapRowY = static_cast<short>(gridY + (gridSpan - 25) / 2);
 
                 RGBForeColor(&labelClr); TextSize(9);
@@ -779,28 +777,6 @@ void DrawInspectorPanel() {
                 } else {
                     sLayoutGapRect = {0,0,0,0};
                 }
-
-                // Settings icon button (two horizontal equalizer lines)
-                short sY = static_cast<short>(gapRowY + 11);
-                sLayoutSettingsRect = { sY, settX,
-                                        static_cast<short>(sY + 14),
-                                        static_cast<short>(settX + settW) };
-                RGBColor settBg = {0xCCCC,0xCCCC,0xCCCC}; RGBForeColor(&settBg);
-                PaintRect(&sLayoutSettingsRect);
-                RGBColor settBd = {0x7777,0x7777,0x7777}; RGBForeColor(&settBd);
-                FrameRect(&sLayoutSettingsRect);
-                RGBColor settFg = {0x2222,0x2222,0x2222}; RGBForeColor(&settFg);
-                short ix = static_cast<short>(settX + 3);
-                short t1 = static_cast<short>(sY + 4);
-                MoveTo(ix, t1); LineTo(static_cast<short>(ix+10), t1);
-                Rect sl1 = { static_cast<short>(t1-2), static_cast<short>(ix+5),
-                              static_cast<short>(t1+2), static_cast<short>(ix+9) };
-                PaintRect(&sl1);
-                short t2 = static_cast<short>(sY + 9);
-                MoveTo(ix, t2); LineTo(static_cast<short>(ix+10), t2);
-                Rect sl2 = { static_cast<short>(t2-2), ix,
-                              static_cast<short>(t2+2), static_cast<short>(ix+4) };
-                PaintRect(&sl2);
             }
 
             y = static_cast<short>(gridY + gridSpan + 6);
@@ -882,6 +858,15 @@ void DrawInspectorPanel() {
         PStrC("Clip content", ps); MoveTo(22, static_cast<short>(y+12)); DrawString(ps);
         TextSize(11);
         y = static_cast<short>(y + 18);
+
+        // Layout settings button — visible below Clip content when a layout mode is active
+        if (lf->layoutMode != LayoutMode::None) {
+            DrawPlatinumBtn(5, y, static_cast<short>(portRect.right - 10), 14,
+                            "Layout settings...", sLayoutSettingsRect);
+            y = static_cast<short>(y + 18);
+        } else {
+            sLayoutSettingsRect = {0,0,0,0};
+        }
     }
 
     // ---------------------------------------------------------- POSITION --
@@ -1432,7 +1417,7 @@ void HandleInspectorClick(Point localPt) {
 
         // Settings icon → open Auto Layout Settings panel
         if (PtInRect(localPt, &sLayoutSettingsRect)) {
-            Point anchor = { sLayoutSettingsRect.top, sLayoutSettingsRect.left };
+            Point anchor = { sLayoutSettingsRect.top, sLayoutSettingsRect.right };
             SetPortWindowPort(gInspectorWindow); LocalToGlobal(&anchor);
             OpenAutoLayoutSettingsPanel(anchor);
             return;
