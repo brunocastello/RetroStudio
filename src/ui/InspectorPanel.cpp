@@ -965,7 +965,7 @@ static EditField TabToNextField(EditField cur, bool reverse) {
 // Inline numeric field key handling
 // --------------------------------------------------------------------------
 
-bool HandleInspectorKey(char key, EventModifiers modifiers) {
+bool HandleInspectorKey(char key, UInt16 modifiers) {
     if (sActiveField == kNoField) return false;
 
     // If the object was locked while an edit was in progress, cancel it
