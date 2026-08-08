@@ -635,8 +635,10 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt) {
             if (bB[hi])   b->h = origB.h + totalDY;
 
             // Aspect ratio lock: inspector button OR Shift key on corner handles
-            bool lockAR = isCorner && (IsAspectLocked() ||
-                          ((GetCurrentKeyModifiers() & shiftKey) != 0));
+            // Check Shift key: key 56 (left) and key 60 (right) live in km[1]
+            KeyMap km; GetKeys(km);
+            bool shiftDown = ((km[1] & (1UL << 24)) || (km[1] & (1UL << 28)));
+            bool lockAR = isCorner && (IsAspectLocked() || shiftDown);
             if (lockAR && origB.w > 0 && origB.h > 0) {
                 SInt32 newH = b->w * origB.h / origB.w;
                 if (bT[hi]) { SInt32 bot = origB.y + origB.h; b->h = newH; b->y = bot - newH; }
