@@ -4,6 +4,7 @@
 #include "ui/LayersPanel.h"
 #include "ui/InspectorPanel.h"
 #include "ui/TypographyPanel.h"
+#include "ui/AutoLayoutSettingsPanel.h"
 
 static void InitializeMacintosh() {
     InitCursor();
@@ -15,8 +16,9 @@ int main(int argc, char* argv[]) {
     SetupWindow();
     SetupPalette();          // positioned relative to main window
     SetupLayersPanel();      // positioned relative to main window
-    SetupInspectorPanel();   // positioned below layers panel
-    SetupTypographyPanel();  // positioned right of inspector (hidden initially)
+    SetupInspectorPanel();         // positioned below layers panel
+    SetupTypographyPanel();        // positioned right of inspector (hidden initially)
+    SetupAutoLayoutSettingsPanel(); // hidden until settings button clicked
 
     EventRecord event;
 
@@ -72,6 +74,12 @@ int main(int argc, char* argv[]) {
                                 GlobalToLocal(&localPt);
                                 HandleTypographyPanelClick(localPt);
                                 RefreshInspector();
+                            } else if (win == gAutoLayoutSettingsWindow) {
+                                if (win != FrontWindow()) SelectWindow(win);
+                                Point localPt = event.where;
+                                SetPortWindowPort(gAutoLayoutSettingsWindow);
+                                GlobalToLocal(&localPt);
+                                HandleAutoLayoutSettingsClick(localPt);
                             } else if (win == gInspectorWindow) {
                                 if (win != FrontWindow()) SelectWindow(win);
                                 Point localPt = event.where;
@@ -86,6 +94,7 @@ int main(int argc, char* argv[]) {
                                         HandleCanvasSelect(win, event.where, event.modifiers);
                                         RefreshLayersPanel();
                                         RefreshInspector();
+                                        RefreshAutoLayoutSettingsPanel();
                                         break;
                                     case Tool::Frame:
                                     case Tool::Rectangle:
@@ -116,7 +125,9 @@ int main(int argc, char* argv[]) {
                                 else if (win == gInspectorWindow)
                                     HideWindow(gInspectorWindow);
                                 else if (win == gTypographyWindow)
-                                    ToggleTypographyPanel();  // also clears visibility flag
+                                    ToggleTypographyPanel();
+                                else if (win == gAutoLayoutSettingsWindow)
+                                    HideWindow(gAutoLayoutSettingsWindow);
                             }
                             break;
                         case inZoomIn:
@@ -187,6 +198,8 @@ int main(int argc, char* argv[]) {
                         DrawInspectorPanel();
                     else if (win == gTypographyWindow)
                         DrawTypographyPanel();
+                    else if (win == gAutoLayoutSettingsWindow)
+                        DrawAutoLayoutSettingsPanel();
                     else
                         DrawWindowContent(win);
                     EndUpdate(win);

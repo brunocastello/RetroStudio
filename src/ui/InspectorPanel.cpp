@@ -6,6 +6,7 @@
 // #define USE_SYSTEM_COLOR_PICKER
 
 #include "InspectorPanel.h"
+#include "AutoLayoutSettingsPanel.h"
 #include "LayersPanel.h"
 #include "TypographyPanel.h"
 #include "window.h"
@@ -37,6 +38,7 @@ static Rect sLayoutModeRect[3]       = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
 static Rect sWrapRect                = {0, 0, 0, 0};  // Wrap toggle button
 static Rect sLayoutGapRect           = {0, 0, 0, 0};  // numeric gap field (Fixed mode)
 static Rect sLayoutGapModeRect       = {0, 0, 0, 0};  // Fixed / Auto popup
+static Rect sLayoutSettingsRect      = {0, 0, 0, 0};  // ⚙ settings icon button
 static Rect sAlignCellRect[9]        = {};   // 3×3 grid, index = row*3+col
 // Padding controls
 static bool sMixedPadding            = false;
@@ -424,7 +426,7 @@ void DrawInspectorPanel() {
     sPadMixedBtnRect = sPadHRect = sPadVRect = {0,0,0,0};
     sPadTopRect = sPadRightRect = sPadBottomRect = sPadLeftRect = {0,0,0,0};
     sWidthSizingPopupRect = sHeightSizingPopupRect = {0,0,0,0};
-    sAspectLockRect = sClipContentRect = sWrapRect = {0,0,0,0};
+    sAspectLockRect = sClipContentRect = sWrapRect = sLayoutSettingsRect = {0,0,0,0};
     for (int i=0;i<3;++i) sLayoutModeRect[i]={0,0,0,0};
     for (int i=0;i<9;++i) sAlignCellRect[i]={0,0,0,0};
 
@@ -756,13 +758,15 @@ void DrawInspectorPanel() {
                 }
             }
 
-            // Right column: Gap only (vertically centred in grid height)
+            // Right column: Gap + settings button (vertically centred in grid height)
             {
-                short rX   = static_cast<short>(gridX + gridSpan + 8); // x=66
-                short popW = 46;
-                short valX = static_cast<short>(rX + popW + 4);
-                short valW = static_cast<short>(portRect.right - valX - 4);
-                short gapRowY = static_cast<short>(gridY + (gridSpan - 25) / 2); // centre 25px block
+                short rX      = static_cast<short>(gridX + gridSpan + 8); // x=66
+                short popW    = 46;
+                short settW   = 16;
+                short valX    = static_cast<short>(rX + popW + 4);
+                short valW    = static_cast<short>(portRect.right - valX - 4 - settW - 2);
+                short settX   = static_cast<short>(portRect.right - 2 - settW);
+                short gapRowY = static_cast<short>(gridY + (gridSpan - 25) / 2);
 
                 RGBForeColor(&labelClr); TextSize(9);
                 PStrC("Gap", ps); MoveTo(rX, static_cast<short>(gapRowY+9)); DrawString(ps);
@@ -775,6 +779,28 @@ void DrawInspectorPanel() {
                 } else {
                     sLayoutGapRect = {0,0,0,0};
                 }
+
+                // Settings icon button (two horizontal equalizer lines)
+                short sY = static_cast<short>(gapRowY + 11);
+                sLayoutSettingsRect = { sY, settX,
+                                        static_cast<short>(sY + 14),
+                                        static_cast<short>(settX + settW) };
+                RGBColor settBg = {0xCCCC,0xCCCC,0xCCCC}; RGBForeColor(&settBg);
+                PaintRect(&sLayoutSettingsRect);
+                RGBColor settBd = {0x7777,0x7777,0x7777}; RGBForeColor(&settBd);
+                FrameRect(&sLayoutSettingsRect);
+                RGBColor settFg = {0x2222,0x2222,0x2222}; RGBForeColor(&settFg);
+                short ix = static_cast<short>(settX + 3);
+                short t1 = static_cast<short>(sY + 4);
+                MoveTo(ix, t1); LineTo(static_cast<short>(ix+10), t1);
+                Rect sl1 = { static_cast<short>(t1-2), static_cast<short>(ix+5),
+                              static_cast<short>(t1+2), static_cast<short>(ix+9) };
+                PaintRect(&sl1);
+                short t2 = static_cast<short>(sY + 9);
+                MoveTo(ix, t2); LineTo(static_cast<short>(ix+10), t2);
+                Rect sl2 = { static_cast<short>(t2-2), ix,
+                              static_cast<short>(t2+2), static_cast<short>(ix+4) };
+                PaintRect(&sl2);
             }
 
             y = static_cast<short>(gridY + gridSpan + 6);
@@ -1401,6 +1427,14 @@ void HandleInspectorClick(Point localPt) {
             lf->layoutWrap = !lf->layoutWrap;
             InvalidateInspector();
             if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
+            return;
+        }
+
+        // Settings icon → open Auto Layout Settings panel
+        if (PtInRect(localPt, &sLayoutSettingsRect)) {
+            Point anchor = { sLayoutSettingsRect.top, sLayoutSettingsRect.left };
+            SetPortWindowPort(gInspectorWindow); LocalToGlobal(&anchor);
+            OpenAutoLayoutSettingsPanel(anchor);
             return;
         }
 

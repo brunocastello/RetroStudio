@@ -23,9 +23,12 @@ public:
     bool        clipContent     = true;
 
     // Auto Layout — how this frame arranges its children
-    LayoutMode   layoutMode    = LayoutMode::None;
-    bool         layoutWrap    = false;
-    UInt16       layoutGap     = 0;
+    LayoutMode   layoutMode           = LayoutMode::None;
+    bool         layoutWrap           = false;
+    bool         strokesInLayout      = false;  // true = stroke included in layout size
+    bool         canvasStackReverse   = false;  // true = first child on top
+    bool         alignTextBaseline    = false;  // true = H-layout aligns text baselines
+    UInt16       layoutGap            = 0;
     UInt8        paddingTop    = 0;
     UInt8        paddingRight  = 0;
     UInt8        paddingBottom = 0;

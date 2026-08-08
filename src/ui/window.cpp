@@ -396,18 +396,25 @@ static void DrawFrame(const Frame& frame) {
     RGBForeColor(&bg);
     PaintRect(&r);
 
-    // Draw children, optionally clipped to frame bounds
+    // Draw children, optionally clipped and optionally in reverse z-order.
+    auto drawChildren = [&]() {
+        if (frame.canvasStackReverse) {
+            for (auto it = frame.children.rbegin();   it != frame.children.rend();   ++it) DrawShape(**it);
+            for (auto it = frame.childFrames.rbegin(); it != frame.childFrames.rend(); ++it) DrawFrame(**it);
+        } else {
+            for (const auto& s  : frame.children)    DrawShape(*s);
+            for (const auto& cf : frame.childFrames)  DrawFrame(*cf);
+        }
+    };
     if (frame.clipContent) {
         RgnHandle savedClip = NewRgn();
         GetClip(savedClip);
         ClipRect(&r);
-        for (const auto& s : frame.children)  DrawShape(*s);
-        for (const auto& cf : frame.childFrames) DrawFrame(*cf);
+        drawChildren();
         SetClip(savedClip);
         DisposeRgn(savedClip);
     } else {
-        for (const auto& s : frame.children)  DrawShape(*s);
-        for (const auto& cf : frame.childFrames) DrawFrame(*cf);
+        drawChildren();
     }
 
     // Stroke or default thin border
@@ -1165,9 +1172,12 @@ static std::unique_ptr<Frame> CloneFrame(const Frame* src, Frame* newParent) {
     f->visible         = src->visible;
     f->locked          = src->locked;
     f->clipContent     = src->clipContent;
-    f->layoutMode      = src->layoutMode;
-    f->layoutWrap      = src->layoutWrap;
-    f->layoutGap       = src->layoutGap;
+    f->layoutMode           = src->layoutMode;
+    f->layoutWrap           = src->layoutWrap;
+    f->strokesInLayout      = src->strokesInLayout;
+    f->canvasStackReverse   = src->canvasStackReverse;
+    f->alignTextBaseline    = src->alignTextBaseline;
+    f->layoutGap            = src->layoutGap;
     f->paddingTop      = src->paddingTop;
     f->paddingRight    = src->paddingRight;
     f->paddingBottom   = src->paddingBottom;
