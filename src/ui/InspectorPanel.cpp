@@ -33,15 +33,15 @@ static Rect sItalicRect          = {0, 0, 0, 0};
 static Rect sTypographyBtnRect   = {0, 0, 0, 0};
 
 // Auto Layout controls (frame selected)
-static Rect sLayoutModeRect[3]   = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
-static Rect sLayoutGapRect       = {0, 0, 0, 0};
-static Rect sLayoutPadRect       = {0, 0, 0, 0};
-static Rect sLayoutPrimRect[4]   = {{0,0,0,0},{0,0,0,0},{0,0,0,0},{0,0,0,0}};
-static Rect sLayoutCrossRect[3]  = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
+static Rect sLayoutModeRect[3]       = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
+static Rect sLayoutGapRect           = {0, 0, 0, 0};
+static Rect sLayoutPadRect           = {0, 0, 0, 0};
+static Rect sAlignCellRect[9]        = {};   // 3×3 grid, index = row*3+col
+static Rect sLayoutSBRect            = {0, 0, 0, 0};  // Space Between toggle
 
-// Sizing mode buttons in SIZE section
-static Rect sWidthSizingRect[3]  = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
-static Rect sHeightSizingRect[3] = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
+// Sizing mode popups in SIZE section (frame only)
+static Rect sWidthSizingPopupRect    = {0, 0, 0, 0};
+static Rect sHeightSizingPopupRect   = {0, 0, 0, 0};
 
 // Inline text-edit state for numeric fields
 enum EditField { kNoField, kFieldX, kFieldY, kFieldW, kFieldH, kFieldStrokeWidth, kFieldFontSize, kFieldLayoutGap, kFieldLayoutPad };
@@ -241,6 +241,65 @@ static bool ShowColorSwatchPicker(const Rect& anchorRect, RGBColor& outColor) {
 }
 
 // --------------------------------------------------------------------------
+// Platinum-style popup button (reused for sizing dropdowns)
+// --------------------------------------------------------------------------
+
+static void DrawPlatinumBtn(short x, short y, short w, short h,
+                             const char* label, Rect& outRect) {
+    outRect = { y, x, static_cast<short>(y+h), static_cast<short>(x+w) };
+    RGBColor platGray = {0xCCCC,0xCCCC,0xCCCC};
+    RGBForeColor(&platGray); PaintRect(&outRect);
+    RGBColor blk = {0,0,0}; RGBForeColor(&blk); FrameRect(&outRect);
+    RGBColor wht  = {0xFFFF,0xFFFF,0xFFFF};
+    RGBColor shad = {0x5555,0x5555,0x5555};
+    RGBForeColor(&wht);
+    MoveTo(static_cast<short>(x+1), static_cast<short>(y+h-2));
+    LineTo(static_cast<short>(x+1), static_cast<short>(y+1));
+    LineTo(static_cast<short>(x+w-2), static_cast<short>(y+1));
+    RGBForeColor(&shad);
+    MoveTo(static_cast<short>(x+2), static_cast<short>(y+h-1));
+    LineTo(static_cast<short>(x+w-1), static_cast<short>(y+h-1));
+    LineTo(static_cast<short>(x+w-1), static_cast<short>(y+2));
+    short sepX = static_cast<short>(x+w-16);
+    RGBForeColor(&blk);
+    MoveTo(sepX, static_cast<short>(y+1)); LineTo(sepX, static_cast<short>(y+h-1));
+    short arrX = static_cast<short>((sepX + x+w) / 2);
+    short arrY = static_cast<short>((y + y+h) / 2);
+    PolyHandle up = OpenPoly();
+    MoveTo(arrX,                       static_cast<short>(arrY-3));
+    LineTo(static_cast<short>(arrX+3), static_cast<short>(arrY));
+    LineTo(static_cast<short>(arrX-3), static_cast<short>(arrY));
+    LineTo(arrX,                       static_cast<short>(arrY-3));
+    ClosePoly(); PaintPoly(up); KillPoly(up);
+    PolyHandle dn = OpenPoly();
+    MoveTo(arrX,                       static_cast<short>(arrY+3));
+    LineTo(static_cast<short>(arrX+3), static_cast<short>(arrY));
+    LineTo(static_cast<short>(arrX-3), static_cast<short>(arrY));
+    LineTo(arrX,                       static_cast<short>(arrY+3));
+    ClosePoly(); PaintPoly(dn); KillPoly(dn);
+    RGBForeColor(&blk); TextSize(10);
+    Str255 ps; PStrC(label, ps);
+    MoveTo(static_cast<short>(x+5), static_cast<short>(y+h-3)); DrawString(ps);
+    TextSize(11);
+}
+
+static SizingMode ShowSizingPopup(const Rect& btn, SizingMode cur, bool hasFill) {
+    MenuRef pm = NewMenu(6003, "\p");
+    AppendMenu(pm, "\pFixed");
+    AppendMenu(pm, "\pHug");
+    if (hasFill) AppendMenu(pm, "\pFill");
+    InsertMenu(pm, -1);
+    short curItem = static_cast<short>(cur) + 1;
+    if (!hasFill && cur == SizingMode::Fill) curItem = 1;
+    Point pt = { btn.top, btn.left };
+    SetPortWindowPort(gInspectorWindow); LocalToGlobal(&pt);
+    long result = PopUpMenuSelect(pm, pt.v, pt.h, curItem);
+    DeleteMenu(6003); DisposeMenu(pm);
+    short item = static_cast<short>(result & 0xFFFF);
+    return (item > 0) ? static_cast<SizingMode>(item - 1) : cur;
+}
+
+// --------------------------------------------------------------------------
 // Setup
 // --------------------------------------------------------------------------
 
@@ -282,9 +341,10 @@ void DrawInspectorPanel() {
     sStrokeAlignRect = {0,0,0,0};
     sFieldXRect = sFieldYRect = sFieldWRect = sFieldHRect = sFieldSwRect = {0,0,0,0};
     sFontSizeRect = sBoldRect = sItalicRect = sTypographyBtnRect = {0,0,0,0};
-    sLayoutGapRect = sLayoutPadRect = {0,0,0,0};
-    for (int i=0;i<3;++i) { sLayoutModeRect[i]={0,0,0,0}; sWidthSizingRect[i]={0,0,0,0}; sHeightSizingRect[i]={0,0,0,0}; sLayoutCrossRect[i]={0,0,0,0}; }
-    for (int i=0;i<4;++i) sLayoutPrimRect[i]={0,0,0,0};
+    sLayoutGapRect = sLayoutPadRect = sLayoutSBRect = {0,0,0,0};
+    sWidthSizingPopupRect = sHeightSizingPopupRect = {0,0,0,0};
+    for (int i=0;i<3;++i) sLayoutModeRect[i]={0,0,0,0};
+    for (int i=0;i<9;++i) sAlignCellRect[i]={0,0,0,0};
 
     if (!gSelectedFrame && !gSelectedShape) {
         RGBColor gray = { 0x9999, 0x9999, 0x9999 }; RGBForeColor(&gray); TextSize(10);
@@ -529,8 +589,8 @@ void DrawInspectorPanel() {
         y = DrawSectionHeader(y, "LAYOUT", portRect);
         y = static_cast<short>(y + 3);
 
-        // Mode buttons: [None] [H] [V]
-        const char* modeLabels[3] = { "None", "H", "V" };
+        // Flow direction buttons: [None] [Horizontal] [Vertical]
+        const char* modeLabels[3] = { "None", "Horizontal", "Vertical" };
         for (int i = 0; i < 3; ++i) {
             short bx = static_cast<short>(8 + i * 54);
             Rect btn = { y, bx, static_cast<short>(y+18), static_cast<short>(bx+50) };
@@ -547,64 +607,81 @@ void DrawInspectorPanel() {
             MoveTo(static_cast<short>(bx + (50 - tw)/2), static_cast<short>(y + 13));
             DrawString(ps); TextSize(11);
         }
-        y = static_cast<short>(y + 22);
+        y = static_cast<short>(y + 24);
 
         if (lf->layoutMode != LayoutMode::None) {
-            // Gap field
-            RGBForeColor(&labelClr); PStrC("Gap", ps); MoveTo(6, static_cast<short>(y+12)); DrawString(ps);
-            DrawNumField(36, static_cast<short>(y+12), 50, kFieldLayoutGap,
-                         static_cast<SInt32>(lf->layoutGap), sLayoutGapRect);
-            y = static_cast<short>(y + 22);
+            // 3×3 alignment grid — left half
+            // Each cell encodes a combination of primary + cross alignment.
+            // For H layout: col=primary(S/C/E), row=cross(S/C/E).
+            // For V layout: row=primary(S/C/E), col=cross(S/C/E).
+            static const short kCell = 14, kCellGap = 4;
+            short gridX = 8, gridY = y;
+            short gridSpan = 3 * kCell + 2 * kCellGap; // 50px
 
-            // Padding field (uniform — shows paddingTop as representative value)
-            RGBForeColor(&labelClr); PStrC("Pad", ps); MoveTo(6, static_cast<short>(y+12)); DrawString(ps);
-            DrawNumField(36, static_cast<short>(y+12), 50, kFieldLayoutPad,
+            bool isSB = (lf->primaryAlign == PrimaryAlign::SpaceBetween);
+            for (int row = 0; row < 3; ++row) {
+                for (int col = 0; col < 3; ++col) {
+                    short cx = static_cast<short>(gridX + col*(kCell+kCellGap));
+                    short cy = static_cast<short>(gridY + row*(kCell+kCellGap));
+                    Rect cell = { cy, cx, static_cast<short>(cy+kCell), static_cast<short>(cx+kCell) };
+                    sAlignCellRect[row*3+col] = cell;
+
+                    // Active cell = current alignment combo
+                    bool active = false;
+                    if (!isSB) {
+                        int priIdx = static_cast<int>(lf->primaryAlign);
+                        int secIdx = static_cast<int>(lf->crossAlign);
+                        active = (lf->layoutMode == LayoutMode::Horizontal)
+                                 ? (col == priIdx && row == secIdx)
+                                 : (row == priIdx && col == secIdx);
+                    }
+                    if (active) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
+                    else        { RGBColor bg={0xEEEE,0xEEEE,0xEEEE}; RGBForeColor(&bg); }
+                    PaintRect(&cell);
+                    RGBColor bd={0xAAAA,0xAAAA,0xAAAA}; RGBForeColor(&bd); FrameRect(&cell);
+
+                    // Dot in cell centre
+                    short dotX = static_cast<short>(cx + (kCell-4)/2);
+                    short dotY = static_cast<short>(cy + (kCell-4)/2);
+                    Rect dot = { dotY, dotX, static_cast<short>(dotY+4), static_cast<short>(dotX+4) };
+                    if (active) { RGBColor dc={0xFFFF,0xFFFF,0xFFFF}; RGBForeColor(&dc); }
+                    else        { RGBColor dc={0x7777,0x7777,0x7777}; RGBForeColor(&dc); }
+                    PaintRect(&dot);
+                }
+            }
+
+            // Gap field — right of grid
+            short gapX = static_cast<short>(gridX + gridSpan + 8); // x=66
+            RGBForeColor(&labelClr); TextSize(9);
+            PStrC("Gap", ps); MoveTo(gapX, static_cast<short>(gridY + 10)); DrawString(ps);
+            TextSize(11);
+            short gapFieldW = static_cast<short>(portRect.right - gapX - 6);
+            DrawNumField(gapX, static_cast<short>(gridY + 26), gapFieldW,
+                         kFieldLayoutGap, static_cast<SInt32>(lf->layoutGap), sLayoutGapRect);
+
+            // SpaceBetween toggle — below the grid, same width
+            short sbY = static_cast<short>(gridY + gridSpan + 4);
+            sLayoutSBRect = { sbY, gridX, static_cast<short>(sbY+16), static_cast<short>(gridX+gridSpan) };
+            {
+                bool sbActive = isSB;
+                if (sbActive) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
+                else          { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
+                PaintRect(&sLayoutSBRect);
+                RGBColor bd={0x7777,0x7777,0x7777}; RGBForeColor(&bd); FrameRect(&sLayoutSBRect);
+                if (sbActive) { RGBColor tc={0xFFFF,0xFFFF,0xFFFF}; RGBForeColor(&tc); }
+                else          { RGBColor tc={0x3333,0x3333,0x3333}; RGBForeColor(&tc); }
+                TextSize(9); PStrC("Space Between", ps);
+                short tw = StringWidth(ps);
+                MoveTo(static_cast<short>(gridX + (gridSpan-tw)/2), static_cast<short>(sbY+12));
+                DrawString(ps); TextSize(11);
+            }
+            y = static_cast<short>(sbY + 22);
+
+            // Padding field
+            RGBForeColor(&labelClr); PStrC("Padding", ps); MoveTo(6, static_cast<short>(y+12)); DrawString(ps);
+            DrawNumField(58, static_cast<short>(y+12), 40, kFieldLayoutPad,
                          static_cast<SInt32>(lf->paddingTop), sLayoutPadRect);
             y = static_cast<short>(y + 22);
-
-            // Primary axis alignment (4 buttons: Start / Center / End / SpaceBetween)
-            RGBForeColor(&labelClr); TextSize(9);
-            PStrC("Pri:", ps); MoveTo(6, static_cast<short>(y+12)); DrawString(ps); TextSize(11);
-            const char* primLabels[4] = { "S", "C", "E", "SB" };
-            for (int i = 0; i < 4; ++i) {
-                short bx = static_cast<short>(34 + i * 36);
-                Rect btn = { y, bx, static_cast<short>(y+16), static_cast<short>(bx+32) };
-                sLayoutPrimRect[i] = btn;
-                bool active = (static_cast<UInt8>(lf->primaryAlign) == i);
-                if (active) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
-                else        { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
-                PaintRect(&btn);
-                RGBColor bd={0x7777,0x7777,0x7777}; RGBForeColor(&bd); FrameRect(&btn);
-                if (active) { RGBColor tc={0xFFFF,0xFFFF,0xFFFF}; RGBForeColor(&tc); }
-                else        { RGBColor tc={0x3333,0x3333,0x3333}; RGBForeColor(&tc); }
-                TextSize(9); PStrC(primLabels[i], ps);
-                short tw = StringWidth(ps);
-                MoveTo(static_cast<short>(bx + (32 - tw)/2), static_cast<short>(y+12));
-                DrawString(ps); TextSize(11);
-            }
-            y = static_cast<short>(y + 20);
-
-            // Cross axis alignment (3 buttons: Start / Center / End)
-            RGBForeColor(&labelClr); TextSize(9);
-            PStrC("Sec:", ps); MoveTo(6, static_cast<short>(y+12)); DrawString(ps); TextSize(11);
-            const char* crossLabels[3] = { "S", "C", "E" };
-            for (int i = 0; i < 3; ++i) {
-                short bx = static_cast<short>(34 + i * 46);
-                Rect btn = { y, bx, static_cast<short>(y+16), static_cast<short>(bx+42) };
-                sLayoutCrossRect[i] = btn;
-                bool active = (static_cast<UInt8>(lf->crossAlign) == i);
-                if (active) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
-                else        { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
-                PaintRect(&btn);
-                RGBColor bd={0x7777,0x7777,0x7777}; RGBForeColor(&bd); FrameRect(&btn);
-                if (active) { RGBColor tc={0xFFFF,0xFFFF,0xFFFF}; RGBForeColor(&tc); }
-                else        { RGBColor tc={0x3333,0x3333,0x3333}; RGBForeColor(&tc); }
-                TextSize(9); PStrC(crossLabels[i], ps);
-                short tw = StringWidth(ps);
-                MoveTo(static_cast<short>(bx + (42 - tw)/2), static_cast<short>(y+12));
-                DrawString(ps); TextSize(11);
-            }
-            y = static_cast<short>(y + 20);
         }
     }
 
@@ -622,71 +699,53 @@ void DrawInspectorPanel() {
 
     // -------------------------------------------------------------- SIZE --
     y = DrawSectionHeader(y, "SIZE", portRect);
-    y = static_cast<short>(y + 6);
+    y = static_cast<short>(y + 5);
 
     bool isFrameSel = (!gSelectedShape && gSelectedFrame);
 
-    // W field — grayed out (non-editable) when frame width is Hug or Fill
-    bool wAuto = isFrameSel && (gSelectedFrame->widthSizing != SizingMode::Fixed);
-    RGBForeColor(&labelClr); PStrC("W", ps); MoveTo(6, static_cast<short>(y+12)); DrawString(ps);
-    if (wAuto) {
-        sFieldWRect = {0,0,0,0};
-        RGBColor gc={0x9999,0x9999,0x9999}; RGBForeColor(&gc);
-        PStr(numStr(bounds.w), ps); MoveTo(20, static_cast<short>(y+12)); DrawString(ps);
-    } else {
-        DrawNumField(20, static_cast<short>(y+12), 64, kFieldW, bounds.w, sFieldWRect);
-    }
-
-    // H field — grayed out when frame height is Hug or Fill
-    bool hAuto = isFrameSel && (gSelectedFrame->heightSizing != SizingMode::Fixed);
-    RGBForeColor(&labelClr); PStrC("H", ps); MoveTo(94, static_cast<short>(y+12)); DrawString(ps);
-    if (hAuto) {
-        sFieldHRect = {0,0,0,0};
-        RGBColor gc={0x9999,0x9999,0x9999}; RGBForeColor(&gc);
-        PStr(numStr(bounds.h), ps); MoveTo(106, static_cast<short>(y+12)); DrawString(ps);
-    } else {
-        DrawNumField(106, static_cast<short>(y+12), 62, kFieldH, bounds.h, sFieldHRect);
-    }
-    y = static_cast<short>(y + 22);
-
-    // Sizing mode buttons (Fx / Hg / Fl) — only shown for frame selections
     if (isFrameSel) {
-        const char* sizLabels[3] = { "Fx", "Hg", "Fl" };
-        // W sizing (left half of panel)
-        for (int i = 0; i < 3; ++i) {
-            short bx = static_cast<short>(4 + i * 28);
-            Rect btn = { static_cast<short>(y+1), bx, static_cast<short>(y+15), static_cast<short>(bx+26) };
-            sWidthSizingRect[i] = btn;
-            bool active = (static_cast<UInt8>(gSelectedFrame->widthSizing) == i);
-            if (active) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
-            else        { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
-            PaintRect(&btn);
-            RGBColor bd={0x7777,0x7777,0x7777}; RGBForeColor(&bd); FrameRect(&btn);
-            if (active) { RGBColor tc={0xFFFF,0xFFFF,0xFFFF}; RGBForeColor(&tc); }
-            else        { RGBColor tc={0x3333,0x3333,0x3333}; RGBForeColor(&tc); }
-            TextSize(9); PStrC(sizLabels[i], ps);
-            short tw = StringWidth(ps);
-            MoveTo(static_cast<short>(bx + (26-tw)/2), static_cast<short>(y+12));
-            DrawString(ps); TextSize(11);
+        // Frames: W and H on separate rows, each with a sizing-mode popup.
+        // Popup sits flush to the right edge; value field is left of it.
+        short popW = 70;
+        short popX = static_cast<short>(portRect.right - popW - 4);
+        short valW = static_cast<short>(popX - 20 - 4);
+
+        // W row
+        bool wAuto = (gSelectedFrame->widthSizing != SizingMode::Fixed);
+        RGBForeColor(&labelClr); PStrC("W", ps); MoveTo(6, static_cast<short>(y+13)); DrawString(ps);
+        if (wAuto) {
+            sFieldWRect = {0,0,0,0};
+            RGBColor gc={0x9999,0x9999,0x9999}; RGBForeColor(&gc);
+            PStr(numStr(bounds.w), ps); MoveTo(20, static_cast<short>(y+13)); DrawString(ps);
+        } else {
+            DrawNumField(20, static_cast<short>(y+13), valW, kFieldW, bounds.w, sFieldWRect);
         }
-        // H sizing (right half of panel)
-        for (int i = 0; i < 3; ++i) {
-            short bx = static_cast<short>(92 + i * 28);
-            Rect btn = { static_cast<short>(y+1), bx, static_cast<short>(y+15), static_cast<short>(bx+26) };
-            sHeightSizingRect[i] = btn;
-            bool active = (static_cast<UInt8>(gSelectedFrame->heightSizing) == i);
-            if (active) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
-            else        { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
-            PaintRect(&btn);
-            RGBColor bd={0x7777,0x7777,0x7777}; RGBForeColor(&bd); FrameRect(&btn);
-            if (active) { RGBColor tc={0xFFFF,0xFFFF,0xFFFF}; RGBForeColor(&tc); }
-            else        { RGBColor tc={0x3333,0x3333,0x3333}; RGBForeColor(&tc); }
-            TextSize(9); PStrC(sizLabels[i], ps);
-            short tw = StringWidth(ps);
-            MoveTo(static_cast<short>(bx + (26-tw)/2), static_cast<short>(y+12));
-            DrawString(ps); TextSize(11);
+        const char* wSizName = (gSelectedFrame->widthSizing == SizingMode::Hug)  ? "Hug"
+                             : (gSelectedFrame->widthSizing == SizingMode::Fill) ? "Fill" : "Fixed";
+        DrawPlatinumBtn(popX, y, popW, 18, wSizName, sWidthSizingPopupRect);
+        y = static_cast<short>(y + 22);
+
+        // H row
+        bool hAuto = (gSelectedFrame->heightSizing != SizingMode::Fixed);
+        RGBForeColor(&labelClr); PStrC("H", ps); MoveTo(6, static_cast<short>(y+13)); DrawString(ps);
+        if (hAuto) {
+            sFieldHRect = {0,0,0,0};
+            RGBColor gc={0x9999,0x9999,0x9999}; RGBForeColor(&gc);
+            PStr(numStr(bounds.h), ps); MoveTo(20, static_cast<short>(y+13)); DrawString(ps);
+        } else {
+            DrawNumField(20, static_cast<short>(y+13), valW, kFieldH, bounds.h, sFieldHRect);
         }
-        y = static_cast<short>(y + 18);
+        const char* hSizName = (gSelectedFrame->heightSizing == SizingMode::Hug)  ? "Hug"
+                             : (gSelectedFrame->heightSizing == SizingMode::Fill) ? "Fill" : "Fixed";
+        DrawPlatinumBtn(popX, y, popW, 18, hSizName, sHeightSizingPopupRect);
+        y = static_cast<short>(y + 24);
+    } else {
+        // Shapes: W and H on the same row, no sizing popup.
+        RGBForeColor(&labelClr); PStrC("W", ps); MoveTo(6, static_cast<short>(y+12)); DrawString(ps);
+        DrawNumField(20, static_cast<short>(y+12), 64, kFieldW, bounds.w, sFieldWRect);
+        RGBForeColor(&labelClr); PStrC("H", ps); MoveTo(94, static_cast<short>(y+12)); DrawString(ps);
+        DrawNumField(106, static_cast<short>(y+12), 62, kFieldH, bounds.h, sFieldHRect);
+        y = static_cast<short>(y + 22);
     }
 
     TextSize(12); PenNormal(); RGBForeColor(&black); RGBBackColor(&white);
@@ -965,7 +1024,7 @@ void HandleInspectorClick(Point localPt) {
     if (!gSelectedShape && gSelectedFrame) {
         Frame* lf = gSelectedFrame;
 
-        // Layout mode buttons
+        // Flow direction buttons
         for (int i = 0; i < 3; ++i) {
             if (PtInRect(localPt, &sLayoutModeRect[i])) {
                 PushUndo();
@@ -974,6 +1033,34 @@ void HandleInspectorClick(Point localPt) {
                 if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
                 return;
             }
+        }
+
+        // 3×3 alignment grid — sets primary + cross in one click
+        for (int i = 0; i < 9; ++i) {
+            if (PtInRect(localPt, &sAlignCellRect[i])) {
+                int row = i / 3, col = i % 3;
+                PushUndo();
+                if (lf->layoutMode == LayoutMode::Horizontal) {
+                    lf->primaryAlign = static_cast<PrimaryAlign>(col);
+                    lf->crossAlign   = static_cast<CrossAlign>(row);
+                } else {
+                    lf->primaryAlign = static_cast<PrimaryAlign>(row);
+                    lf->crossAlign   = static_cast<CrossAlign>(col);
+                }
+                InvalidateInspector();
+                if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
+                return;
+            }
+        }
+
+        // Space Between toggle
+        if (PtInRect(localPt, &sLayoutSBRect)) {
+            PushUndo();
+            lf->primaryAlign = (lf->primaryAlign == PrimaryAlign::SpaceBetween)
+                               ? PrimaryAlign::Start : PrimaryAlign::SpaceBetween;
+            InvalidateInspector();
+            if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
+            return;
         }
 
         // Gap field
@@ -986,51 +1073,28 @@ void HandleInspectorClick(Point localPt) {
             StartEdit(kFieldLayoutPad, static_cast<SInt32>(lf->paddingTop)); return;
         }
 
-        // Primary align buttons
-        for (int i = 0; i < 4; ++i) {
-            if (PtInRect(localPt, &sLayoutPrimRect[i])) {
-                PushUndo();
-                lf->primaryAlign = static_cast<PrimaryAlign>(i);
+        // Width sizing popup
+        if (PtInRect(localPt, &sWidthSizingPopupRect)) {
+            bool hasFill = (lf->parent && lf->parent->layoutMode != LayoutMode::None);
+            SizingMode nm = ShowSizingPopup(sWidthSizingPopupRect, lf->widthSizing, hasFill);
+            if (nm != lf->widthSizing) {
+                PushUndo(); lf->widthSizing = nm;
                 InvalidateInspector();
                 if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
-                return;
             }
+            return;
         }
 
-        // Cross align buttons
-        for (int i = 0; i < 3; ++i) {
-            if (PtInRect(localPt, &sLayoutCrossRect[i])) {
-                PushUndo();
-                lf->crossAlign = static_cast<CrossAlign>(i);
+        // Height sizing popup
+        if (PtInRect(localPt, &sHeightSizingPopupRect)) {
+            bool hasFill = (lf->parent && lf->parent->layoutMode != LayoutMode::None);
+            SizingMode nm = ShowSizingPopup(sHeightSizingPopupRect, lf->heightSizing, hasFill);
+            if (nm != lf->heightSizing) {
+                PushUndo(); lf->heightSizing = nm;
                 InvalidateInspector();
                 if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
-                return;
             }
-        }
-
-        // Width sizing buttons
-        for (int i = 0; i < 3; ++i) {
-            if (PtInRect(localPt, &sWidthSizingRect[i])) {
-                // Fill is only valid when the frame has a parent with an active layout
-                if (i == 2 && (!lf->parent || lf->parent->layoutMode == LayoutMode::None)) return;
-                PushUndo();
-                lf->widthSizing = static_cast<SizingMode>(i);
-                InvalidateInspector();
-                if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
-                return;
-            }
-        }
-
-        // Height sizing buttons
-        for (int i = 0; i < 3; ++i) {
-            if (PtInRect(localPt, &sHeightSizingRect[i])) {
-                if (i == 2 && (!lf->parent || lf->parent->layoutMode == LayoutMode::None)) return;
-                PushUndo();
-                lf->heightSizing = static_cast<SizingMode>(i);
-                InvalidateInspector();
-                if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
-                return;
-            }
+            return;
         }
     }
 
