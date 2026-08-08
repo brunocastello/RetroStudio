@@ -18,7 +18,7 @@ void RefreshInspector();
 // Inline numeric field editing — call HandleInspectorKey from the main keyDown
 // handler (before menu shortcuts) when no modifier keys are held.
 // Returns true if the key was consumed by an active edit field.
-bool HandleInspectorKey(char key);
+bool HandleInspectorKey(char key, EventModifiers modifiers = 0);
 bool InspectorInEditMode();
 void ApplyInspectorEdit();   // commit any in-progress edit (called on click-away)
 void CancelInspectorEdit();  // discard any in-progress edit (e.g. on Escape)

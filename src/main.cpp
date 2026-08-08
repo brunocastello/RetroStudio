@@ -133,7 +133,7 @@ int main(int argc, char* argv[]) {
                     char key = static_cast<char>(event.message & charCodeMask);
                     // Inspector / Typography field edit modes capture non-cmd keys first
                     if (!(event.modifiers & cmdKey) && HandleTypographyPanelKey(key)) break;
-                    if (!(event.modifiers & cmdKey) && HandleInspectorKey(key)) break;
+                    if (!(event.modifiers & cmdKey) && HandleInspectorKey(key, event.modifiers)) break;
                     if (event.modifiers & cmdKey) {
                         // Cmd+Shift+Z = Redo (secondary shortcut; primary is Cmd+Y via menu)
                         if ((event.modifiers & shiftKey) && (key == 'Z' || key == 'z')) {

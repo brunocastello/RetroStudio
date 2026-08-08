@@ -864,10 +864,108 @@ void DrawInspectorPanel() {
 }
 
 // --------------------------------------------------------------------------
+// Tab navigation helpers
+// --------------------------------------------------------------------------
+
+// Start editing a field, pre-filling with its current value.
+static void StartEditForField(EditField field) {
+    if (!gSelectedShape && !gSelectedFrame) return;
+    Bounds2* b = gSelectedShape ? &gSelectedShape->bounds
+                                : (gSelectedFrame ? &gSelectedFrame->bounds : nullptr);
+    switch (field) {
+        case kFieldFontSize:
+            if (gSelectedShape && gSelectedShape->GetType() == Shape::kText)
+                StartEdit(field, static_cast<SInt32>(static_cast<TextShape&>(*gSelectedShape).fontSize));
+            break;
+        case kFieldStrokeWidth: {
+            UInt16 sw = gSelectedShape ? gSelectedShape->strokeWidth
+                                       : (gSelectedFrame ? gSelectedFrame->strokeWidth : 1);
+            StartEdit(field, static_cast<SInt32>(sw));
+            break;
+        }
+        case kFieldLayoutGap:
+            if (gSelectedFrame) StartEdit(field, static_cast<SInt32>(gSelectedFrame->layoutGap));
+            break;
+        case kFieldPadH:
+            if (gSelectedFrame) {
+                std::string s = padCompactStr(gSelectedFrame->paddingLeft, gSelectedFrame->paddingRight);
+                StartEditStr(field, s.c_str());
+            }
+            break;
+        case kFieldPadV:
+            if (gSelectedFrame) {
+                std::string s = padCompactStr(gSelectedFrame->paddingTop, gSelectedFrame->paddingBottom);
+                StartEditStr(field, s.c_str());
+            }
+            break;
+        case kFieldPadTop:    if (gSelectedFrame) StartEdit(field, gSelectedFrame->paddingTop);    break;
+        case kFieldPadRight:  if (gSelectedFrame) StartEdit(field, gSelectedFrame->paddingRight);  break;
+        case kFieldPadBottom: if (gSelectedFrame) StartEdit(field, gSelectedFrame->paddingBottom); break;
+        case kFieldPadLeft:   if (gSelectedFrame) StartEdit(field, gSelectedFrame->paddingLeft);   break;
+        case kFieldX: if (b) StartEdit(field, b->x); break;
+        case kFieldY: if (b) StartEdit(field, b->y); break;
+        case kFieldW: if (b) StartEdit(field, b->w); break;
+        case kFieldH: if (b) StartEdit(field, b->h); break;
+        default: break;
+    }
+}
+
+// Build the ordered list of currently-visible editable fields and return the
+// next (or previous) one relative to `cur`.
+static EditField TabToNextField(EditField cur, bool reverse) {
+    std::vector<EditField> order;
+
+    // Text size (text shapes only)
+    if (gSelectedShape && gSelectedShape->GetType() == Shape::kText)
+        order.push_back(kFieldFontSize);
+
+    // Stroke width (when stroke is enabled)
+    bool hasStroke = gSelectedShape ? gSelectedShape->hasStroke
+                                    : (gSelectedFrame ? gSelectedFrame->hasStroke : false);
+    if (hasStroke) order.push_back(kFieldStrokeWidth);
+
+    // Layout fields (frame with active layout only)
+    if (!gSelectedShape && gSelectedFrame && gSelectedFrame->layoutMode != LayoutMode::None) {
+        bool isSB = (gSelectedFrame->primaryAlign == PrimaryAlign::SpaceBetween);
+        if (!isSB) order.push_back(kFieldLayoutGap);
+        if (sMixedPadding) {
+            order.push_back(kFieldPadTop);
+            order.push_back(kFieldPadRight);
+            order.push_back(kFieldPadBottom);
+            order.push_back(kFieldPadLeft);
+        } else {
+            order.push_back(kFieldPadH);
+            order.push_back(kFieldPadV);
+        }
+    }
+
+    // Position
+    order.push_back(kFieldX);
+    order.push_back(kFieldY);
+
+    // Size (only editable when Fixed sizing)
+    bool wFixed = !gSelectedFrame || gSelectedFrame->widthSizing  == SizingMode::Fixed;
+    bool hFixed = !gSelectedFrame || gSelectedFrame->heightSizing == SizingMode::Fixed;
+    if (wFixed) order.push_back(kFieldW);
+    if (hFixed) order.push_back(kFieldH);
+
+    if (order.empty()) return kNoField;
+
+    int idx = -1;
+    for (int i = 0; i < (int)order.size(); ++i)
+        if (order[i] == cur) { idx = i; break; }
+
+    if (idx < 0) return order[0];
+    if (reverse) idx = static_cast<int>((idx - 1 + order.size()) % order.size());
+    else         idx = static_cast<int>((idx + 1)               % order.size());
+    return order[idx];
+}
+
+// --------------------------------------------------------------------------
 // Inline numeric field key handling
 // --------------------------------------------------------------------------
 
-bool HandleInspectorKey(char key) {
+bool HandleInspectorKey(char key, EventModifiers modifiers) {
     if (sActiveField == kNoField) return false;
 
     // If the object was locked while an edit was in progress, cancel it
@@ -882,6 +980,14 @@ bool HandleInspectorKey(char key) {
     if (key == 0x1B) {  // Escape — cancel
         sActiveField = kNoField; sEditLen = 0; sEditBuf[0] = '\0';
         InvalidateInspector();
+        return true;
+    }
+
+    if (key == 0x09) {  // Tab — apply current field and move to next (Shift+Tab = previous)
+        EditField prev = sActiveField;
+        ApplyInspectorEdit();
+        EditField next = TabToNextField(prev, (modifiers & shiftKey) != 0);
+        if (next != kNoField) StartEditForField(next);
         return true;
     }
 
