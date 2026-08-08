@@ -83,7 +83,7 @@ int main(int argc, char* argv[]) {
                                 ApplyInspectorEdit();
                                 switch (gActiveTool) {
                                     case Tool::Select:
-                                        HandleCanvasSelect(win, event.where);
+                                        HandleCanvasSelect(win, event.where, event.modifiers);
                                         RefreshLayersPanel();
                                         RefreshInspector();
                                         break;

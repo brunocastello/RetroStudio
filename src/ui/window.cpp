@@ -601,7 +601,7 @@ static int HitTestHandles(Point pt) {
 
 // Drag the selected object's bounds by moving only the edge(s) implied by
 // handleIdx, then redraw live.  Minimum dimension: 10px.
-static void HandleResizeDrag(WindowRef win, int hi, Point startPt) {
+static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startMods = 0) {
     // Which edges each handle moves
     // Index:           0      1      2      3      4      5      6      7
     static const bool bL[8]={ true,  false, false, false, false, false, true,  true  };
@@ -634,11 +634,8 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt) {
             if (bR[hi])   b->w = origB.w + totalDX;
             if (bB[hi])   b->h = origB.h + totalDY;
 
-            // Aspect ratio lock: inspector button OR Shift key on corner handles
-            // Check Shift key: key 56 (left) and key 60 (right) live in km[1]
-            KeyMap km; GetKeys(km);
-            bool shiftDown = ((km[1] & (1UL << 24)) || (km[1] & (1UL << 28)));
-            bool lockAR = isCorner && (IsAspectLocked() || shiftDown);
+            // Aspect ratio lock: inspector button OR Shift held at drag start
+            bool lockAR = isCorner && (IsAspectLocked() || (startMods & shiftKey));
             if (lockAR && origB.w > 0 && origB.h > 0) {
                 SInt32 newH = b->w * origB.h / origB.w;
                 if (bT[hi]) { SInt32 bot = origB.y + origB.h; b->h = newH; b->y = bot - newH; }
@@ -744,7 +741,7 @@ static ShapeLabelHit HitTestShapeLabelInFrame(Frame* f, Point pt) {
 // Select tool: resize handles → name labels → body hit-test → move + reparent
 // --------------------------------------------------------------------------
 
-void HandleCanvasSelect(WindowRef win, Point startGlobal) {
+void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
     if (!gDocument) return;
 
     SetPortWindowPort(win);
@@ -756,7 +753,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal) {
     if (handleIdx >= 0) {
         bool selLocked = gSelectedShape ? gSelectedShape->locked
                                         : (gSelectedFrame ? gSelectedFrame->locked : false);
-        if (!selLocked) HandleResizeDrag(win, handleIdx, pt);
+        if (!selLocked) HandleResizeDrag(win, handleIdx, pt, modifiers);
         return;
     }
 
