@@ -886,94 +886,7 @@ bool HandleInspectorKey(char key) {
     }
 
     if (key == 0x0D || key == 0x03) {  // Return or Enter — apply
-        sEditBuf[sEditLen] = '\0';
-        SInt32 val = 0; int i = 0; bool neg = false;
-        if (sEditLen > 0 && sEditBuf[0] == '-') { neg = true; i = 1; }
-        for (; i < sEditLen; ++i)
-            if (sEditBuf[i] >= '0' && sEditBuf[i] <= '9')
-                val = val * 10 + (sEditBuf[i] - '0');
-        if (neg) val = -val;
-
-        Bounds2* b  = gSelectedShape ? &gSelectedShape->bounds
-                                     : (gSelectedFrame ? &gSelectedFrame->bounds : nullptr);
-        UInt16*  sw = gSelectedShape ? &gSelectedShape->strokeWidth
-                                     : (gSelectedFrame ? &gSelectedFrame->strokeWidth : nullptr);
-
-        bool changed = false;
-        if (b) {
-            switch (sActiveField) {
-                case kFieldX: if (val!=b->x){PushUndo(); b->x=val;      changed=true;} break;
-                case kFieldY: if (val!=b->y){PushUndo(); b->y=val;      changed=true;} break;
-                case kFieldW: if (val<1) val=1; if (val!=b->w){PushUndo(); b->w=val; changed=true;} break;
-                case kFieldH: if (val<1) val=1; if (val!=b->h){PushUndo(); b->h=val; changed=true;} break;
-                default: break;
-            }
-        }
-        if (sw && sActiveField == kFieldStrokeWidth) {
-            if (val < 1) val = 1; if (val > 20) val = 20;
-            UInt16 nv = static_cast<UInt16>(val);
-            if (nv != *sw) { PushUndo(); *sw = nv; changed = true; }
-        }
-        if (sActiveField == kFieldFontSize && gSelectedShape &&
-                gSelectedShape->GetType() == Shape::kText) {
-            if (val < 4)   val = 4;
-            if (val > 144) val = 144;
-            TextShape& ts = static_cast<TextShape&>(*gSelectedShape);
-            if (val != static_cast<SInt32>(ts.fontSize)) {
-                PushUndo(); ts.fontSize = static_cast<SInt16>(val); changed = true;
-            }
-        }
-        if (sActiveField == kFieldLayoutGap && gSelectedFrame) {
-            if (val < 0)   val = 0;
-            if (val > 500) val = 500;
-            UInt16 nv = static_cast<UInt16>(val);
-            if (nv != gSelectedFrame->layoutGap) { PushUndo(); gSelectedFrame->layoutGap = nv; changed = true; }
-        }
-        if (gSelectedFrame && (sActiveField == kFieldPadH || sActiveField == kFieldPadV ||
-            sActiveField == kFieldPadTop   || sActiveField == kFieldPadRight  ||
-            sActiveField == kFieldPadBottom || sActiveField == kFieldPadLeft)) {
-            PushUndo();
-            if (sActiveField == kFieldPadH || sActiveField == kFieldPadV) {
-                // Parse "a" (both sides same) or "a, b" (sides independent)
-                SInt32 a = 0, b = 0;
-                int sepIdx = -1;
-                for (int i = 0; i < sEditLen; ++i)
-                    if (sEditBuf[i] == ',') { sepIdx = i; break; }
-                int end1 = (sepIdx >= 0) ? sepIdx : sEditLen;
-                for (int i = 0; i < end1; ++i)
-                    if (sEditBuf[i] >= '0' && sEditBuf[i] <= '9') a = a*10 + (sEditBuf[i]-'0');
-                if (sepIdx >= 0) {
-                    int s2 = sepIdx + 1;
-                    while (s2 < sEditLen && sEditBuf[s2] == ' ') ++s2;
-                    for (int i = s2; i < sEditLen; ++i)
-                        if (sEditBuf[i] >= '0' && sEditBuf[i] <= '9') b = b*10 + (sEditBuf[i]-'0');
-                } else { b = a; }
-                if (a < 0) a = 0; if (a > 255) a = 255;
-                if (b < 0) b = 0; if (b > 255) b = 255;
-                if (sActiveField == kFieldPadH) {
-                    gSelectedFrame->paddingLeft  = static_cast<UInt8>(a);
-                    gSelectedFrame->paddingRight = static_cast<UInt8>(b);
-                } else {
-                    gSelectedFrame->paddingTop    = static_cast<UInt8>(a);
-                    gSelectedFrame->paddingBottom = static_cast<UInt8>(b);
-                }
-            } else {
-                if (val < 0) val = 0; if (val > 255) val = 255;
-                UInt8 nv = static_cast<UInt8>(val);
-                switch (sActiveField) {
-                    case kFieldPadTop:    gSelectedFrame->paddingTop    = nv; break;
-                    case kFieldPadRight:  gSelectedFrame->paddingRight  = nv; break;
-                    case kFieldPadBottom: gSelectedFrame->paddingBottom = nv; break;
-                    case kFieldPadLeft:   gSelectedFrame->paddingLeft   = nv; break;
-                    default: break;
-                }
-            }
-            changed = true;
-        }
-
-        sActiveField = kNoField; sEditLen = 0; sEditBuf[0] = '\0';
-        InvalidateInspector();
-        if (changed && gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
+        ApplyInspectorEdit();
         return true;
     }
 
@@ -1015,6 +928,98 @@ bool HandleInspectorKey(char key) {
 
 bool InspectorInEditMode() { return sActiveField != kNoField; }
 
+void ApplyInspectorEdit() {
+    if (sActiveField == kNoField) return;
+    sEditBuf[sEditLen] = '\0';
+
+    SInt32 val = 0; int i = 0; bool neg = false;
+    if (sEditLen > 0 && sEditBuf[0] == '-') { neg = true; i = 1; }
+    for (; i < sEditLen; ++i)
+        if (sEditBuf[i] >= '0' && sEditBuf[i] <= '9')
+            val = val * 10 + (sEditBuf[i] - '0');
+    if (neg) val = -val;
+
+    Bounds2* b  = gSelectedShape ? &gSelectedShape->bounds
+                                 : (gSelectedFrame ? &gSelectedFrame->bounds : nullptr);
+    UInt16*  sw = gSelectedShape ? &gSelectedShape->strokeWidth
+                                 : (gSelectedFrame ? &gSelectedFrame->strokeWidth : nullptr);
+
+    bool changed = false;
+    if (b) {
+        switch (sActiveField) {
+            case kFieldX: if (val!=b->x){PushUndo(); b->x=val;      changed=true;} break;
+            case kFieldY: if (val!=b->y){PushUndo(); b->y=val;      changed=true;} break;
+            case kFieldW: if (val<1) val=1; if (val!=b->w){PushUndo(); b->w=val; changed=true;} break;
+            case kFieldH: if (val<1) val=1; if (val!=b->h){PushUndo(); b->h=val; changed=true;} break;
+            default: break;
+        }
+    }
+    if (sw && sActiveField == kFieldStrokeWidth) {
+        if (val < 1) val = 1; if (val > 20) val = 20;
+        UInt16 nv = static_cast<UInt16>(val);
+        if (nv != *sw) { PushUndo(); *sw = nv; changed = true; }
+    }
+    if (sActiveField == kFieldFontSize && gSelectedShape &&
+            gSelectedShape->GetType() == Shape::kText) {
+        if (val < 4)   val = 4;
+        if (val > 144) val = 144;
+        TextShape& ts = static_cast<TextShape&>(*gSelectedShape);
+        if (val != static_cast<SInt32>(ts.fontSize)) {
+            PushUndo(); ts.fontSize = static_cast<SInt16>(val); changed = true;
+        }
+    }
+    if (sActiveField == kFieldLayoutGap && gSelectedFrame) {
+        if (val < 0)   val = 0;
+        if (val > 500) val = 500;
+        UInt16 nv = static_cast<UInt16>(val);
+        if (nv != gSelectedFrame->layoutGap) { PushUndo(); gSelectedFrame->layoutGap = nv; changed = true; }
+    }
+    if (gSelectedFrame && (sActiveField == kFieldPadH || sActiveField == kFieldPadV ||
+        sActiveField == kFieldPadTop   || sActiveField == kFieldPadRight  ||
+        sActiveField == kFieldPadBottom || sActiveField == kFieldPadLeft)) {
+        PushUndo();
+        if (sActiveField == kFieldPadH || sActiveField == kFieldPadV) {
+            SInt32 a = 0, b2 = 0;
+            int sepIdx = -1;
+            for (int j = 0; j < sEditLen; ++j)
+                if (sEditBuf[j] == ',') { sepIdx = j; break; }
+            int end1 = (sepIdx >= 0) ? sepIdx : sEditLen;
+            for (int j = 0; j < end1; ++j)
+                if (sEditBuf[j] >= '0' && sEditBuf[j] <= '9') a = a*10 + (sEditBuf[j]-'0');
+            if (sepIdx >= 0) {
+                int s2 = sepIdx + 1;
+                while (s2 < sEditLen && sEditBuf[s2] == ' ') ++s2;
+                for (int j = s2; j < sEditLen; ++j)
+                    if (sEditBuf[j] >= '0' && sEditBuf[j] <= '9') b2 = b2*10 + (sEditBuf[j]-'0');
+            } else { b2 = a; }
+            if (a < 0) a = 0; if (a > 255) a = 255;
+            if (b2 < 0) b2 = 0; if (b2 > 255) b2 = 255;
+            if (sActiveField == kFieldPadH) {
+                gSelectedFrame->paddingLeft  = static_cast<UInt8>(a);
+                gSelectedFrame->paddingRight = static_cast<UInt8>(b2);
+            } else {
+                gSelectedFrame->paddingTop    = static_cast<UInt8>(a);
+                gSelectedFrame->paddingBottom = static_cast<UInt8>(b2);
+            }
+        } else {
+            if (val < 0) val = 0; if (val > 255) val = 255;
+            UInt8 nv = static_cast<UInt8>(val);
+            switch (sActiveField) {
+                case kFieldPadTop:    gSelectedFrame->paddingTop    = nv; break;
+                case kFieldPadRight:  gSelectedFrame->paddingRight  = nv; break;
+                case kFieldPadBottom: gSelectedFrame->paddingBottom = nv; break;
+                case kFieldPadLeft:   gSelectedFrame->paddingLeft   = nv; break;
+                default: break;
+            }
+        }
+        changed = true;
+    }
+
+    sActiveField = kNoField; sEditLen = 0; sEditBuf[0] = '\0';
+    InvalidateInspector();
+    if (changed && gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
+}
+
 void CancelInspectorEdit() {
     if (sActiveField != kNoField) {
         sActiveField = kNoField; sEditLen = 0; sEditBuf[0] = '\0';
@@ -1035,8 +1040,8 @@ void HandleInspectorClick(Point localPt) {
                                    : gSelectedFrame->locked;
     if (isLocked) return;
 
-    // Cancel any active edit when clicking elsewhere in the inspector
-    CancelInspectorEdit();
+    // Apply any active edit when clicking elsewhere in the inspector (no Enter needed)
+    ApplyInspectorEdit();
 
     // Fill color swatch
     if (PtInRect(localPt, &sFillSwatchRect)) {

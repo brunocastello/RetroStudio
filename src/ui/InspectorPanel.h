@@ -20,4 +20,5 @@ void RefreshInspector();
 // Returns true if the key was consumed by an active edit field.
 bool HandleInspectorKey(char key);
 bool InspectorInEditMode();
-void CancelInspectorEdit();  // discard any in-progress edit (e.g. on canvas click)
+void ApplyInspectorEdit();   // commit any in-progress edit (called on click-away)
+void CancelInspectorEdit();  // discard any in-progress edit (e.g. on Escape)

@@ -80,7 +80,7 @@ int main(int argc, char* argv[]) {
                                 HandleInspectorClick(localPt);
                             } else if (win == gMainWindow) {
                                 if (win != FrontWindow()) { SelectWindow(win); break; }
-                                CancelInspectorEdit();
+                                ApplyInspectorEdit();
                                 switch (gActiveTool) {
                                     case Tool::Select:
                                         HandleCanvasSelect(win, event.where);
