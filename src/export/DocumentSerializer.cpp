@@ -6,7 +6,7 @@
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
 static const UInt32 kMagic   = 0x52535444;  // 'RSTD'
-static const UInt16 kVersion = 6;
+static const UInt16 kVersion = 7;
 
 // Folder Manager constants — defined here because Retro68 Carbon headers
 // don't always expose <Folders.h> constants via <Carbon.h>.
@@ -163,6 +163,7 @@ static void WriteFrame(Writer& w, const Frame& f) {
 
     // Auto Layout
     w.w8(static_cast<UInt8>(f.layoutMode));
+    w.w8(f.layoutWrap ? 1 : 0);
     w.w16(f.layoutGap);
     w.w8(f.paddingTop); w.w8(f.paddingRight);
     w.w8(f.paddingBottom); w.w8(f.paddingLeft);
@@ -197,6 +198,7 @@ static std::unique_ptr<Frame> ReadFrame(Reader& r, Frame* parent) {
 
     // Auto Layout
     f->layoutMode    = static_cast<LayoutMode>(r.r8());
+    f->layoutWrap    = r.r8() != 0;
     f->layoutGap     = r.r16();
     f->paddingTop    = r.r8(); f->paddingRight  = r.r8();
     f->paddingBottom = r.r8(); f->paddingLeft   = r.r8();

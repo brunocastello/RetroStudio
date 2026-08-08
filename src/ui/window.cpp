@@ -1166,6 +1166,7 @@ static std::unique_ptr<Frame> CloneFrame(const Frame* src, Frame* newParent) {
     f->locked          = src->locked;
     f->clipContent     = src->clipContent;
     f->layoutMode      = src->layoutMode;
+    f->layoutWrap      = src->layoutWrap;
     f->layoutGap       = src->layoutGap;
     f->paddingTop      = src->paddingTop;
     f->paddingRight    = src->paddingRight;

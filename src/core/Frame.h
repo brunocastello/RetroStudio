@@ -24,6 +24,7 @@ public:
 
     // Auto Layout — how this frame arranges its children
     LayoutMode   layoutMode    = LayoutMode::None;
+    bool         layoutWrap    = false;
     UInt16       layoutGap     = 0;
     UInt8        paddingTop    = 0;
     UInt8        paddingRight  = 0;

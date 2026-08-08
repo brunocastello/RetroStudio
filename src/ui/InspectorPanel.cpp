@@ -34,6 +34,7 @@ static Rect sTypographyBtnRect   = {0, 0, 0, 0};
 
 // Auto Layout controls (frame selected)
 static Rect sLayoutModeRect[3]       = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
+static Rect sWrapRect                = {0, 0, 0, 0};  // Wrap toggle button
 static Rect sLayoutGapRect           = {0, 0, 0, 0};  // numeric gap field (Fixed mode)
 static Rect sLayoutGapModeRect       = {0, 0, 0, 0};  // Fixed / Auto popup
 static Rect sAlignCellRect[9]        = {};   // 3×3 grid, index = row*3+col
@@ -423,7 +424,7 @@ void DrawInspectorPanel() {
     sPadMixedBtnRect = sPadHRect = sPadVRect = {0,0,0,0};
     sPadTopRect = sPadRightRect = sPadBottomRect = sPadLeftRect = {0,0,0,0};
     sWidthSizingPopupRect = sHeightSizingPopupRect = {0,0,0,0};
-    sAspectLockRect = sClipContentRect = {0,0,0,0};
+    sAspectLockRect = sClipContentRect = sWrapRect = {0,0,0,0};
     for (int i=0;i<3;++i) sLayoutModeRect[i]={0,0,0,0};
     for (int i=0;i<9;++i) sAlignCellRect[i]={0,0,0,0};
 
@@ -670,23 +671,47 @@ void DrawInspectorPanel() {
         y = DrawSectionHeader(y, "LAYOUT", portRect);
         y = static_cast<short>(y + 3);
 
-        // Flow direction buttons: [None] [Horizontal] [Vertical]
-        const char* modeLabels[3] = { "None", "Horizontal", "Vertical" };
-        for (int i = 0; i < 3; ++i) {
-            short bx = static_cast<short>(8 + i * 54);
-            Rect btn = { y, bx, static_cast<short>(y+18), static_cast<short>(bx+50) };
-            sLayoutModeRect[i] = btn;
-            bool active = (static_cast<UInt8>(lf->layoutMode) == i);
-            if (active) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
-            else        { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
-            PaintRect(&btn);
-            RGBColor bd={0x7777,0x7777,0x7777}; RGBForeColor(&bd); FrameRect(&btn);
-            if (active) { RGBColor tc={0xFFFF,0xFFFF,0xFFFF}; RGBForeColor(&tc); }
-            else        { RGBColor tc={0x3333,0x3333,0x3333}; RGBForeColor(&tc); }
-            TextSize(9); PStrC(modeLabels[i], ps);
-            short tw = StringWidth(ps);
-            MoveTo(static_cast<short>(bx + (50 - tw)/2), static_cast<short>(y + 13));
-            DrawString(ps); TextSize(11);
+        // Flow direction buttons: [None 42] [H 30] [V 30] [Wrap 50]
+        // None/H/V toggle the layout mode; Wrap toggles wrapping within H or V.
+        {
+            struct { const char* label; short x; short w; } btnDef[4] = {
+                { "None", 5,  42 },
+                { "H",   51,  30 },
+                { "V",   85,  30 },
+                { "Wrap",119, 50 },
+            };
+            for (int i = 0; i < 4; ++i) {
+                short bx = btnDef[i].x, bw = btnDef[i].w;
+                Rect btn = { y, bx, static_cast<short>(y+18), static_cast<short>(bx+bw) };
+
+                bool active = false;
+                bool dimmed = false;
+                if (i < 3) {
+                    active = (static_cast<UInt8>(lf->layoutMode) == i);
+                } else {
+                    active = (lf->layoutMode != LayoutMode::None && lf->layoutWrap);
+                    dimmed = (lf->layoutMode == LayoutMode::None);
+                }
+
+                if      (active)  { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
+                else if (dimmed)  { RGBColor bg={0xEEEE,0xEEEE,0xEEEE}; RGBForeColor(&bg); }
+                else              { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
+                PaintRect(&btn);
+                if (dimmed) { RGBColor bd={0xAAAA,0xAAAA,0xAAAA}; RGBForeColor(&bd); }
+                else        { RGBColor bd={0x7777,0x7777,0x7777}; RGBForeColor(&bd); }
+                FrameRect(&btn);
+
+                if      (active)  { RGBColor tc={0xFFFF,0xFFFF,0xFFFF}; RGBForeColor(&tc); }
+                else if (dimmed)  { RGBColor tc={0xAAAA,0xAAAA,0xAAAA}; RGBForeColor(&tc); }
+                else              { RGBColor tc={0x3333,0x3333,0x3333}; RGBForeColor(&tc); }
+                TextSize(9); PStrC(btnDef[i].label, ps);
+                short tw = StringWidth(ps);
+                MoveTo(static_cast<short>(bx + (bw - tw)/2), static_cast<short>(y + 13));
+                DrawString(ps); TextSize(11);
+
+                if (i < 3) sLayoutModeRect[i] = btn;
+                else        sWrapRect = btn;
+            }
         }
         y = static_cast<short>(y + 24);
 
@@ -1368,6 +1393,15 @@ void HandleInspectorClick(Point localPt) {
                 if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
                 return;
             }
+        }
+
+        // Wrap toggle (only active when H or V layout is on)
+        if (PtInRect(localPt, &sWrapRect) && lf->layoutMode != LayoutMode::None) {
+            PushUndo();
+            lf->layoutWrap = !lf->layoutWrap;
+            InvalidateInspector();
+            if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
+            return;
         }
 
         // 3×3 alignment grid — sets primary + cross in one click

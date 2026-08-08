@@ -63,6 +63,159 @@ static void RunFrameLayout(Frame* f) {
     bool hugSec = isHoriz ? (f->heightSizing == SizingMode::Hug)
                            : (f->widthSizing  == SizingMode::Hug);
 
+    // Absolute canvas origin — used by both wrap and non-wrap paths.
+    SInt32 originPri = isHoriz ? f->bounds.x : f->bounds.y;
+    SInt32 originSec = isHoriz ? f->bounds.y : f->bounds.x;
+
+    // ---- Wrap layout ----
+    // Items flow in the primary direction; when the next item would overflow the
+    // container's primary extent (minus padding) a new line is started.  Lines
+    // are stacked in the cross direction with `gap` between them.
+    if (f->layoutWrap) {
+        struct WrapLine {
+            std::vector<int> indices;
+            SInt32 crossMax = 0;
+        };
+
+        SInt32 available = framePri - padPri1 - padPri2;
+        if (available < 1) available = 1;
+
+        std::vector<WrapLine> lines;
+        WrapLine cur;
+        SInt32 curUsed = 0;
+
+        for (int i = 0; i < static_cast<int>(items.size()); i++) {
+            const auto& it = items[i];
+            UInt8  priSiz = isHoriz ? it.wSizing : it.hSizing;
+            SInt32 priSz  = isHoriz ? *it.w : *it.h;
+            SInt32 secSz  = isHoriz ? *it.h : *it.w;
+
+            // Fill items are never forced to break — they're sized per-line later.
+            bool isFill = (priSiz == static_cast<UInt8>(SizingMode::Fill));
+            SInt32 needed = cur.indices.empty() ? priSz : curUsed + gap + priSz;
+            if (!isFill && !cur.indices.empty() && needed > available) {
+                lines.push_back(cur);
+                cur = {};
+                curUsed = priSz;
+            } else {
+                curUsed = cur.indices.empty() ? priSz : curUsed + gap + priSz;
+            }
+            if (secSz > cur.crossMax) cur.crossMax = secSz;
+            cur.indices.push_back(i);
+        }
+        if (!cur.indices.empty()) lines.push_back(cur);
+
+        // Total cross dimension across all lines (including gaps between lines).
+        SInt32 totalCross = 0;
+        for (auto& ln : lines) totalCross += ln.crossMax;
+        if (lines.size() > 1)
+            totalCross += gap * static_cast<SInt32>(lines.size() - 1);
+
+        // Starting cross offset for the first line.
+        SInt32 lineSecOff = padSec1;
+        if (!hugSec && f->crossAlign != CrossAlign::Start) {
+            SInt32 rem = frameSec - padSec1 - padSec2 - totalCross;
+            if (rem > 0) {
+                if (f->crossAlign == CrossAlign::Center)
+                    lineSecOff = padSec1 + rem / 2;
+                else  // End
+                    lineSecOff = frameSec - padSec2 - totalCross;
+            }
+        }
+
+        // Position each line.
+        for (auto& ln : lines) {
+            int nL = static_cast<int>(ln.indices.size());
+
+            // Distribute Fill items in the primary direction within this line.
+            SInt32 fixedPriSum = (nL > 1) ? gap * (nL - 1) : 0;
+            int    fillCnt = 0;
+            for (int ii : ln.indices) {
+                UInt8 ps = isHoriz ? items[ii].wSizing : items[ii].hSizing;
+                if (ps == static_cast<UInt8>(SizingMode::Fill)) ++fillCnt;
+                else fixedPriSum += (isHoriz ? *items[ii].w : *items[ii].h);
+            }
+            SInt32 fillPriSz = 0;
+            if (fillCnt > 0) {
+                SInt32 rem = available - fixedPriSum;
+                fillPriSz = (rem > 0) ? rem / fillCnt : 0;
+            }
+
+            // Apply fill sizes.
+            for (int ii : ln.indices) {
+                auto& it = items[ii];
+                UInt8 ps = isHoriz ? it.wSizing : it.hSizing;
+                UInt8 ss = isHoriz ? it.hSizing : it.wSizing;
+                if (ps == static_cast<UInt8>(SizingMode::Fill)) {
+                    if (isHoriz) *it.w = fillPriSz; else *it.h = fillPriSz;
+                }
+                // Cross Fill = expand to the line's cross extent.
+                if (!hugSec && ss == static_cast<UInt8>(SizingMode::Fill)) {
+                    if (isHoriz) *it.h = ln.crossMax; else *it.w = ln.crossMax;
+                }
+            }
+
+            // Total line content for primary-axis alignment.
+            SInt32 lineContent = 0;
+            for (int ii : ln.indices) lineContent += isHoriz ? *items[ii].w : *items[ii].h;
+            SInt32 lineGap = gap;
+            if (f->primaryAlign == PrimaryAlign::SpaceBetween && nL > 1) {
+                SInt32 rem = available - lineContent;
+                lineGap = (rem > 0) ? rem / (nL - 1) : 0;
+            }
+            SInt32 lineSpan = lineContent + (nL > 1 ? lineGap * (nL - 1) : 0);
+
+            SInt32 pos = padPri1;
+            switch (f->primaryAlign) {
+                case PrimaryAlign::Center:
+                    pos = (framePri - lineSpan) / 2;
+                    if (pos < padPri1) pos = padPri1;
+                    break;
+                case PrimaryAlign::End:
+                    pos = framePri - padPri2 - lineSpan;
+                    if (pos < padPri1) pos = padPri1;
+                    break;
+                default: pos = padPri1; break;
+            }
+
+            for (int ii : ln.indices) {
+                auto& it = items[ii];
+                SInt32 priSz = isHoriz ? *it.w : *it.h;
+                SInt32 secSz = isHoriz ? *it.h : *it.w;
+
+                if (isHoriz) *it.x = originPri + pos;
+                else         *it.y = originPri + pos;
+
+                SInt32 itemCross = lineSecOff;
+                switch (f->crossAlign) {
+                    case CrossAlign::Center:
+                        itemCross = lineSecOff + (ln.crossMax - secSz) / 2;
+                        break;
+                    case CrossAlign::End:
+                        itemCross = lineSecOff + ln.crossMax - secSz;
+                        break;
+                    default: break;
+                }
+                if (isHoriz) *it.y = originSec + itemCross;
+                else         *it.x = originSec + itemCross;
+
+                pos += priSz + lineGap;
+            }
+
+            lineSecOff += ln.crossMax + gap;
+        }
+
+        // Hug on the cross axis (wrapping makes primary-hug meaningless).
+        if (isHoriz && f->heightSizing == SizingMode::Hug) {
+            SInt32 h = totalCross + padSec1 + padSec2;
+            f->bounds.h = (h > 0) ? h : 1;
+        } else if (!isHoriz && f->widthSizing == SizingMode::Hug) {
+            SInt32 w = totalCross + padSec1 + padSec2;
+            f->bounds.w = (w > 0) ? w : 1;
+        }
+        return;
+    }
+
     // Pass 1 — sum fixed/hug primary sizes, count fills, find max secondary.
     int    fillPriCount  = 0;
     SInt32 fixedPriTotal = padPri1 + padPri2 + gap * (n - 1);
@@ -130,10 +283,6 @@ static void RunFrameLayout(Frame* f) {
     // Fill size on secondary axis (for items that stretch across the frame).
     SInt32 fillSecSize = frameSec - padSec1 - padSec2;
     if (fillSecSize < 0) fillSecSize = 0;
-
-    // Absolute canvas origin of this frame.
-    SInt32 originPri = isHoriz ? f->bounds.x : f->bounds.y;
-    SInt32 originSec = isHoriz ? f->bounds.y : f->bounds.x;
 
     // Pass 2 — assign sizes and positions.
     for (auto& it : items) {
