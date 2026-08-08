@@ -6,7 +6,7 @@
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
 static const UInt32 kMagic   = 0x52535444;  // 'RSTD'
-static const UInt16 kVersion = 8;
+static const UInt16 kVersion = 9;
 
 // Folder Manager constants — defined here because Retro68 Carbon headers
 // don't always expose <Folders.h> constants via <Carbon.h>.
@@ -92,6 +92,7 @@ static void WriteShape(Writer& w, const Shape& s) {
         w.w8(ts.textAlign);
         w.w16(ts.lineHeight);
         w.w16(static_cast<UInt16>(static_cast<SInt16>(ts.letterSpacing)));
+        w.w8(static_cast<UInt8>(ts.textSizing));
     }
     w.wStr(s.name);
 }
@@ -125,6 +126,7 @@ static std::unique_ptr<Shape> ReadShape(Reader& r) {
         ts->textAlign    = r.r8();
         ts->lineHeight   = r.r16();
         ts->letterSpacing = static_cast<SInt16>(r.r16());
+        ts->textSizing    = static_cast<TextSizing>(r.r8());
         shape = std::move(ts);
     } else {
         shape = std::make_unique<EllipseShape>();

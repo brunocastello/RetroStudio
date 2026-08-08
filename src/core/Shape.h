@@ -53,6 +53,12 @@ public:
     std::unique_ptr<Shape> Clone() const override { return std::make_unique<EllipseShape>(*this); }
 };
 
+enum class TextSizing : UInt8 {
+    AutoWidth  = 0,  // single line, bounds.w grows to fit text
+    AutoHeight = 1,  // wraps at fixed bounds.w, bounds.h grows to fit lines
+    Fixed      = 2,  // user controls both w and h; text clips
+};
+
 // fillColor = text color; hasStroke → QuickDraw outline rendered on text glyphs (not bounding box)
 class TextShape : public Shape {
 public:
@@ -66,4 +72,5 @@ public:
     UInt8       textAlign     = 0;    // 0=left, 1=center, 2=right
     UInt16      lineHeight    = 120;  // percent of font size (120 = 1.2em)
     SInt16      letterSpacing = 0;    // extra canvas-px between characters (0=normal)
+    TextSizing  textSizing    = TextSizing::AutoWidth;
 };

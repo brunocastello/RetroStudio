@@ -472,8 +472,85 @@ static void DrawSelectionHighlight() {
     PenNormal();
 }
 
+// Update bounds of a single text shape based on its TextSizing mode.
+// Must be called with a valid QuickDraw port (gMainWindow) already set.
+static void UpdateTextShapeBounds(TextShape& ts) {
+    short fontID = 0;
+    if (!ts.fontFamily.empty()) {
+        Str255 fname; fname[0] = 0;
+        for (int i = 0; i < (int)ts.fontFamily.size() && i < 63; ++i) {
+            fname[i+1] = static_cast<unsigned char>(ts.fontFamily[i]); fname[0]++;
+        }
+        GetFNum(fname, &fontID);
+    }
+    short fs = ts.fontSize;
+    if (fs < 4)   fs = 4;
+    if (fs > 127) fs = 127;
+    TextFont(fontID); TextSize(fs); TextFace(ts.fontFace);
+
+    // Measure each explicit line; count lines
+    const std::string& str = ts.text;
+    short maxW    = 8;   // minimum 8px
+    int   nLines  = 0;
+    size_t pos    = 0;
+    do {
+        size_t nl  = str.find('\n', pos);
+        size_t len = (nl == std::string::npos) ? str.size() - pos : nl - pos;
+        Str255 pl; pl[0] = 0;
+        for (size_t ci = 0; ci < len && ci < 63; ++ci) {
+            pl[ci+1] = static_cast<unsigned char>(str[pos+ci]); pl[0]++;
+        }
+        short lw;
+        if (ts.letterSpacing == 0) {
+            lw = StringWidth(pl);
+        } else {
+            lw = 0;
+            for (int ci = 1; ci <= pl[0]; ++ci)
+                lw = static_cast<short>(lw + CharWidth(static_cast<char>(pl[ci])) + ts.letterSpacing);
+        }
+        if (lw > maxW) maxW = lw;
+        ++nLines;
+        if (nl == std::string::npos) break;
+        pos = nl + 1;
+    } while (pos < str.size());
+    if (nLines == 0) nLines = 1;
+
+    short lineH = static_cast<short>(SInt32(fs) * ts.lineHeight / 100);
+    if (lineH < 1) lineH = fs;
+    short totalH = static_cast<short>(lineH * nLines + 4);
+
+    TextFont(0); TextSize(12); TextFace(0);
+
+    if (ts.textSizing == TextSizing::AutoWidth) {
+        ts.bounds.w = static_cast<SInt32>(maxW + 8);
+        ts.bounds.h = static_cast<SInt32>(totalH);
+    } else if (ts.textSizing == TextSizing::AutoHeight) {
+        ts.bounds.h = static_cast<SInt32>(totalH);
+    }
+    // Fixed: leave w and h unchanged
+}
+
+static void UpdateTextShapeBoundsInFrame(Frame& f) {
+    for (auto& s : f.children)
+        if (s->GetType() == Shape::kText)
+            UpdateTextShapeBounds(static_cast<TextShape&>(*s));
+    for (auto& cf : f.childFrames)
+        UpdateTextShapeBoundsInFrame(*cf);
+}
+
+static void UpdateAllTextShapeBounds(Document* doc) {
+    if (!doc || !gMainWindow) return;
+    SetPortWindowPort(gMainWindow);
+    for (auto& s : doc->rootShapes)
+        if (s->GetType() == Shape::kText)
+            UpdateTextShapeBounds(static_cast<TextShape&>(*s));
+    for (auto& f : doc->frames)
+        UpdateTextShapeBoundsInFrame(*f);
+}
+
 void DrawWindowContent(WindowRef win) {
-    // Run layout pass before every canvas render so children are positioned correctly.
+    // Update text shape bounds first (auto-sizing), then run layout.
+    UpdateAllTextShapeBounds(gDocument);
     RunDocumentLayout(gDocument);
 
     SetPortWindowPort(win);

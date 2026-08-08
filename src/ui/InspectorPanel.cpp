@@ -32,6 +32,8 @@ static Rect sFontSizeRect        = {0, 0, 0, 0};
 static Rect sBoldRect            = {0, 0, 0, 0};
 static Rect sItalicRect          = {0, 0, 0, 0};
 static Rect sTypographyBtnRect   = {0, 0, 0, 0};
+// Text sizing mode (AutoWidth / AutoHeight / Fixed)
+static Rect sTextSizingRect[3]   = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
 
 // Auto Layout controls (frame selected)
 static Rect sLayoutModeRect[3]       = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
@@ -429,6 +431,7 @@ void DrawInspectorPanel() {
     sAspectLockRect = sClipContentRect = sWrapRect = sLayoutSettingsRect = {0,0,0,0};
     for (int i=0;i<3;++i) sLayoutModeRect[i]={0,0,0,0};
     for (int i=0;i<9;++i) sAlignCellRect[i]={0,0,0,0};
+    for (int i=0;i<3;++i) sTextSizingRect[i]={0,0,0,0};
 
     if (!gSelectedFrame && !gSelectedShape) {
         RGBColor gray = { 0x9999, 0x9999, 0x9999 }; RGBForeColor(&gray); TextSize(10);
@@ -543,6 +546,69 @@ void DrawInspectorPanel() {
         }
 
         y = static_cast<short>(y + 22);
+
+        // Text sizing mode row: [AutoWidth] [AutoHeight] [Fixed]
+        {
+            y = DrawSectionHeader(y, "LAYOUT", portRect);
+            y = static_cast<short>(y + 5);
+
+            const TextShape& tsh = static_cast<const TextShape&>(*gSelectedShape);
+            TextSizing tsz = tsh.textSizing;
+
+            // Three equal-width buttons fitting the inspector width
+            short bw = static_cast<short>((portRect.right - 10 - 4) / 3);
+            short bh = 22;
+            for (int i = 0; i < 3; ++i) {
+                short bx = static_cast<short>(5 + i * (bw + 2));
+                sTextSizingRect[i] = { y, bx,
+                                       static_cast<short>(y + bh),
+                                       static_cast<short>(bx + bw) };
+                bool active = (static_cast<int>(tsz) == i);
+                if (active) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
+                else        { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
+                PaintRect(&sTextSizingRect[i]);
+                RGBColor bd={0x7777,0x7777,0x7777}; RGBForeColor(&bd);
+                FrameRect(&sTextSizingRect[i]);
+                RGBColor fg = active ? RGBColor{0xFFFF,0xFFFF,0xFFFF}
+                                     : RGBColor{0x2222,0x2222,0x2222};
+                RGBForeColor(&fg);
+
+                short cx = static_cast<short>(bx + bw/2);
+                short cy = static_cast<short>(y + bh/2);
+
+                if (i == 0) {
+                    // Auto Width: |→
+                    MoveTo(static_cast<short>(cx-8), static_cast<short>(cy-5));
+                    LineTo(static_cast<short>(cx-8), static_cast<short>(cy+5));
+                    MoveTo(static_cast<short>(cx-6), cy);
+                    LineTo(static_cast<short>(cx+5), cy);
+                    MoveTo(static_cast<short>(cx+5), cy);
+                    LineTo(static_cast<short>(cx+2), static_cast<short>(cy-3));
+                    MoveTo(static_cast<short>(cx+5), cy);
+                    LineTo(static_cast<short>(cx+2), static_cast<short>(cy+3));
+                } else if (i == 1) {
+                    // Auto Height: |=|
+                    short lx = static_cast<short>(cx-8);
+                    short rx = static_cast<short>(cx+8);
+                    MoveTo(lx, static_cast<short>(cy-5)); LineTo(lx, static_cast<short>(cy+5));
+                    MoveTo(rx, static_cast<short>(cy-5)); LineTo(rx, static_cast<short>(cy+5));
+                    MoveTo(static_cast<short>(lx+2), static_cast<short>(cy-2));
+                    LineTo(static_cast<short>(rx-2), static_cast<short>(cy-2));
+                    MoveTo(static_cast<short>(lx+2), static_cast<short>(cy+2));
+                    LineTo(static_cast<short>(rx-2), static_cast<short>(cy+2));
+                } else {
+                    // Fixed: [=]
+                    Rect box = { static_cast<short>(cy-5), static_cast<short>(cx-7),
+                                 static_cast<short>(cy+5), static_cast<short>(cx+7) };
+                    FrameRect(&box);
+                    MoveTo(static_cast<short>(cx-5), static_cast<short>(cy-2));
+                    LineTo(static_cast<short>(cx+5), static_cast<short>(cy-2));
+                    MoveTo(static_cast<short>(cx-5), static_cast<short>(cy+2));
+                    LineTo(static_cast<short>(cx+5), static_cast<short>(cy+2));
+                }
+            }
+            y = static_cast<short>(y + bh + 4);
+        }
     }
 
     // ---------------------------------------------------------------- FILL / COLOR --
@@ -1388,6 +1454,16 @@ void HandleInspectorClick(Point localPt) {
             InvalidateInspector();
             if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow,&r); InvalWindowRect(gMainWindow,&r); }
             return;
+        }
+        // Text sizing mode buttons
+        for (int i = 0; i < 3; ++i) {
+            if (PtInRect(localPt, &sTextSizingRect[i])) {
+                PushUndo();
+                ts.textSizing = static_cast<TextSizing>(i);
+                InvalidateInspector();
+                if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow,&r); InvalWindowRect(gMainWindow,&r); }
+                return;
+            }
         }
     }
 
