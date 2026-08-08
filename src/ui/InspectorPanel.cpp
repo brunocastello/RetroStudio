@@ -650,34 +650,36 @@ void DrawInspectorPanel() {
                 }
             }
 
-            // Gap and Padding rows — below the grid, full-width
-            y = static_cast<short>(gridY + gridSpan + 6);
-
-            // Gap row: label | Fixed/Auto popup | value field (when Fixed)
-            RGBForeColor(&labelClr); TextSize(9);
-            PStrC("Gap", ps); MoveTo(6, static_cast<short>(y+12)); DrawString(ps);
-            TextSize(11);
-            const char* gapModeName = isSB ? "Auto" : "Fixed";
-            DrawPlatinumBtn(34, y, 52, 16, gapModeName, sLayoutGapModeRect);
-            if (!isSB) {
-                short valW = static_cast<short>(portRect.right - 90 - 4);
-                DrawNumField(90, static_cast<short>(y+12), valW,
-                             kFieldLayoutGap, static_cast<SInt32>(lf->layoutGap), sLayoutGapRect);
-            } else {
-                sLayoutGapRect = {0,0,0,0};
-            }
-            y = static_cast<short>(y + 22);
-
-            // Padding row: same label/field layout as Gap (no popup, just a value)
-            RGBForeColor(&labelClr); TextSize(9);
-            PStrC("Pad", ps); MoveTo(6, static_cast<short>(y+12)); DrawString(ps);
-            TextSize(11);
+            // Right column: Gap + Padding stacked alongside the grid
             {
-                short padW = static_cast<short>(portRect.right - 34 - 4);
-                DrawNumField(34, static_cast<short>(y+12), padW,
+                short rX   = static_cast<short>(gridX + gridSpan + 8); // x=66
+                short rW   = static_cast<short>(portRect.right - rX - 4);
+                short popW = 46;
+                short valX = static_cast<short>(rX + popW + 4);
+                short valW = static_cast<short>(portRect.right - valX - 4);
+
+                // Gap label (small) + popup + value on same row
+                RGBForeColor(&labelClr); TextSize(9);
+                PStrC("Gap", ps); MoveTo(rX, static_cast<short>(gridY+9)); DrawString(ps);
+                TextSize(11);
+                const char* gapModeName = isSB ? "Auto" : "Fixed";
+                DrawPlatinumBtn(rX, static_cast<short>(gridY+11), popW, 14, gapModeName, sLayoutGapModeRect);
+                if (!isSB) {
+                    DrawNumField(valX, static_cast<short>(gridY+23), valW,
+                                 kFieldLayoutGap, static_cast<SInt32>(lf->layoutGap), sLayoutGapRect);
+                } else {
+                    sLayoutGapRect = {0,0,0,0};
+                }
+
+                // Pad label (small) + value field below Gap
+                RGBForeColor(&labelClr); TextSize(9);
+                PStrC("Pad", ps); MoveTo(rX, static_cast<short>(gridY+33)); DrawString(ps);
+                TextSize(11);
+                DrawNumField(rX, static_cast<short>(gridY+47), rW,
                              kFieldLayoutPad, static_cast<SInt32>(lf->paddingTop), sLayoutPadRect);
             }
-            y = static_cast<short>(y + 22);
+
+            y = static_cast<short>(gridY + gridSpan + 4);
         }
     }
 
