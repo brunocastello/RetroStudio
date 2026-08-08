@@ -36,15 +36,24 @@ static Rect sTypographyBtnRect   = {0, 0, 0, 0};
 static Rect sLayoutModeRect[3]       = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
 static Rect sLayoutGapRect           = {0, 0, 0, 0};  // numeric gap field (Fixed mode)
 static Rect sLayoutGapModeRect       = {0, 0, 0, 0};  // Fixed / Auto popup
-static Rect sLayoutPadRect           = {0, 0, 0, 0};
 static Rect sAlignCellRect[9]        = {};   // 3×3 grid, index = row*3+col
+// Padding controls
+static bool sMixedPadding            = false;
+static Rect sPadMixedBtnRect         = {0, 0, 0, 0};
+static Rect sPadHRect                = {0, 0, 0, 0};  // compact H (left+right)
+static Rect sPadVRect                = {0, 0, 0, 0};  // compact V (top+bottom)
+static Rect sPadTopRect              = {0, 0, 0, 0};
+static Rect sPadRightRect            = {0, 0, 0, 0};
+static Rect sPadBottomRect           = {0, 0, 0, 0};
+static Rect sPadLeftRect             = {0, 0, 0, 0};
 
 // Sizing mode popups in SIZE section (frame only)
 static Rect sWidthSizingPopupRect    = {0, 0, 0, 0};
 static Rect sHeightSizingPopupRect   = {0, 0, 0, 0};
 
 // Inline text-edit state for numeric fields
-enum EditField { kNoField, kFieldX, kFieldY, kFieldW, kFieldH, kFieldStrokeWidth, kFieldFontSize, kFieldLayoutGap, kFieldLayoutPad };
+enum EditField { kNoField, kFieldX, kFieldY, kFieldW, kFieldH, kFieldStrokeWidth, kFieldFontSize, kFieldLayoutGap,
+                 kFieldPadH, kFieldPadV, kFieldPadTop, kFieldPadRight, kFieldPadBottom, kFieldPadLeft };
 static EditField sActiveField = kNoField;
 static char      sEditBuf[12] = {};
 static int       sEditLen     = 0;
@@ -283,6 +292,17 @@ static void DrawPlatinumBtn(short x, short y, short w, short h,
     TextSize(11);
 }
 
+// Draw a 10×10 padding icon. sides bitmask: 0x01=top 0x02=right 0x04=bottom 0x08=left
+static void DrawPadIcon(short x, short y, UInt8 sides) {
+    Rect box = { y, x, static_cast<short>(y+10), static_cast<short>(x+10) };
+    RGBColor dim = { 0xAAAA, 0xAAAA, 0xAAAA }; RGBForeColor(&dim); FrameRect(&box);
+    RGBColor hi  = { 0x1111, 0x1111, 0x1111 }; RGBForeColor(&hi);
+    if (sides & 0x01) { MoveTo(static_cast<short>(x+1), y); LineTo(static_cast<short>(x+9), y); }
+    if (sides & 0x02) { MoveTo(static_cast<short>(x+10), static_cast<short>(y+1)); LineTo(static_cast<short>(x+10), static_cast<short>(y+9)); }
+    if (sides & 0x04) { MoveTo(static_cast<short>(x+1), static_cast<short>(y+10)); LineTo(static_cast<short>(x+9), static_cast<short>(y+10)); }
+    if (sides & 0x08) { MoveTo(x, static_cast<short>(y+1)); LineTo(x, static_cast<short>(y+9)); }
+}
+
 static SizingMode ShowSizingPopup(const Rect& btn, SizingMode cur, bool hasFill) {
     MenuRef pm = NewMenu(6003, "\p");
     AppendMenu(pm, "\pFixed");
@@ -341,7 +361,9 @@ void DrawInspectorPanel() {
     sStrokeAlignRect = {0,0,0,0};
     sFieldXRect = sFieldYRect = sFieldWRect = sFieldHRect = sFieldSwRect = {0,0,0,0};
     sFontSizeRect = sBoldRect = sItalicRect = sTypographyBtnRect = {0,0,0,0};
-    sLayoutGapRect = sLayoutGapModeRect = sLayoutPadRect = {0,0,0,0};
+    sLayoutGapRect = sLayoutGapModeRect = {0,0,0,0};
+    sPadMixedBtnRect = sPadHRect = sPadVRect = {0,0,0,0};
+    sPadTopRect = sPadRightRect = sPadBottomRect = sPadLeftRect = {0,0,0,0};
     sWidthSizingPopupRect = sHeightSizingPopupRect = {0,0,0,0};
     for (int i=0;i<3;++i) sLayoutModeRect[i]={0,0,0,0};
     for (int i=0;i<9;++i) sAlignCellRect[i]={0,0,0,0};
@@ -650,36 +672,85 @@ void DrawInspectorPanel() {
                 }
             }
 
-            // Right column: Gap + Padding stacked alongside the grid
+            // Right column: Gap only (vertically centred in grid height)
             {
                 short rX   = static_cast<short>(gridX + gridSpan + 8); // x=66
-                short rW   = static_cast<short>(portRect.right - rX - 4);
                 short popW = 46;
                 short valX = static_cast<short>(rX + popW + 4);
                 short valW = static_cast<short>(portRect.right - valX - 4);
+                short gapRowY = static_cast<short>(gridY + (gridSpan - 25) / 2); // centre 25px block
 
-                // Gap label (small) + popup + value on same row
                 RGBForeColor(&labelClr); TextSize(9);
-                PStrC("Gap", ps); MoveTo(rX, static_cast<short>(gridY+9)); DrawString(ps);
+                PStrC("Gap", ps); MoveTo(rX, static_cast<short>(gapRowY+9)); DrawString(ps);
                 TextSize(11);
                 const char* gapModeName = isSB ? "Auto" : "Fixed";
-                DrawPlatinumBtn(rX, static_cast<short>(gridY+11), popW, 14, gapModeName, sLayoutGapModeRect);
+                DrawPlatinumBtn(rX, static_cast<short>(gapRowY+11), popW, 14, gapModeName, sLayoutGapModeRect);
                 if (!isSB) {
-                    DrawNumField(valX, static_cast<short>(gridY+23), valW,
+                    DrawNumField(valX, static_cast<short>(gapRowY+23), valW,
                                  kFieldLayoutGap, static_cast<SInt32>(lf->layoutGap), sLayoutGapRect);
                 } else {
                     sLayoutGapRect = {0,0,0,0};
                 }
-
-                // Pad label (small) + value field below Gap
-                RGBForeColor(&labelClr); TextSize(9);
-                PStrC("Pad", ps); MoveTo(rX, static_cast<short>(gridY+33)); DrawString(ps);
-                TextSize(11);
-                DrawNumField(rX, static_cast<short>(gridY+47), rW,
-                             kFieldLayoutPad, static_cast<SInt32>(lf->paddingTop), sLayoutPadRect);
             }
 
-            y = static_cast<short>(gridY + gridSpan + 4);
+            y = static_cast<short>(gridY + gridSpan + 6);
+
+            // Padding section (full width, below grid+gap area)
+            {
+                short tBtnX = static_cast<short>(portRect.right - 18);
+                // Expand/collapse toggle button
+                Rect tBtn = { y, tBtnX, static_cast<short>(y+14), static_cast<short>(tBtnX+14) };
+                sPadMixedBtnRect = tBtn;
+                if (sMixedPadding) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
+                else               { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
+                PaintRect(&tBtn);
+                RGBColor bd={0x7777,0x7777,0x7777}; RGBForeColor(&bd); FrameRect(&tBtn);
+                // 2×2 grid icon inside toggle
+                if (sMixedPadding) { RGBColor ic={0xFFFF,0xFFFF,0xFFFF}; RGBForeColor(&ic); }
+                else               { RGBColor ic={0x3333,0x3333,0x3333}; RGBForeColor(&ic); }
+                for (int r=0; r<2; ++r) for (int c=0; c<2; ++c) {
+                    Rect sq = { static_cast<short>(y+2+r*5), static_cast<short>(tBtnX+2+c*5),
+                                static_cast<short>(y+6+r*5), static_cast<short>(tBtnX+6+c*5) };
+                    FrameRect(&sq);
+                }
+
+                // Field geometry: two equal columns left of the toggle button
+                short availW = static_cast<short>(tBtnX - 4 - 4);
+                short halfW  = static_cast<short>(availW / 2);
+                short icoW   = 12;  // icon(10) + gap(2)
+                short fldW   = static_cast<short>(halfW - icoW - 2);
+                short col1X  = 4;
+                short col2X  = static_cast<short>(col1X + halfW + 2);
+
+                if (!sMixedPadding) {
+                    // Compact: H (left+right) | V (top+bottom)
+                    DrawPadIcon(col1X, static_cast<short>(y+2), 0x0A);  // left+right
+                    DrawNumField(static_cast<short>(col1X+icoW), static_cast<short>(y+12), fldW,
+                                 kFieldPadH, static_cast<SInt32>(lf->paddingLeft), sPadHRect);
+                    DrawPadIcon(col2X, static_cast<short>(y+2), 0x05);  // top+bottom
+                    DrawNumField(static_cast<short>(col2X+icoW), static_cast<short>(y+12), fldW,
+                                 kFieldPadV, static_cast<SInt32>(lf->paddingTop), sPadVRect);
+                    sPadTopRect = sPadRightRect = sPadBottomRect = sPadLeftRect = {0,0,0,0};
+                    y = static_cast<short>(y + 18);
+                } else {
+                    // Mixed: Top+Right on row 1, Bottom+Left on row 2
+                    DrawPadIcon(col1X, static_cast<short>(y+2), 0x01);   // top
+                    DrawNumField(static_cast<short>(col1X+icoW), static_cast<short>(y+12), fldW,
+                                 kFieldPadTop, static_cast<SInt32>(lf->paddingTop), sPadTopRect);
+                    DrawPadIcon(col2X, static_cast<short>(y+2), 0x02);   // right
+                    DrawNumField(static_cast<short>(col2X+icoW), static_cast<short>(y+12), fldW,
+                                 kFieldPadRight, static_cast<SInt32>(lf->paddingRight), sPadRightRect);
+                    y = static_cast<short>(y + 18);
+                    DrawPadIcon(col1X, static_cast<short>(y+2), 0x04);   // bottom
+                    DrawNumField(static_cast<short>(col1X+icoW), static_cast<short>(y+12), fldW,
+                                 kFieldPadBottom, static_cast<SInt32>(lf->paddingBottom), sPadBottomRect);
+                    DrawPadIcon(col2X, static_cast<short>(y+2), 0x08);   // left
+                    DrawNumField(static_cast<short>(col2X+icoW), static_cast<short>(y+12), fldW,
+                                 kFieldPadLeft, static_cast<SInt32>(lf->paddingLeft), sPadLeftRect);
+                    sPadHRect = sPadVRect = {0,0,0,0};
+                    y = static_cast<short>(y + 18);
+                }
+            }
         }
     }
 
@@ -815,18 +886,22 @@ bool HandleInspectorKey(char key) {
             UInt16 nv = static_cast<UInt16>(val);
             if (nv != gSelectedFrame->layoutGap) { PushUndo(); gSelectedFrame->layoutGap = nv; changed = true; }
         }
-        if (sActiveField == kFieldLayoutPad && gSelectedFrame) {
-            if (val < 0)   val = 0;
-            if (val > 255) val = 255;
+        if (gSelectedFrame && (sActiveField == kFieldPadH || sActiveField == kFieldPadV ||
+            sActiveField == kFieldPadTop   || sActiveField == kFieldPadRight  ||
+            sActiveField == kFieldPadBottom || sActiveField == kFieldPadLeft)) {
+            if (val < 0) val = 0; if (val > 255) val = 255;
             UInt8 nv = static_cast<UInt8>(val);
-            if (nv != gSelectedFrame->paddingTop) {
-                PushUndo();
-                gSelectedFrame->paddingTop    = nv;
-                gSelectedFrame->paddingRight  = nv;
-                gSelectedFrame->paddingBottom = nv;
-                gSelectedFrame->paddingLeft   = nv;
-                changed = true;
+            PushUndo();
+            switch (sActiveField) {
+                case kFieldPadH:      gSelectedFrame->paddingLeft = nv; gSelectedFrame->paddingRight = nv; break;
+                case kFieldPadV:      gSelectedFrame->paddingTop  = nv; gSelectedFrame->paddingBottom = nv; break;
+                case kFieldPadTop:    gSelectedFrame->paddingTop    = nv; break;
+                case kFieldPadRight:  gSelectedFrame->paddingRight  = nv; break;
+                case kFieldPadBottom: gSelectedFrame->paddingBottom = nv; break;
+                case kFieldPadLeft:   gSelectedFrame->paddingLeft   = nv; break;
+                default: break;
             }
+            changed = true;
         }
 
         sActiveField = kNoField; sEditLen = 0; sEditBuf[0] = '\0';
@@ -1083,10 +1158,20 @@ void HandleInspectorClick(Point localPt) {
             StartEdit(kFieldLayoutGap, static_cast<SInt32>(lf->layoutGap)); return;
         }
 
-        // Padding field
-        if (PtInRect(localPt, &sLayoutPadRect)) {
-            StartEdit(kFieldLayoutPad, static_cast<SInt32>(lf->paddingTop)); return;
+        // Padding expand toggle
+        if (PtInRect(localPt, &sPadMixedBtnRect)) {
+            sMixedPadding = !sMixedPadding;
+            CancelInspectorEdit();
+            InvalidateInspector();
+            return;
         }
+        // Padding fields
+        if (PtInRect(localPt, &sPadHRect))     { StartEdit(kFieldPadH,      lf->paddingLeft);   return; }
+        if (PtInRect(localPt, &sPadVRect))     { StartEdit(kFieldPadV,      lf->paddingTop);    return; }
+        if (PtInRect(localPt, &sPadTopRect))   { StartEdit(kFieldPadTop,    lf->paddingTop);    return; }
+        if (PtInRect(localPt, &sPadRightRect)) { StartEdit(kFieldPadRight,  lf->paddingRight);  return; }
+        if (PtInRect(localPt, &sPadBottomRect)){ StartEdit(kFieldPadBottom, lf->paddingBottom); return; }
+        if (PtInRect(localPt, &sPadLeftRect))  { StartEdit(kFieldPadLeft,   lf->paddingLeft);   return; }
 
         // Width sizing popup
         if (PtInRect(localPt, &sWidthSizingPopupRect)) {
