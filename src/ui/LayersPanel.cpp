@@ -355,9 +355,14 @@ static short HitTestFrameRows(Frame* frame, short y, short indent,
             }
             InvalidateLayers(); InvalidateMain();
         } else {
-            // Normal click: single-select this frame
-            gSelectedShapes.clear();
-            gSelectedFrames.clear();
+            // Normal click: if already in multi-select, keep the group (enables group drag).
+            // Otherwise single-select.
+            bool alreadyInMulti = !gSelectedFrames.empty() &&
+                std::find(gSelectedFrames.begin(), gSelectedFrames.end(), frame) != gSelectedFrames.end();
+            if (!alreadyInMulti) {
+                gSelectedShapes.clear();
+                gSelectedFrames.clear();
+            }
             gSelectedFrame = frame; gSelectedShape = nullptr;
             InvalidateLayers(); InvalidateMain();
         }
@@ -403,8 +408,13 @@ static short HitTestFrameRows(Frame* frame, short y, short indent,
                     InvalidateLayers(); InvalidateMain();
                 }
             } else {
-                gSelectedShapes.clear();
-                gSelectedFrame = frame; gSelectedShape = s;
+                bool alreadyInMulti = !gSelectedShapes.empty() &&
+                    std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s) != gSelectedShapes.end();
+                if (!alreadyInMulti) {
+                    gSelectedShapes.clear();
+                    gSelectedFrame = frame;
+                }
+                gSelectedShape = s;
                 InvalidateLayers(); InvalidateMain();
             }
             return -1;
@@ -428,174 +438,288 @@ static bool IsFrameAncestorOrSelf(Frame* potentialAncestor, Frame* node) {
     return false;
 }
 
-// Track mouse during a drag-reorder operation.  srcIdx is the index of the
-// dragged row in sLayerRows; startDocPt is the click position in document
-// coordinates (v already offset by gLayersScrollY).
-// Supports cross-parent dragging: items can be moved out of their current
-// parent into a sibling or root level.
+// Track mouse during a drag-reorder operation.
+// srcIdx     — index of the clicked row in sLayerRows.
+// startDocPt — click point in document coords (v already offset by gLayersScrollY).
+//
+// Features:
+//  • Multi-select drag: all frames in gSelectedFrames (or shapes in gSelectedShapes)
+//    are moved together, provided they share the same parent.
+//  • Three drop zones per row (top-third / middle-third / bottom-third):
+//      top    → gap-line ABOVE that row
+//      middle → "into" that frame (XOR highlight rect); only for frame rows
+//      bottom → gap-line BELOW that row
+//  • Cross-parent drag: items can move out of their current parent.
 static void TrackLayerDrag(int srcIdx, Point startDocPt) {
     if (srcIdx < 0 || srcIdx >= (int)sLayerRows.size()) return;
-    const LayerRow src = sLayerRows[srcIdx]; // copy — sLayerRows rebuilt on redraw
+    const LayerRow& srcRow = sLayerRows[srcIdx];
+    bool isSrcFrame = srcRow.isFrame;
 
+    // ── Collect all items to drag ─────────────────────────────────────────────
+    struct SrcItem { bool isFrame; Frame* frame; Shape* shape; Frame* owner; int vecIdx; };
+    std::vector<SrcItem> srcItems;
+
+    auto gatherFrames = [&]() {
+        if (gSelectedFrames.size() > 1) {
+            Frame* commonOwner = srcRow.owner;
+            std::vector<SrcItem> cand;
+            for (Frame* f : gSelectedFrames) {
+                for (int i = 0; i < (int)sLayerRows.size(); ++i) {
+                    if (sLayerRows[i].isFrame && sLayerRows[i].frame == f) {
+                        if (sLayerRows[i].owner != commonOwner) { cand.clear(); return; }
+                        cand.push_back({ true, f, nullptr, sLayerRows[i].owner, sLayerRows[i].vecIdx });
+                        break;
+                    }
+                }
+            }
+            srcItems = cand;
+        }
+    };
+    auto gatherShapes = [&]() {
+        if (gSelectedShapes.size() > 1) {
+            Frame* commonOwner = srcRow.owner;
+            std::vector<SrcItem> cand;
+            for (Shape* s : gSelectedShapes) {
+                for (int i = 0; i < (int)sLayerRows.size(); ++i) {
+                    if (!sLayerRows[i].isFrame && sLayerRows[i].shape == s) {
+                        if (sLayerRows[i].owner != commonOwner) { cand.clear(); return; }
+                        cand.push_back({ false, nullptr, s, sLayerRows[i].owner, sLayerRows[i].vecIdx });
+                        break;
+                    }
+                }
+            }
+            srcItems = cand;
+        }
+    };
+
+    if (isSrcFrame)  gatherFrames();
+    else             gatherShapes();
+
+    if (srcItems.empty())
+        srcItems.push_back({ srcRow.isFrame, srcRow.frame, srcRow.shape, srcRow.owner, srcRow.vecIdx });
+
+    // Sort ascending vecIdx (stable relative order for insertion)
+    std::sort(srcItems.begin(), srcItems.end(), [](const SrcItem& a, const SrcItem& b){
+        return a.vecIdx < b.vecIdx;
+    });
+
+    // Forbidden drop targets: self or any descendant of a dragged frame
+    auto isForbidden = [&](Frame* f) -> bool {
+        for (const SrcItem& si : srcItems)
+            if (si.isFrame && IsFrameAncestorOrSelf(si.frame, f)) return true;
+        return false;
+    };
+
+    // ── Setup ─────────────────────────────────────────────────────────────────
     SetPortWindowPort(gLayersWindow);
-    Rect portRect;
-    GetWindowPortBounds(gLayersWindow, &portRect);
+    Rect portRect; GetWindowPortBounds(gLayersWindow, &portRect);
     short panelW = static_cast<short>(portRect.right - kLayersSBW);
 
-    // Collect ALL rows of same type for hit-testing (enables cross-parent dragging)
+    // All rows of same type for hit-testing
     std::vector<int> allIdxs;
     for (int i = 0; i < (int)sLayerRows.size(); ++i)
-        if (sLayerRows[i].isFrame == src.isFrame)
+        if (sLayerRows[i].isFrame == isSrcFrame)
             allIdxs.push_back(i);
     int N = static_cast<int>(allIdxs.size());
     if (N < 2) return;
 
-    short prevWinY = -1;
-    bool  isDragging = false;
-    int   lastGapIdx = -2;
+    // ── Tracking loop ─────────────────────────────────────────────────────────
+    bool  isDragging   = false;
+    bool  prevIsInto   = false;
+    int   prevDropPos  = -2;   // -2 = "unknown initial"
+    short prevWinY     = -1;   // valid only when !prevIsInto
 
     while (StillDown()) {
-        Point rawPt;
-        GetMouse(&rawPt);
+        Point rawPt; GetMouse(&rawPt);
         short docV = static_cast<short>(rawPt.v + gLayersScrollY);
         short dy   = static_cast<short>(docV - startDocPt.v);
         if (!isDragging && (dy > 4 || dy < -4)) isDragging = true;
         if (!isDragging) continue;
 
-        int gapIdx = N;
+        // Determine drop target using three zones per row
+        bool curIsInto = false;
+        int  curPos    = N; // default: gap after all rows
+
         for (int i = 0; i < N; ++i) {
-            short midY = static_cast<short>(sLayerRows[allIdxs[i]].rowTop + kLayerRowH / 2);
-            if (docV < midY) { gapIdx = i; break; }
+            short rowT = sLayerRows[allIdxs[i]].rowTop;
+            short rowB = static_cast<short>(rowT + kLayerRowH);
+            if (docV < rowT) { curPos = i; break; }   // above row i → gap before it
+            if (docV < rowB) {
+                short z1 = static_cast<short>(rowT + kLayerRowH / 3);
+                short z2 = static_cast<short>(rowT + 2 * kLayerRowH / 3);
+                if (docV < z1) {
+                    curPos = i;             // top zone → gap before
+                } else if (docV >= z2) {
+                    curPos = i + 1;         // bottom zone → gap after
+                } else if (isSrcFrame && !isForbidden(sLayerRows[allIdxs[i]].frame)) {
+                    curIsInto = true;       // middle zone of a safe frame → drop into
+                    curPos    = i;
+                } else {
+                    curPos = i;             // middle of non-droppable row → gap before
+                }
+                break;
+            }
         }
-        if (gapIdx == lastGapIdx) continue;
-        lastGapIdx = gapIdx;
 
-        short indicDocY;
-        if (gapIdx <= 0)
-            indicDocY = sLayerRows[allIdxs[0]].rowTop;
-        else if (gapIdx >= N)
-            indicDocY = static_cast<short>(sLayerRows[allIdxs[N-1]].rowTop + kLayerRowH);
-        else
-            indicDocY = sLayerRows[allIdxs[gapIdx]].rowTop;
-        short newWinY = static_cast<short>(indicDocY - gLayersScrollY);
+        if (curIsInto == prevIsInto && curPos == prevDropPos) continue;
 
         Pattern blk; memset(&blk, 0xFF, sizeof(blk));
-        if (prevWinY >= 0) {
+
+        // Erase previous indicator
+        if (prevDropPos != -2) {
+            if (prevIsInto && prevDropPos >= 0 && prevDropPos < N) {
+                short rowT = static_cast<short>(sLayerRows[allIdxs[prevDropPos]].rowTop - gLayersScrollY);
+                Rect hr = { rowT, 2, static_cast<short>(rowT + kLayerRowH - 1), static_cast<short>(panelW - 2) };
+                PenMode(patXor); PenSize(2, 2); PenPat(&blk); FrameRect(&hr); PenNormal();
+            } else if (!prevIsInto && prevWinY >= 0) {
+                PenMode(patXor); PenSize(2, 2); PenPat(&blk);
+                MoveTo(4, prevWinY); LineTo(static_cast<short>(panelW - 4), prevWinY);
+                PenNormal();
+            }
+        }
+
+        // Draw new indicator
+        if (curIsInto) {
+            short rowT = static_cast<short>(sLayerRows[allIdxs[curPos]].rowTop - gLayersScrollY);
+            Rect hr = { rowT, 2, static_cast<short>(rowT + kLayerRowH - 1), static_cast<short>(panelW - 2) };
+            PenMode(patXor); PenSize(2, 2); PenPat(&blk); FrameRect(&hr); PenNormal();
+            prevWinY = -1;
+        } else {
+            short indicDocY;
+            if (curPos <= 0)
+                indicDocY = sLayerRows[allIdxs[0]].rowTop;
+            else if (curPos >= N)
+                indicDocY = static_cast<short>(sLayerRows[allIdxs[N-1]].rowTop + kLayerRowH);
+            else
+                indicDocY = sLayerRows[allIdxs[curPos]].rowTop;
+            short winY = static_cast<short>(indicDocY - gLayersScrollY);
             PenMode(patXor); PenSize(2, 2); PenPat(&blk);
-            MoveTo(4, prevWinY); LineTo(static_cast<short>(panelW - 4), prevWinY);
+            MoveTo(4, winY); LineTo(static_cast<short>(panelW - 4), winY);
+            PenNormal();
+            prevWinY = winY;
         }
-        PenMode(patXor); PenSize(2, 2); PenPat(&blk);
-        MoveTo(4, newWinY); LineTo(static_cast<short>(panelW - 4), newWinY);
-        PenNormal();
-        prevWinY = newWinY;
+        prevIsInto  = curIsInto;
+        prevDropPos = curPos;
     }
 
-    if (prevWinY >= 0) {
+    // Erase final indicator
+    {
         Pattern blk; memset(&blk, 0xFF, sizeof(blk));
-        PenMode(patXor); PenSize(2, 2); PenPat(&blk);
-        MoveTo(4, prevWinY); LineTo(static_cast<short>(portRect.right - kLayersSBW - 4), prevWinY);
-        PenNormal();
+        if (prevIsInto && prevDropPos >= 0 && prevDropPos < N) {
+            short rowT = static_cast<short>(sLayerRows[allIdxs[prevDropPos]].rowTop - gLayersScrollY);
+            Rect hr = { rowT, 2, static_cast<short>(rowT + kLayerRowH - 1), static_cast<short>(panelW - 2) };
+            PenMode(patXor); PenSize(2, 2); PenPat(&blk); FrameRect(&hr); PenNormal();
+        } else if (!prevIsInto && prevWinY >= 0) {
+            PenMode(patXor); PenSize(2, 2); PenPat(&blk);
+            MoveTo(4, prevWinY); LineTo(static_cast<short>(portRect.right - kLayersSBW - 4), prevWinY);
+            PenNormal();
+        }
     }
 
-    if (!isDragging || lastGapIdx < 0) return;
+    if (!isDragging || prevDropPos < 0) return;
 
-    // Determine destination owner from gap reference row
-    int refAllIdx = (lastGapIdx <= 0) ? 0 : (lastGapIdx >= N ? N-1 : lastGapIdx);
-    Frame* dstOwner = sLayerRows[allIdxs[refAllIdx]].owner;
+    bool isInto = prevIsInto;
+    int  dropPos = prevDropPos;
 
-    // Cycle check: can't drop a frame into itself or any of its descendants
-    if (src.isFrame && dstOwner && IsFrameAncestorOrSelf(src.frame, dstOwner))
+    // ── Determine destination ─────────────────────────────────────────────────
+    Frame* dstOwner;
+    int    insertAt;
+
+    if (isInto) {
+        // Drop into the frame at allIdxs[dropPos] — it becomes the new parent
+        dstOwner = sLayerRows[allIdxs[dropPos]].frame;
+        // Append at top (highest z) of dstOwner's children
+        insertAt = isSrcFrame
+            ? static_cast<int>(dstOwner->childFrames.size())
+            : static_cast<int>(dstOwner->children.size());
+    } else {
+        // Gap drop — owner comes from the reference row
+        int refIdx = (dropPos <= 0) ? 0 : (dropPos >= N ? N-1 : dropPos);
+        dstOwner = sLayerRows[allIdxs[refIdx]].owner;
+
+        if (dropPos <= 0) {
+            insertAt = isSrcFrame
+                ? static_cast<int>((dstOwner ? dstOwner->childFrames : gDocument->frames).size())
+                : static_cast<int>((dstOwner ? dstOwner->children    : gDocument->rootShapes).size());
+        } else if (dropPos >= N) {
+            insertAt = 0;
+        } else {
+            insertAt = sLayerRows[allIdxs[dropPos]].vecIdx + 1;
+        }
+    }
+
+    // Cycle check
+    for (const SrcItem& si : srcItems)
+        if (si.isFrame && dstOwner && IsFrameAncestorOrSelf(si.frame, dstOwner))
+            return;
+
+    // Check something actually changes (single-item, same owner, same position)
+    bool sameOwner = (srcItems[0].owner == dstOwner);
+    if (srcItems.size() == 1 && !isInto && sameOwner && srcItems[0].vecIdx == insertAt - 1)
         return;
 
     PushUndo();
 
-    if (dstOwner == src.owner) {
-        // ── Same-parent reorder ──────────────────────────────────────────────
-        // Use sibling subset for correct insertion math (same as original logic).
-        std::vector<int> sibIdxs;
-        for (int i = 0; i < (int)sLayerRows.size(); ++i) {
-            const LayerRow& r = sLayerRows[i];
-            if (r.owner == src.owner && r.isFrame == src.isFrame)
-                sibIdxs.push_back(i);
-        }
-        int Ns = static_cast<int>(sibIdxs.size());
+    // ── Extract all src items (high vecIdx first to avoid index shifts in same vec) ──
+    std::vector<std::unique_ptr<Frame>> movedFrames;
+    std::vector<std::unique_ptr<Shape>> movedShapes;
+    std::vector<Frame*> movedFramePtrs; // raw ptrs before move, ascending vecIdx order
 
-        // Compute gapSibIdx: how many sibling rows appear above the gap in display
-        short gapDocY = (lastGapIdx <= 0) ? sLayerRows[allIdxs[0]].rowTop
-                      : (lastGapIdx >= N)  ? static_cast<short>(sLayerRows[allIdxs[N-1]].rowTop + kLayerRowH)
-                      : sLayerRows[allIdxs[lastGapIdx]].rowTop;
-        int gapSibIdx = 0;
-        for (int i = 0; i < Ns; ++i)
-            if (sLayerRows[sibIdxs[i]].rowTop < gapDocY) gapSibIdx = i + 1;
+    // Sort descending for extraction
+    std::vector<SrcItem> extractOrder = srcItems;
+    std::sort(extractOrder.begin(), extractOrder.end(), [](const SrcItem& a, const SrcItem& b){
+        return a.vecIdx > b.vecIdx;
+    });
 
-        int insertAt;
-        if (gapSibIdx == 0) {
-            insertAt = Ns - 1;
-        } else if (gapSibIdx >= Ns) {
-            insertAt = 0;
-        } else {
-            int targetVecIdx = sLayerRows[sibIdxs[gapSibIdx]].vecIdx;
-            insertAt = targetVecIdx + 1;
-            if (src.vecIdx < targetVecIdx) insertAt--;
+    if (isSrcFrame) {
+        for (const SrcItem& si : extractOrder) {
+            auto& srcVec = si.owner ? si.owner->childFrames : gDocument->frames;
+            movedFramePtrs.push_back(srcVec[si.vecIdx].get());
+            movedFrames.insert(movedFrames.begin(), std::move(srcVec[si.vecIdx]));
+            srcVec.erase(srcVec.begin() + si.vecIdx);
+            // Adjust insertAt for same-vector extraction
+            if (sameOwner && si.vecIdx < insertAt) --insertAt;
         }
-        if (insertAt < 0) insertAt = 0;
-        if (insertAt >= Ns) insertAt = Ns - 1;
-        if (insertAt == src.vecIdx) return;
-
-        if (src.isFrame) {
-            auto& vec = src.owner ? src.owner->childFrames : gDocument->frames;
-            auto moved = std::move(vec[src.vecIdx]);
-            vec.erase(vec.begin() + src.vecIdx);
-            vec.insert(vec.begin() + insertAt, std::move(moved));
-        } else {
-            auto& vec = src.owner ? src.owner->children : gDocument->rootShapes;
-            auto moved = std::move(vec[src.vecIdx]);
-            vec.erase(vec.begin() + src.vecIdx);
-            vec.insert(vec.begin() + insertAt, std::move(moved));
-        }
+        for (auto& f : movedFrames) f->parent = dstOwner;
     } else {
-        // ── Cross-parent move ────────────────────────────────────────────────
-        // insertAt in dstVec: no extraction-shift adjustment (src and dst are different vectors).
-        // Display reversed from vector: gapIdx==0 → append (highest z), gapIdx>=N → prepend (lowest z).
-        int insertAt;
-        if (lastGapIdx <= 0) {
-            // Above all rows → highest z in dstOwner → append to dstVec
-            int dstSz = src.isFrame
-                ? static_cast<int>((dstOwner ? dstOwner->childFrames : gDocument->frames).size())
-                : static_cast<int>((dstOwner ? dstOwner->children    : gDocument->rootShapes).size());
-            insertAt = dstSz;
-        } else if (lastGapIdx >= N) {
-            insertAt = 0;
-        } else {
-            // Drop just above row at allIdxs[lastGapIdx] in z-order
-            insertAt = sLayerRows[allIdxs[lastGapIdx]].vecIdx + 1;
+        for (const SrcItem& si : extractOrder) {
+            auto& srcVec = si.owner ? si.owner->children : gDocument->rootShapes;
+            movedShapes.insert(movedShapes.begin(), std::move(srcVec[si.vecIdx]));
+            srcVec.erase(srcVec.begin() + si.vecIdx);
+            if (sameOwner && si.vecIdx < insertAt) --insertAt;
         }
-        if (insertAt < 0) insertAt = 0;
+    }
 
-        if (src.isFrame) {
-            auto& srcVec = src.owner ? src.owner->childFrames : gDocument->frames;
-            auto& dstVec = dstOwner  ? dstOwner->childFrames  : gDocument->frames;
-            if (insertAt > (int)dstVec.size()) insertAt = static_cast<int>(dstVec.size());
-            auto moved = std::move(srcVec[src.vecIdx]);
-            srcVec.erase(srcVec.begin() + src.vecIdx);
-            moved->parent = dstOwner;
-            dstVec.insert(dstVec.begin() + insertAt, std::move(moved));
-            gSelectedFrame  = dstVec[insertAt].get();
-            gSelectedShape  = nullptr;
-            gSelectedFrames.clear();
-            gSelectedShapes.clear();
-        } else {
-            auto& srcVec = src.owner ? src.owner->children : gDocument->rootShapes;
-            auto& dstVec = dstOwner  ? dstOwner->children  : gDocument->rootShapes;
-            if (insertAt > (int)dstVec.size()) insertAt = static_cast<int>(dstVec.size());
-            auto moved = std::move(srcVec[src.vecIdx]);
-            srcVec.erase(srcVec.begin() + src.vecIdx);
-            dstVec.insert(dstVec.begin() + insertAt, std::move(moved));
-            gSelectedShape  = dstVec[insertAt].get();
-            gSelectedFrame  = dstOwner;
-            gSelectedFrames.clear();
-            gSelectedShapes.clear();
+    // ── Insert into destination ───────────────────────────────────────────────
+    if (isSrcFrame) {
+        auto& dstVec = dstOwner ? dstOwner->childFrames : gDocument->frames;
+        if (insertAt < 0) insertAt = 0;
+        if (insertAt > (int)dstVec.size()) insertAt = static_cast<int>(dstVec.size());
+        int firstAt = insertAt;
+        for (auto& f : movedFrames) {
+            dstVec.insert(dstVec.begin() + insertAt, std::move(f));
+            ++insertAt;
         }
+        // Update selection
+        gSelectedFrames.clear();
+        for (int i = firstAt; i < (int)dstVec.size() && i < firstAt + (int)movedFramePtrs.size(); ++i)
+            gSelectedFrames.push_back(dstVec[i].get());
+        gSelectedFrame = gSelectedFrames.empty() ? nullptr : gSelectedFrames.back();
+        gSelectedShape = nullptr;
+    } else {
+        auto& dstVec = dstOwner ? dstOwner->children : gDocument->rootShapes;
+        if (insertAt < 0) insertAt = 0;
+        if (insertAt > (int)dstVec.size()) insertAt = static_cast<int>(dstVec.size());
+        int firstAt = insertAt;
+        for (auto& s : movedShapes) {
+            dstVec.insert(dstVec.begin() + insertAt, std::move(s));
+            ++insertAt;
+        }
+        gSelectedShapes.clear();
+        for (int i = firstAt; i < (int)dstVec.size() && i < firstAt + (int)movedShapes.size(); ++i)
+            gSelectedShapes.push_back(dstVec[i].get());
+        gSelectedShape = gSelectedShapes.empty() ? nullptr : gSelectedShapes.back();
+        gSelectedFrame = dstOwner;
     }
 
     InvalidateLayers(); InvalidateMain();
@@ -668,8 +792,13 @@ void HandleLayersPanelClick(Point localPt, UInt16 modifiers) {
                 InvalidateLayers(); InvalidateMain();
                 return;
             }
-            gSelectedShapes.clear();
-            gSelectedFrame = nullptr; gSelectedShape = s;
+            bool alreadyInMulti = !gSelectedShapes.empty() &&
+                std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s) != gSelectedShapes.end();
+            if (!alreadyInMulti) {
+                gSelectedShapes.clear();
+                gSelectedFrame = nullptr;
+            }
+            gSelectedShape = s;
             InvalidateLayers(); InvalidateMain();
             goto check_dbl;
         }
