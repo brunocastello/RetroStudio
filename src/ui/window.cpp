@@ -665,6 +665,36 @@ static Frame* DeepestFrameAt(Point pt, Frame* skip = nullptr) {
     return result;
 }
 
+// DeepestInFrame variant that skips any frame in an exclusion set
+static Frame* DeepestInFrameExcl(Frame* f, Point pt, const std::vector<Frame*>& excl) {
+    if (std::find(excl.begin(), excl.end(), f) != excl.end()) return nullptr;
+    Rect r = CanvasRect(f->bounds);
+    if (!PtInRect(pt, &r)) return nullptr;
+    for (auto it = f->childFrames.rbegin(); it != f->childFrames.rend(); ++it) {
+        Frame* deeper = DeepestInFrameExcl(it->get(), pt, excl);
+        if (deeper) return deeper;
+    }
+    return f;
+}
+static Frame* DeepestFrameAtExcl(Point pt, const std::vector<Frame*>& excl) {
+    Frame* result = nullptr;
+    for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend(); ++it) {
+        Frame* f = DeepestInFrameExcl(it->get(), pt, excl);
+        if (f) result = f;
+    }
+    return result;
+}
+
+// Recursively collect all frames whose bounds intersect (l,t,r,b) in canvas space
+static void CollectAllBandFrames(Frame* frm, SInt32 l, SInt32 t, SInt32 r, SInt32 b,
+                                  std::vector<Frame*>& out) {
+    const Bounds2& bnd = frm->bounds;
+    if (bnd.x < r && (bnd.x + bnd.w) > l && bnd.y < b && (bnd.y + bnd.h) > t)
+        out.push_back(frm);
+    for (auto& cf : frm->childFrames)
+        CollectAllBandFrames(cf.get(), l, t, r, b, out);
+}
+
 // Extract a Shape unique_ptr from its current owner (Frame or rootShapes)
 static std::unique_ptr<Shape> ExtractShape(Shape* s, Frame* parent) {
     auto& vec = parent ? parent->children : gDocument->rootShapes;
@@ -968,6 +998,26 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         return;
     }
 
+    // ---- Shift+click on a frame (no shape hit): toggle frame in gSelectedFrames ----
+    if (found && (modifiers & shiftKey) && !hitShape && hitFrame) {
+        gSelectedShapes.clear(); gSelectedShape = nullptr;
+        auto fit = std::find(gSelectedFrames.begin(), gSelectedFrames.end(), hitFrame);
+        if (fit != gSelectedFrames.end()) {
+            gSelectedFrames.erase(fit);
+            gSelectedFrame = gSelectedFrames.empty() ? nullptr : gSelectedFrames.back();
+        } else {
+            if (gSelectedFrame && !gSelectedShape &&
+                std::find(gSelectedFrames.begin(), gSelectedFrames.end(), gSelectedFrame) == gSelectedFrames.end())
+                gSelectedFrames.push_back(gSelectedFrame);
+            gSelectedFrames.push_back(hitFrame);
+            gSelectedFrame = hitFrame;
+        }
+        Rect portRect2; GetWindowPortBounds(win, &portRect2); InvalWindowRect(win, &portRect2);
+        RefreshLayersPanel();
+        RefreshInspector();
+        return;
+    }
+
     // If clicking on an object already in the multi-select, preserve selection for drag.
     bool hitInSelection =
         (hitShape && gSelectedShapes.size() > 1 &&
@@ -1095,6 +1145,34 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
             RefreshLayersPanel();
             return;
         }
+        if (isMultiDrag && gSelectedFrames.size() > 1) {
+            // Re-parent each selected frame to wherever it was dropped,
+            // excluding all selected frames from the candidate parent search.
+            for (Frame* f : gSelectedFrames) {
+                Bounds2 fb = f->bounds;
+                Point fc;
+                fc.h = static_cast<short>(SInt32(fb.x + fb.w/2) * gCanvasZoom / 100 + gCanvasOffsetX);
+                fc.v = static_cast<short>(SInt32(fb.y + fb.h/2) * gCanvasZoom / 100 + gCanvasOffsetY);
+                Frame* newParent = DeepestFrameAtExcl(fc, gSelectedFrames);
+                if (newParent != f->parent) {
+                    auto owned = ExtractFrame(f);
+                    if (owned) {
+                        if (newParent) {
+                            owned->parent = newParent;
+                            newParent->childFrames.push_back(std::move(owned));
+                        } else {
+                            owned->parent = nullptr;
+                            gDocument->frames.push_back(std::move(owned));
+                        }
+                    }
+                }
+            }
+            gSelectedFrame = gSelectedFrames.empty() ? nullptr : gSelectedFrames.back();
+            Rect portRect; GetWindowPortBounds(win, &portRect); InvalWindowRect(win, &portRect);
+            RefreshLayersPanel();
+            RefreshInspector();
+            return;
+        }
         if (isMultiDrag) {
             Rect portRect; GetWindowPortBounds(win, &portRect); InvalWindowRect(win, &portRect);
             RefreshLayersPanel();
@@ -1218,29 +1296,34 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                     band.push_back({ sp.get(), nullptr });
             }
 
-            // Collect top-level frames that intersect the band
+            // Collect frames that intersect the band, at all nesting levels
+            std::vector<Frame*> allBandFrames;
+            for (auto& frm : gDocument->frames)
+                CollectAllBandFrames(frm.get(), selL, selT, selR, selB, allBandFrames);
+
+            // Keep only the deepest frames (drop ancestors when a descendant is also hit)
             std::vector<Frame*> bandFrames;
-            for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend(); ++it) {
-                Frame* frm = it->get();
-                if (!frm->visible) continue;
-                const Bounds2& bnd = frm->bounds;
-                if (bnd.x < selR && (bnd.x + bnd.w) > selL &&
-                    bnd.y < selB && (bnd.y + bnd.h) > selT)
-                    bandFrames.push_back(frm);
+            for (Frame* f : allBandFrames) {
+                bool isAncestor = false;
+                for (Frame* other : allBandFrames) {
+                    if (other == f) continue;
+                    for (Frame* p = other->parent; p; p = p->parent) {
+                        if (p == f) { isAncestor = true; break; }
+                    }
+                    if (isAncestor) break;
+                }
+                if (!isAncestor) bandFrames.push_back(f);
             }
 
             if (band.size() == 1) {
-                // Single shape hit: normal single-select with parent context
                 gSelectedShape = band[0].shape;
                 gSelectedFrame = band[0].parent;
             } else if (band.size() > 1) {
-                // Multi-shape hit: gSelectedFrame stays null (no parent highlighted)
                 for (auto& bs : band) gSelectedShapes.push_back(bs.shape);
                 gSelectedShape = gSelectedShapes.back();
             } else if (bandFrames.size() == 1) {
                 gSelectedFrame = bandFrames[0];
             } else if (bandFrames.size() > 1) {
-                // Multi-frame: use gSelectedFrames
                 gSelectedFrames = bandFrames;
                 gSelectedFrame  = gSelectedFrames.back();
             }
