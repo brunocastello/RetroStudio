@@ -228,7 +228,7 @@ void DrawLayersPanel() {
 
 static short HitTestFrameRows(Frame* frame, short y, short indent,
                                Point pt, const Rect& portRect,
-                               bool eyeZone, bool lockZone) {
+                               bool eyeZone, bool lockZone, UInt16 modifiers) {
     Rect row = { y, 2,
                  static_cast<short>(y + kLayerRowH - 1),
                  static_cast<short>(portRect.right - 2) };
@@ -240,6 +240,8 @@ static short HitTestFrameRows(Frame* frame, short y, short indent,
             PushUndo(); frame->locked = !frame->locked;
             InvalidateLayers(); InvalidateMain();
         } else {
+            // Frames don't participate in shape multi-select; always single-select
+            gSelectedShapes.clear();
             gSelectedFrame = frame; gSelectedShape = nullptr;
             InvalidateLayers(); InvalidateMain();
         }
@@ -249,7 +251,7 @@ static short HitTestFrameRows(Frame* frame, short y, short indent,
 
     for (auto it = frame->childFrames.rbegin(); it != frame->childFrames.rend(); ++it) {
         y = HitTestFrameRows(it->get(), y, static_cast<short>(indent + 10),
-                             pt, portRect, eyeZone, lockZone);
+                             pt, portRect, eyeZone, lockZone, modifiers);
         if (y == -1) return -1;
     }
     for (auto it = frame->children.rbegin(); it != frame->children.rend(); ++it) {
@@ -264,7 +266,26 @@ static short HitTestFrameRows(Frame* frame, short y, short indent,
             } else if (lockZone) {
                 PushUndo(); s->locked = !s->locked;
                 InvalidateLayers(); InvalidateMain();
+            } else if ((modifiers & shiftKey) && (gSelectedFrame == frame || gSelectedShapes.size() > 0)) {
+                // Shift+click: toggle shape in multi-select (same parent frame required)
+                if (gSelectedFrame == nullptr || gSelectedFrame == frame) {
+                    gSelectedFrame = frame;
+                    auto sit = std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s);
+                    if (sit != gSelectedShapes.end()) {
+                        gSelectedShapes.erase(sit);
+                        gSelectedShape = gSelectedShapes.empty() ? nullptr : gSelectedShapes.back();
+                    } else {
+                        if (gSelectedShape &&
+                            std::find(gSelectedShapes.begin(), gSelectedShapes.end(), gSelectedShape) == gSelectedShapes.end()) {
+                            gSelectedShapes.push_back(gSelectedShape);
+                        }
+                        gSelectedShapes.push_back(s);
+                        gSelectedShape = s;
+                    }
+                    InvalidateLayers(); InvalidateMain();
+                }
             } else {
+                gSelectedShapes.clear();
                 gSelectedFrame = frame; gSelectedShape = s;
                 InvalidateLayers(); InvalidateMain();
             }
@@ -275,7 +296,7 @@ static short HitTestFrameRows(Frame* frame, short y, short indent,
     return y;
 }
 
-void HandleLayersPanelClick(Point localPt) {
+void HandleLayersPanelClick(Point localPt, UInt16 modifiers) {
     if (!gDocument || !gLayersWindow) return;
     SetPortWindowPort(gLayersWindow);
 
@@ -305,6 +326,24 @@ void HandleLayersPanelClick(Point localPt) {
                 PushUndo(); s->locked = !s->locked;
                 InvalidateLayers(); InvalidateMain(); return;
             }
+            if ((modifiers & shiftKey) && (gSelectedFrame == nullptr)) {
+                // Shift+click root shape: toggle in multi-select
+                auto sit = std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s);
+                if (sit != gSelectedShapes.end()) {
+                    gSelectedShapes.erase(sit);
+                    gSelectedShape = gSelectedShapes.empty() ? nullptr : gSelectedShapes.back();
+                } else {
+                    if (gSelectedShape &&
+                        std::find(gSelectedShapes.begin(), gSelectedShapes.end(), gSelectedShape) == gSelectedShapes.end()) {
+                        gSelectedShapes.push_back(gSelectedShape);
+                    }
+                    gSelectedShapes.push_back(s);
+                    gSelectedShape = s;
+                }
+                InvalidateLayers(); InvalidateMain();
+                return;
+            }
+            gSelectedShapes.clear();
             gSelectedFrame = nullptr; gSelectedShape = s;
             InvalidateLayers(); InvalidateMain();
             goto check_dbl;
@@ -314,7 +353,7 @@ void HandleLayersPanelClick(Point localPt) {
 
     // Top-level frames
     for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend(); ++it) {
-        y = HitTestFrameRows(it->get(), y, 0, localPt, portRect, eyeZone, lockZone);
+        y = HitTestFrameRows(it->get(), y, 0, localPt, portRect, eyeZone, lockZone, modifiers);
         if (y == -1) {
             if (eyeZone) return;
             goto check_dbl;
@@ -322,6 +361,7 @@ void HandleLayersPanelClick(Point localPt) {
     }
 
     // Empty area — deselect
+    gSelectedShapes.clear();
     gSelectedFrame = nullptr; gSelectedShape = nullptr;
     sLastWhen = 0; sLastFrame = nullptr; sLastShape = nullptr;
     InvalidateLayers(); InvalidateMain();

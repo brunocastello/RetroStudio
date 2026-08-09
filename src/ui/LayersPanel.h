@@ -14,5 +14,5 @@ extern WindowRef gLayersWindow;
 
 void SetupLayersPanel();
 void DrawLayersPanel();
-void HandleLayersPanelClick(Point localPt);
+void HandleLayersPanelClick(Point localPt, UInt16 modifiers = 0);
 void RefreshLayersPanel();   // call after any document structure or selection change

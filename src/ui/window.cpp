@@ -14,6 +14,7 @@ Document*  gDocument      = nullptr;
 Frame*     gSelectedFrame = nullptr;
 Shape*     gSelectedShape = nullptr;
 std::vector<Shape*> gSelectedShapes;
+Shape*              gLayoutDragShape = nullptr;
 int        gNextFrameNum  = 2;
 bool       gIsDoubleClick = false;
 SInt32     gCanvasOffsetX = 0;
@@ -445,13 +446,26 @@ static void DrawFrame(const Frame& frame) {
 }
 
 static void DrawSelectionHighlight() {
+    RGBColor selBlue = { 0x1177, 0x55AA, 0xFFFF };
+
+    // Draw secondary multi-select borders (blue outline, no handles)
+    if (gSelectedShapes.size() > 1) {
+        RGBForeColor(&selBlue);
+        PenSize(2, 2);
+        for (Shape* s : gSelectedShapes) {
+            if (s == gSelectedShape) continue;
+            Rect r2 = CanvasRect(s->bounds);
+            FrameRect(&r2);
+        }
+        PenSize(1, 1);
+    }
+
     if (!gSelectedFrame && !gSelectedShape) return;
 
     Rect r = gSelectedShape
         ? CanvasRect(gSelectedShape->bounds)
         : CanvasRect(gSelectedFrame->bounds);
 
-    RGBColor selBlue = { 0x1177, 0x55AA, 0xFFFF };
     RGBForeColor(&selBlue);
     PenSize(2, 2);
     FrameRect(&r);
@@ -967,6 +981,13 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         Point prevPt = pt, currPt = pt;
         bool pushedUndo = false;
 
+        // If dragging a shape inside a layout frame, exclude it from layout so
+        // it moves freely (enables drag-to-sort and drag-out-of-layout)
+        bool isLayoutDrag = (hitShape && hitFrame &&
+                             hitFrame->layoutMode != LayoutMode::None &&
+                             gSelectedShapes.size() <= 1);
+        if (isLayoutDrag) gLayoutDragShape = hitShape;
+
         while (Button()) {
             GetMouse(&currPt);
             if (currPt.h != prevPt.h || currPt.v != prevPt.v) {
@@ -992,10 +1013,13 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
             }
         }
 
+        gLayoutDragShape = nullptr;  // always clear after drag
+
         // ---- Re-parent on drop (skipped for multi-select drags) ----
         // Center in screen space (DeepestFrameAt uses CanvasRect = screen space rects)
         if (gSelectedShapes.size() > 1) {
             Rect portRect; GetWindowPortBounds(win, &portRect); InvalWindowRect(win, &portRect);
+            RefreshLayersPanel();
             return;
         }
         Bounds2 finalB = hitShape ? hitShape->bounds : hitFrame->bounds;
@@ -1005,7 +1029,19 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
 
         if (hitShape) {
             Frame* newParent = DeepestFrameAt(center);
-            if (newParent != origParent) {
+
+            if (isLayoutDrag && newParent == hitFrame) {
+                // Dropped inside same layout frame — sort children by primary axis
+                bool isHoriz = (hitFrame->layoutMode == LayoutMode::Horizontal);
+                std::stable_sort(hitFrame->children.begin(), hitFrame->children.end(),
+                    [isHoriz](const std::unique_ptr<Shape>& a, const std::unique_ptr<Shape>& b) {
+                        SInt32 aM = isHoriz ? (a->bounds.x + a->bounds.w/2)
+                                            : (a->bounds.y + a->bounds.h/2);
+                        SInt32 bM = isHoriz ? (b->bounds.x + b->bounds.w/2)
+                                            : (b->bounds.y + b->bounds.h/2);
+                        return aM < bM;
+                    });
+            } else if (newParent != origParent) {
                 auto owned = ExtractShape(hitShape, origParent);
                 if (owned) {
                     if (newParent) newParent->children.push_back(std::move(owned));

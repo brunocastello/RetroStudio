@@ -1,5 +1,8 @@
 #include "AutoLayout.h"
 
+// Shape being drag-sorted — excluded from layout so it follows the mouse freely.
+extern Shape* gLayoutDragShape;
+
 // Unified view of one child item.  Both Shape* and Frame* children use this.
 struct LayoutItem {
     SInt32* x;
@@ -34,6 +37,7 @@ static void RunFrameLayout(Frame* f) {
 
     for (auto& s : f->children) {
         if (!s->visible) continue;  // invisible items take no space in layout
+        if (s.get() == gLayoutDragShape) continue;  // excluded during drag-to-sort
         LayoutItem it;
         it.x = &s->bounds.x; it.y = &s->bounds.y;
         it.w = &s->bounds.w; it.h = &s->bounds.h;

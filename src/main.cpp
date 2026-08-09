@@ -65,7 +65,7 @@ int main(int argc, char* argv[]) {
                                 Point localPt = event.where;
                                 SetPortWindowPort(gLayersWindow);
                                 GlobalToLocal(&localPt);
-                                HandleLayersPanelClick(localPt);
+                                HandleLayersPanelClick(localPt, event.modifiers);
                                 RefreshInspector();
                             } else if (win == gTypographyWindow) {
                                 if (win != FrontWindow()) SelectWindow(win);

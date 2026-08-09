@@ -453,39 +453,45 @@ void DrawInspectorPanel() {
         return;
     }
 
-    // Multi-select view: show count + aggregate bounding box, no fill/stroke editing
-    if (gSelectedShapes.size() > 1) {
-        RGBColor labelClr2 = { 0x6666, 0x6666, 0x6666 };
-        RGBColor valueClr2 = { 0x1111, 0x1111, 0x1111 };
-        Str255 ps2;
-        // Name row
-        RGBForeColor(&labelClr2); TextSize(9);
-        PStrC("NAME", ps2); MoveTo(4, 12); DrawString(ps2);
-        std::string countLabel = numStr(static_cast<SInt32>(gSelectedShapes.size())) + " objects";
-        RGBForeColor(&valueClr2); TextSize(11);
-        PStr(countLabel, ps2); MoveTo(4, 26); DrawString(ps2);
-        // Aggregate bounding box
-        SInt32 minX = gSelectedShapes[0]->bounds.x, minY = gSelectedShapes[0]->bounds.y;
-        SInt32 maxX = minX + gSelectedShapes[0]->bounds.w;
-        SInt32 maxY = minY + gSelectedShapes[0]->bounds.h;
+    // Multi-select: check if all shapes are the same type
+    bool isMulti = (gSelectedShapes.size() > 1);
+    bool multiAllSameType = false;
+    if (isMulti) {
+        Shape::Type multiType = gSelectedShapes[0]->GetType();
+        multiAllSameType = true;
         for (size_t i = 1; i < gSelectedShapes.size(); ++i) {
-            const Bounds2& b = gSelectedShapes[i]->bounds;
-            if (b.x         < minX) minX = b.x;
-            if (b.y         < minY) minY = b.y;
-            if (b.x + b.w   > maxX) maxX = b.x + b.w;
-            if (b.y + b.h   > maxY) maxY = b.y + b.h;
+            if (gSelectedShapes[i]->GetType() != multiType) { multiAllSameType = false; break; }
         }
-        short y2 = 36;
-        RGBForeColor(&labelClr2); TextSize(9);
-        PStrC("SIZE", ps2); MoveTo(4, static_cast<short>(y2+8)); DrawString(ps2);
-        y2 = static_cast<short>(y2 + 12);
-        std::string xs = "X " + numStr(minX) + "   Y " + numStr(minY);
-        std::string ws = "W " + numStr(maxX - minX) + "   H " + numStr(maxY - minY);
-        RGBForeColor(&valueClr2); TextSize(11);
-        PStr(xs, ps2); MoveTo(4, static_cast<short>(y2+10)); DrawString(ps2);
-        PStr(ws, ps2); MoveTo(4, static_cast<short>(y2+24)); DrawString(ps2);
-        TextSize(12); PenNormal(); RGBForeColor(&black); RGBBackColor(&white);
-        return;
+        if (!multiAllSameType) {
+            // Mixed types: show count + aggregate bbox + fill/stroke, then stop
+            RGBColor labelClr2 = { 0x6666, 0x6666, 0x6666 };
+            RGBColor valueClr2 = { 0x1111, 0x1111, 0x1111 };
+            Str255 ps2;
+            RGBForeColor(&labelClr2); TextSize(9);
+            PStrC("NAME", ps2); MoveTo(4, 12); DrawString(ps2);
+            std::string countLabel = numStr(static_cast<SInt32>(gSelectedShapes.size())) + " objects";
+            RGBForeColor(&valueClr2); TextSize(11);
+            PStr(countLabel, ps2); MoveTo(4, 26); DrawString(ps2);
+            SInt32 minX = gSelectedShapes[0]->bounds.x, minY = gSelectedShapes[0]->bounds.y;
+            SInt32 maxX = minX + gSelectedShapes[0]->bounds.w, maxY = minY + gSelectedShapes[0]->bounds.h;
+            for (size_t i = 1; i < gSelectedShapes.size(); ++i) {
+                const Bounds2& b = gSelectedShapes[i]->bounds;
+                if (b.x < minX) minX = b.x;   if (b.y < minY) minY = b.y;
+                if (b.x+b.w > maxX) maxX = b.x+b.w; if (b.y+b.h > maxY) maxY = b.y+b.h;
+            }
+            short y2 = 36;
+            RGBForeColor(&labelClr2); TextSize(9);
+            PStrC("SIZE", ps2); MoveTo(4, static_cast<short>(y2+8)); DrawString(ps2);
+            y2 = static_cast<short>(y2 + 12);
+            std::string xs = "X " + numStr(minX) + "   Y " + numStr(minY);
+            std::string ws = "W " + numStr(maxX-minX) + "   H " + numStr(maxY-minY);
+            RGBForeColor(&valueClr2); TextSize(11);
+            PStr(xs, ps2); MoveTo(4, static_cast<short>(y2+10)); DrawString(ps2);
+            PStr(ws, ps2); MoveTo(4, static_cast<short>(y2+24)); DrawString(ps2);
+            TextSize(12); PenNormal(); RGBForeColor(&black); RGBBackColor(&white);
+            return;
+        }
+        // Same type: fall through to full inspector (objName overridden below)
     }
 
     // Gather data from selection
@@ -519,6 +525,10 @@ void DrawInspectorPanel() {
         bounds      = gSelectedFrame->bounds;
         objName     = gSelectedFrame->name;
     }
+
+    // For same-type multi-select, show "N objects" instead of the shape's name
+    if (isMulti && multiAllSameType)
+        objName = numStr(static_cast<SInt32>(gSelectedShapes.size())) + " objects";
 
     Str255 ps;
     RGBColor labelClr = { 0x6666, 0x6666, 0x6666 };
@@ -1329,6 +1339,8 @@ void ApplyInspectorEdit() {
             val = val * 10 + (sEditBuf[i] - '0');
     if (neg) val = -val;
 
+    const bool applyMulti = (gSelectedShapes.size() > 1);
+
     Bounds2* b  = gSelectedShape ? &gSelectedShape->bounds
                                  : (gSelectedFrame ? &gSelectedFrame->bounds : nullptr);
     UInt16*  sw = gSelectedShape ? &gSelectedShape->strokeWidth
@@ -1341,15 +1353,45 @@ void ApplyInspectorEdit() {
     bool changed = false;
     if (b) {
         switch (sActiveField) {
-            case kFieldX: if (val!=b->x){PushUndo(); b->x=val;      changed=true;} break;
-            case kFieldY: if (val!=b->y){PushUndo(); b->y=val;      changed=true;} break;
-            case kFieldW: if (val<1) val=1; if (val!=b->w){PushUndo(); b->w=val; changed=true;} break;
-            case kFieldH: if (val<1) val=1; if (val!=b->h){PushUndo(); b->h=val; changed=true;} break;
+            case kFieldX:
+                if (val != b->x) {
+                    PushUndo();
+                    if (applyMulti) {
+                        SInt32 dx = val - b->x;
+                        for (Shape* s : gSelectedShapes) s->bounds.x += dx;
+                    } else { b->x = val; }
+                    changed = true;
+                } break;
+            case kFieldY:
+                if (val != b->y) {
+                    PushUndo();
+                    if (applyMulti) {
+                        SInt32 dy = val - b->y;
+                        for (Shape* s : gSelectedShapes) s->bounds.y += dy;
+                    } else { b->y = val; }
+                    changed = true;
+                } break;
+            case kFieldW:
+                if (val < 1) val = 1;
+                if (val != b->w) {
+                    PushUndo();
+                    if (applyMulti) { for (Shape* s : gSelectedShapes) s->bounds.w = val; }
+                    else { b->w = val; }
+                    changed = true;
+                } break;
+            case kFieldH:
+                if (val < 1) val = 1;
+                if (val != b->h) {
+                    PushUndo();
+                    if (applyMulti) { for (Shape* s : gSelectedShapes) s->bounds.h = val; }
+                    else { b->h = val; }
+                    changed = true;
+                } break;
             default: break;
         }
     }
-    // Aspect ratio lock: after W or H changes, proportionally adjust the other
-    if (sAspectLocked && changed && b && origW > 0 && origH > 0) {
+    // Aspect ratio lock: single select only
+    if (!applyMulti && sAspectLocked && changed && b && origW > 0 && origH > 0) {
         if (appliedField == kFieldW && val > 0) {
             b->h = val * origH / origW;
             if (b->h < 1) b->h = 1;
@@ -1358,18 +1400,35 @@ void ApplyInspectorEdit() {
             if (b->w < 1) b->w = 1;
         }
     }
-    if (sw && sActiveField == kFieldStrokeWidth) {
+    if (sActiveField == kFieldStrokeWidth) {
         if (val < 1) val = 1; if (val > 20) val = 20;
         UInt16 nv = static_cast<UInt16>(val);
-        if (nv != *sw) { PushUndo(); *sw = nv; changed = true; }
+        if (applyMulti) {
+            bool any = false;
+            for (Shape* s : gSelectedShapes) if (s->strokeWidth != nv) { any = true; break; }
+            if (any) { PushUndo(); for (Shape* s : gSelectedShapes) s->strokeWidth = nv; changed = true; }
+        } else if (sw && nv != *sw) { PushUndo(); *sw = nv; changed = true; }
     }
     if (sActiveField == kFieldFontSize && gSelectedShape &&
             gSelectedShape->GetType() == Shape::kText) {
         if (val < 4)   val = 4;
         if (val > 144) val = 144;
-        TextShape& ts = static_cast<TextShape&>(*gSelectedShape);
-        if (val != static_cast<SInt32>(ts.fontSize)) {
-            PushUndo(); ts.fontSize = static_cast<SInt16>(val); changed = true;
+        SInt16 fval = static_cast<SInt16>(val);
+        if (applyMulti) {
+            bool any = false;
+            for (Shape* s : gSelectedShapes)
+                if (s->GetType() == Shape::kText && static_cast<TextShape*>(s)->fontSize != fval) { any = true; break; }
+            if (any) {
+                PushUndo();
+                for (Shape* s : gSelectedShapes)
+                    if (s->GetType() == Shape::kText) static_cast<TextShape*>(s)->fontSize = fval;
+                changed = true;
+            }
+        } else {
+            TextShape& ts = static_cast<TextShape&>(*gSelectedShape);
+            if (val != static_cast<SInt32>(ts.fontSize)) {
+                PushUndo(); ts.fontSize = fval; changed = true;
+            }
         }
     }
     if (sActiveField == kFieldLayoutGap && gSelectedFrame) {
@@ -1452,6 +1511,12 @@ void HandleInspectorClick(Point localPt) {
                                    : gSelectedFrame->locked;
     if (isLocked) return;
 
+    // Multi-select: refuse edit if any shape is locked
+    const bool isMulti = (gSelectedShapes.size() > 1);
+    if (isMulti) {
+        for (Shape* s : gSelectedShapes) if (s->locked) return;
+    }
+
     // Apply any active edit when clicking elsewhere in the inspector (no Enter needed)
     ApplyInspectorEdit();
 
@@ -1467,7 +1532,8 @@ void HandleInspectorClick(Point localPt) {
 #endif
         if (changed) {
             PushUndo();
-            if (gSelectedShape) gSelectedShape->fillColor = newColor;
+            if (isMulti) { for (Shape* s : gSelectedShapes) s->fillColor = newColor; }
+            else if (gSelectedShape) gSelectedShape->fillColor = newColor;
             else                gSelectedFrame->backgroundColor = newColor;
             InvalidateInspector();
             if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
@@ -1478,7 +1544,10 @@ void HandleInspectorClick(Point localPt) {
     // Stroke toggle
     if (PtInRect(localPt, &sStrokeToggleRect)) {
         PushUndo();
-        if (gSelectedShape) gSelectedShape->hasStroke = !gSelectedShape->hasStroke;
+        if (isMulti) {
+            bool newStroke = !gSelectedShapes[0]->hasStroke;
+            for (Shape* s : gSelectedShapes) s->hasStroke = newStroke;
+        } else if (gSelectedShape) gSelectedShape->hasStroke = !gSelectedShape->hasStroke;
         else                gSelectedFrame->hasStroke = !gSelectedFrame->hasStroke;
         InvalidateInspector();
         if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
@@ -1497,7 +1566,8 @@ void HandleInspectorClick(Point localPt) {
 #endif
         if (changed) {
             PushUndo();
-            if (gSelectedShape) gSelectedShape->strokeColor = newColor;
+            if (isMulti) { for (Shape* s : gSelectedShapes) { s->strokeColor = newColor; s->hasStroke = true; } }
+            else if (gSelectedShape) gSelectedShape->strokeColor = newColor;
             else                gSelectedFrame->strokeColor = newColor;
             InvalidateInspector();
             if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
@@ -1511,7 +1581,8 @@ void HandleInspectorClick(Point localPt) {
         if (sw > 1) {
             PushUndo();
             UInt16 nv = static_cast<UInt16>(sw - 1);
-            if (gSelectedShape) gSelectedShape->strokeWidth = nv;
+            if (isMulti) { for (Shape* s : gSelectedShapes) if (s->strokeWidth > 1) s->strokeWidth = nv; }
+            else if (gSelectedShape) gSelectedShape->strokeWidth = nv;
             else                gSelectedFrame->strokeWidth = nv;
             InvalidateInspector();
             if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
@@ -1525,7 +1596,8 @@ void HandleInspectorClick(Point localPt) {
         if (sw < 20) {
             PushUndo();
             UInt16 nv = static_cast<UInt16>(sw + 1);
-            if (gSelectedShape) gSelectedShape->strokeWidth = nv;
+            if (isMulti) { for (Shape* s : gSelectedShapes) if (s->strokeWidth < 20) s->strokeWidth = nv; }
+            else if (gSelectedShape) gSelectedShape->strokeWidth = nv;
             else                gSelectedFrame->strokeWidth = nv;
             InvalidateInspector();
             if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
@@ -1556,7 +1628,8 @@ void HandleInspectorClick(Point localPt) {
         if (item > 0) {
             UInt8 newAlign = (item == 1) ? 2 : (item == 3) ? 1 : 0;
             PushUndo();
-            if (gSelectedShape) gSelectedShape->strokeAlign = newAlign;
+            if (isMulti) { for (Shape* s : gSelectedShapes) s->strokeAlign = newAlign; }
+            else if (gSelectedShape) gSelectedShape->strokeAlign = newAlign;
             else                gSelectedFrame->strokeAlign = newAlign;
             InvalidateInspector();
             if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
