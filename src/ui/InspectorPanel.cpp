@@ -583,6 +583,134 @@ void DrawInspectorPanel() {
                      gSelectedFrame->bounds.h, sFieldHRect);
         y2 = static_cast<short>(y2 + 22);
 
+        // LAYOUT — uses gSelectedFrame as reference; edits apply to all selected frames
+        {
+            Frame* lf2 = gSelectedFrame;
+            y2 = DrawSectionHeader(y2, "LAYOUT", portRect);
+            y2 = static_cast<short>(y2 + 3);
+
+            struct { const char* label; short x; short w; } mfBtn[4] = {
+                { "None", 5, 42 }, { "H", 51, 30 }, { "V", 85, 30 }, { "Wrap", 119, 50 },
+            };
+            for (int i = 0; i < 4; ++i) {
+                short bx = mfBtn[i].x, bw = mfBtn[i].w;
+                Rect btn2 = { y2, bx, static_cast<short>(y2+18), static_cast<short>(bx+bw) };
+                bool active2 = (i < 3) ? (static_cast<UInt8>(lf2->layoutMode) == i)
+                                       : (lf2->layoutMode != LayoutMode::None && lf2->layoutWrap);
+                bool dimmed2 = (i == 3 && lf2->layoutMode == LayoutMode::None);
+                if (active2)       { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
+                else if (dimmed2)  { RGBColor bg={0xEEEE,0xEEEE,0xEEEE}; RGBForeColor(&bg); }
+                else               { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
+                PaintRect(&btn2);
+                RGBColor bd2 = dimmed2 ? RGBColor{0xAAAA,0xAAAA,0xAAAA} : RGBColor{0x7777,0x7777,0x7777};
+                RGBForeColor(&bd2); FrameRect(&btn2);
+                RGBColor tc2 = active2 ? RGBColor{0xFFFF,0xFFFF,0xFFFF}
+                             : (dimmed2 ? RGBColor{0xAAAA,0xAAAA,0xAAAA} : RGBColor{0x3333,0x3333,0x3333});
+                RGBForeColor(&tc2); TextSize(9);
+                PStrC(mfBtn[i].label, ps2);
+                short tw2 = StringWidth(ps2);
+                MoveTo(static_cast<short>(bx + (bw - tw2)/2), static_cast<short>(y2 + 13));
+                DrawString(ps2); TextSize(11);
+                if (i < 3) sLayoutModeRect[i] = btn2; else sWrapRect = btn2;
+            }
+            y2 = static_cast<short>(y2 + 24);
+
+            if (lf2->layoutMode != LayoutMode::None) {
+                static const short kCell = 14, kCellGap = 4;
+                short gridX2 = 8, gridY2 = y2;
+                short gridSpan2 = 3*kCell + 2*kCellGap;
+                bool isSB2 = (lf2->primaryAlign == PrimaryAlign::SpaceBetween);
+                for (int row = 0; row < 3; ++row) {
+                    for (int col = 0; col < 3; ++col) {
+                        short cx2 = static_cast<short>(gridX2 + col*(kCell+kCellGap));
+                        short cy2 = static_cast<short>(gridY2 + row*(kCell+kCellGap));
+                        Rect cell2 = { cy2, cx2, static_cast<short>(cy2+kCell), static_cast<short>(cx2+kCell) };
+                        sAlignCellRect[row*3+col] = cell2;
+                        bool actCell = false;
+                        if (!isSB2) {
+                            int priIdx = static_cast<int>(lf2->primaryAlign);
+                            int secIdx = static_cast<int>(lf2->crossAlign);
+                            actCell = (lf2->layoutMode == LayoutMode::Horizontal)
+                                      ? (col == priIdx && row == secIdx)
+                                      : (row == priIdx && col == secIdx);
+                        }
+                        if (actCell) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
+                        else         { RGBColor bg={0xEEEE,0xEEEE,0xEEEE}; RGBForeColor(&bg); }
+                        PaintRect(&cell2);
+                        { RGBColor bd2={0xAAAA,0xAAAA,0xAAAA}; RGBForeColor(&bd2); FrameRect(&cell2); }
+                        short dotX2 = static_cast<short>(cx2 + (kCell-4)/2);
+                        short dotY2 = static_cast<short>(cy2 + (kCell-4)/2);
+                        Rect dot2 = { dotY2, dotX2, static_cast<short>(dotY2+4), static_cast<short>(dotX2+4) };
+                        if (actCell) { RGBColor dc={0xFFFF,0xFFFF,0xFFFF}; RGBForeColor(&dc); }
+                        else         { RGBColor dc={0x7777,0x7777,0x7777}; RGBForeColor(&dc); }
+                        PaintRect(&dot2);
+                    }
+                }
+
+                // Gap field (right of alignment grid)
+                short rX2   = static_cast<short>(gridX2 + gridSpan2 + 8);
+                short popW2 = 46;
+                short valX2 = static_cast<short>(rX2 + popW2 + 4);
+                short valW2 = static_cast<short>(cRight - valX2 - 4);
+                short row1Y2 = static_cast<short>(gridY2 + (gridSpan2 - 25) / 2);
+                RGBForeColor(&labelClr2); TextSize(9);
+                PStrC("Gap", ps2); MoveTo(rX2, static_cast<short>(row1Y2+9)); DrawString(ps2); TextSize(11);
+                DrawPlatinumBtn(rX2, static_cast<short>(row1Y2+11), popW2, 14,
+                                isSB2 ? "Auto" : "Fixed", sLayoutGapModeRect);
+                if (!isSB2)
+                    DrawNumField(valX2, static_cast<short>(row1Y2+23), valW2,
+                                 kFieldLayoutGap, static_cast<SInt32>(lf2->layoutGap), sLayoutGapRect);
+                else
+                    sLayoutGapRect = {0,0,0,0};
+
+                y2 = static_cast<short>(gridY2 + gridSpan2 + 6);
+
+                // Compact padding row
+                short tBtnX2 = static_cast<short>(cRight - 18);
+                sPadMixedBtnRect = { y2, tBtnX2, static_cast<short>(y2+14), static_cast<short>(tBtnX2+14) };
+                if (sMixedPadding) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
+                else               { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
+                PaintRect(&sPadMixedBtnRect);
+                { RGBColor bd2={0x7777,0x7777,0x7777}; RGBForeColor(&bd2); FrameRect(&sPadMixedBtnRect); }
+
+                short availW2 = static_cast<short>(tBtnX2 - 8);
+                short halfW2  = static_cast<short>(availW2 / 2);
+                short icoW2   = 12;
+                short fldW2   = static_cast<short>(halfW2 - icoW2 - 2);
+                short col1X2  = 4;
+                short col2X2  = static_cast<short>(col1X2 + halfW2 + 2);
+                if (!sMixedPadding) {
+                    DrawPadIcon(col1X2, static_cast<short>(y2+2), 0x0A);
+                    { std::string sh2 = padCompactStr(lf2->paddingLeft, lf2->paddingRight);
+                      DrawStrField(static_cast<short>(col1X2+icoW2), static_cast<short>(y2+12), fldW2,
+                                   kFieldPadH, sh2.c_str(), sPadHRect); }
+                    DrawPadIcon(col2X2, static_cast<short>(y2+2), 0x05);
+                    { std::string sv2 = padCompactStr(lf2->paddingTop, lf2->paddingBottom);
+                      DrawStrField(static_cast<short>(col2X2+icoW2), static_cast<short>(y2+12), fldW2,
+                                   kFieldPadV, sv2.c_str(), sPadVRect); }
+                    sPadTopRect = sPadRightRect = sPadBottomRect = sPadLeftRect = {0,0,0,0};
+                    y2 = static_cast<short>(y2 + 18);
+                } else {
+                    DrawPadIcon(col1X2, static_cast<short>(y2+2), 0x01);
+                    DrawNumField(static_cast<short>(col1X2+icoW2), static_cast<short>(y2+12), fldW2,
+                                 kFieldPadTop, static_cast<SInt32>(lf2->paddingTop), sPadTopRect);
+                    DrawPadIcon(col2X2, static_cast<short>(y2+2), 0x02);
+                    DrawNumField(static_cast<short>(col2X2+icoW2), static_cast<short>(y2+12), fldW2,
+                                 kFieldPadRight, static_cast<SInt32>(lf2->paddingRight), sPadRightRect);
+                    y2 = static_cast<short>(y2 + 18);
+                    DrawPadIcon(col1X2, static_cast<short>(y2+2), 0x04);
+                    DrawNumField(static_cast<short>(col1X2+icoW2), static_cast<short>(y2+12), fldW2,
+                                 kFieldPadBottom, static_cast<SInt32>(lf2->paddingBottom), sPadBottomRect);
+                    DrawPadIcon(col2X2, static_cast<short>(y2+2), 0x08);
+                    DrawNumField(static_cast<short>(col2X2+icoW2), static_cast<short>(y2+12), fldW2,
+                                 kFieldPadLeft, static_cast<SInt32>(lf2->paddingLeft), sPadLeftRect);
+                    sPadHRect = sPadVRect = {0,0,0,0};
+                    y2 = static_cast<short>(y2 + 18);
+                }
+            }
+        }
+        y2 = static_cast<short>(y2 + 4);
+
         gInspectorTotalH = y2;
         SetOrigin(0, 0);
         if (gInspectorScrollCtrl) {
@@ -1627,52 +1755,60 @@ void ApplyInspectorEdit() {
         if (val < 0)   val = 0;
         if (val > 500) val = 500;
         UInt16 nv = static_cast<UInt16>(val);
-        if (nv != gSelectedFrame->layoutGap) { PushUndo(); gSelectedFrame->layoutGap = nv; changed = true; }
+        if (applyMultiFrame) {
+            PushUndo(); for (Frame* f : gSelectedFrames) f->layoutGap = nv; changed = true;
+        } else if (nv != gSelectedFrame->layoutGap) { PushUndo(); gSelectedFrame->layoutGap = nv; changed = true; }
     }
     if (sActiveField == kFieldCounterGap && gSelectedFrame) {
         if (val < 0)   val = 0;
         if (val > 500) val = 500;
         UInt16 nv = static_cast<UInt16>(val);
-        if (nv != gSelectedFrame->layoutCounterGap) { PushUndo(); gSelectedFrame->layoutCounterGap = nv; changed = true; }
+        if (applyMultiFrame) {
+            PushUndo(); for (Frame* f : gSelectedFrames) f->layoutCounterGap = nv; changed = true;
+        } else if (nv != gSelectedFrame->layoutCounterGap) { PushUndo(); gSelectedFrame->layoutCounterGap = nv; changed = true; }
     }
     if (gSelectedFrame && (sActiveField == kFieldPadH || sActiveField == kFieldPadV ||
         sActiveField == kFieldPadTop   || sActiveField == kFieldPadRight  ||
         sActiveField == kFieldPadBottom || sActiveField == kFieldPadLeft)) {
         PushUndo();
-        if (sActiveField == kFieldPadH || sActiveField == kFieldPadV) {
-            SInt32 a = 0, b2 = 0;
-            int sepIdx = -1;
-            for (int j = 0; j < sEditLen; ++j)
-                if (sEditBuf[j] == ',') { sepIdx = j; break; }
-            int end1 = (sepIdx >= 0) ? sepIdx : sEditLen;
-            for (int j = 0; j < end1; ++j)
-                if (sEditBuf[j] >= '0' && sEditBuf[j] <= '9') a = a*10 + (sEditBuf[j]-'0');
-            if (sepIdx >= 0) {
-                int s2 = sepIdx + 1;
-                while (s2 < sEditLen && sEditBuf[s2] == ' ') ++s2;
-                for (int j = s2; j < sEditLen; ++j)
-                    if (sEditBuf[j] >= '0' && sEditBuf[j] <= '9') b2 = b2*10 + (sEditBuf[j]-'0');
-            } else { b2 = a; }
-            if (a < 0) a = 0; if (a > 255) a = 255;
-            if (b2 < 0) b2 = 0; if (b2 > 255) b2 = 255;
-            if (sActiveField == kFieldPadH) {
-                gSelectedFrame->paddingLeft  = static_cast<UInt8>(a);
-                gSelectedFrame->paddingRight = static_cast<UInt8>(b2);
+        auto applyPad = [&](Frame* f) {
+            if (sActiveField == kFieldPadH || sActiveField == kFieldPadV) {
+                SInt32 a = 0, b2 = 0;
+                int sepIdx = -1;
+                for (int j = 0; j < sEditLen; ++j)
+                    if (sEditBuf[j] == ',') { sepIdx = j; break; }
+                int end1 = (sepIdx >= 0) ? sepIdx : sEditLen;
+                for (int j = 0; j < end1; ++j)
+                    if (sEditBuf[j] >= '0' && sEditBuf[j] <= '9') a = a*10 + (sEditBuf[j]-'0');
+                if (sepIdx >= 0) {
+                    int s2 = sepIdx + 1;
+                    while (s2 < sEditLen && sEditBuf[s2] == ' ') ++s2;
+                    for (int j = s2; j < sEditLen; ++j)
+                        if (sEditBuf[j] >= '0' && sEditBuf[j] <= '9') b2 = b2*10 + (sEditBuf[j]-'0');
+                } else { b2 = a; }
+                if (a < 0) a = 0; if (a > 255) a = 255;
+                if (b2 < 0) b2 = 0; if (b2 > 255) b2 = 255;
+                if (sActiveField == kFieldPadH) {
+                    f->paddingLeft  = static_cast<UInt8>(a);
+                    f->paddingRight = static_cast<UInt8>(b2);
+                } else {
+                    f->paddingTop    = static_cast<UInt8>(a);
+                    f->paddingBottom = static_cast<UInt8>(b2);
+                }
             } else {
-                gSelectedFrame->paddingTop    = static_cast<UInt8>(a);
-                gSelectedFrame->paddingBottom = static_cast<UInt8>(b2);
+                if (val < 0) val = 0; if (val > 255) val = 255;
+                UInt8 nv2 = static_cast<UInt8>(val);
+                switch (sActiveField) {
+                    case kFieldPadTop:    f->paddingTop    = nv2; break;
+                    case kFieldPadRight:  f->paddingRight  = nv2; break;
+                    case kFieldPadBottom: f->paddingBottom = nv2; break;
+                    case kFieldPadLeft:   f->paddingLeft   = nv2; break;
+                    default: break;
+                }
             }
-        } else {
-            if (val < 0) val = 0; if (val > 255) val = 255;
-            UInt8 nv = static_cast<UInt8>(val);
-            switch (sActiveField) {
-                case kFieldPadTop:    gSelectedFrame->paddingTop    = nv; break;
-                case kFieldPadRight:  gSelectedFrame->paddingRight  = nv; break;
-                case kFieldPadBottom: gSelectedFrame->paddingBottom = nv; break;
-                case kFieldPadLeft:   gSelectedFrame->paddingLeft   = nv; break;
-                default: break;
-            }
-        }
+        };
+        if (applyMultiFrame) { for (Frame* f : gSelectedFrames) applyPad(f); }
+        else                  { applyPad(gSelectedFrame); }
         changed = true;
     }
 
@@ -1908,7 +2044,9 @@ void HandleInspectorClick(Point localPt) {
         for (int i = 0; i < 3; ++i) {
             if (PtInRect(localPt, &sLayoutModeRect[i])) {
                 PushUndo();
-                lf->layoutMode = static_cast<LayoutMode>(i);
+                LayoutMode nm = static_cast<LayoutMode>(i);
+                if (isMultiFrame) { for (Frame* f : gSelectedFrames) f->layoutMode = nm; }
+                else              { lf->layoutMode = nm; }
                 InvalidateInspector();
                 if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
                 return;
@@ -1918,7 +2056,9 @@ void HandleInspectorClick(Point localPt) {
         // Wrap toggle (only active when H or V layout is on)
         if (PtInRect(localPt, &sWrapRect) && lf->layoutMode != LayoutMode::None) {
             PushUndo();
-            lf->layoutWrap = !lf->layoutWrap;
+            bool nw = !lf->layoutWrap;
+            if (isMultiFrame) { for (Frame* f : gSelectedFrames) f->layoutWrap = nw; }
+            else              { lf->layoutWrap = nw; }
             InvalidateInspector();
             if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
             return;
@@ -1937,13 +2077,17 @@ void HandleInspectorClick(Point localPt) {
             if (PtInRect(localPt, &sAlignCellRect[i])) {
                 int row = i / 3, col = i % 3;
                 PushUndo();
-                if (lf->layoutMode == LayoutMode::Horizontal) {
-                    lf->primaryAlign = static_cast<PrimaryAlign>(col);
-                    lf->crossAlign   = static_cast<CrossAlign>(row);
-                } else {
-                    lf->primaryAlign = static_cast<PrimaryAlign>(row);
-                    lf->crossAlign   = static_cast<CrossAlign>(col);
-                }
+                auto applyAlign = [&](Frame* f) {
+                    if (f->layoutMode == LayoutMode::Horizontal) {
+                        f->primaryAlign = static_cast<PrimaryAlign>(col);
+                        f->crossAlign   = static_cast<CrossAlign>(row);
+                    } else {
+                        f->primaryAlign = static_cast<PrimaryAlign>(row);
+                        f->crossAlign   = static_cast<CrossAlign>(col);
+                    }
+                };
+                if (isMultiFrame) { for (Frame* f : gSelectedFrames) applyAlign(f); }
+                else              { applyAlign(lf); }
                 InvalidateInspector();
                 if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
                 return;
@@ -1965,12 +2109,16 @@ void HandleInspectorClick(Point localPt) {
             short item = static_cast<short>(result & 0xFFFF);
             if (item > 0) {
                 PushUndo();
-                if (item == 2) {
-                    lf->primaryAlign = PrimaryAlign::SpaceBetween;
-                } else {
-                    if (lf->primaryAlign == PrimaryAlign::SpaceBetween)
-                        lf->primaryAlign = PrimaryAlign::Start;
-                }
+                auto applyGapMode = [&](Frame* f) {
+                    if (item == 2) {
+                        f->primaryAlign = PrimaryAlign::SpaceBetween;
+                    } else {
+                        if (f->primaryAlign == PrimaryAlign::SpaceBetween)
+                            f->primaryAlign = PrimaryAlign::Start;
+                    }
+                };
+                if (isMultiFrame) { for (Frame* f : gSelectedFrames) applyGapMode(f); }
+                else              { applyGapMode(lf); }
                 InvalidateInspector();
                 if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
             }
@@ -1995,7 +2143,9 @@ void HandleInspectorClick(Point localPt) {
             short item = static_cast<short>(result & 0xFFFF);
             if (item > 0) {
                 PushUndo();
-                lf->layoutCounterGapAuto = (item == 2);
+                bool ncga = (item == 2);
+                if (isMultiFrame) { for (Frame* f : gSelectedFrames) f->layoutCounterGapAuto = ncga; }
+                else              { lf->layoutCounterGapAuto = ncga; }
                 InvalidateInspector();
                 if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
             }

@@ -418,31 +418,41 @@ static short HitTestFrameRows(Frame* frame, short y, short indent,
 // Layer drag-reorder
 // --------------------------------------------------------------------------
 
+// Returns true if potentialAncestor is an ancestor-or-equal of node (frame parentage chain).
+static bool IsFrameAncestorOrSelf(Frame* potentialAncestor, Frame* node) {
+    Frame* cur = node;
+    while (cur) {
+        if (cur == potentialAncestor) return true;
+        cur = cur->parent;
+    }
+    return false;
+}
+
 // Track mouse during a drag-reorder operation.  srcIdx is the index of the
 // dragged row in sLayerRows; startDocPt is the click position in document
 // coordinates (v already offset by gLayersScrollY).
+// Supports cross-parent dragging: items can be moved out of their current
+// parent into a sibling or root level.
 static void TrackLayerDrag(int srcIdx, Point startDocPt) {
     if (srcIdx < 0 || srcIdx >= (int)sLayerRows.size()) return;
-    const LayerRow src = sLayerRows[srcIdx]; // copy — sLayerRows may be rebuilt later
+    const LayerRow src = sLayerRows[srcIdx]; // copy — sLayerRows rebuilt on redraw
 
     SetPortWindowPort(gLayersWindow);
     Rect portRect;
     GetWindowPortBounds(gLayersWindow, &portRect);
     short panelW = static_cast<short>(portRect.right - kLayersSBW);
 
-    // Collect sibling row indices (same owner, same type = same vector)
-    std::vector<int> sibIdxs;
-    for (int i = 0; i < (int)sLayerRows.size(); ++i) {
-        const LayerRow& r = sLayerRows[i];
-        if (r.owner == src.owner && r.isFrame == src.isFrame)
-            sibIdxs.push_back(i);
-    }
-    int N = static_cast<int>(sibIdxs.size());
-    if (N < 2) return; // nothing to reorder
+    // Collect ALL rows of same type for hit-testing (enables cross-parent dragging)
+    std::vector<int> allIdxs;
+    for (int i = 0; i < (int)sLayerRows.size(); ++i)
+        if (sLayerRows[i].isFrame == src.isFrame)
+            allIdxs.push_back(i);
+    int N = static_cast<int>(allIdxs.size());
+    if (N < 2) return;
 
     short prevWinY = -1;
     bool  isDragging = false;
-    int   lastGapIdx = -2; // sentinel "unknown"
+    int   lastGapIdx = -2;
 
     while (StillDown()) {
         Point rawPt;
@@ -452,41 +462,34 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
         if (!isDragging && (dy > 4 || dy < -4)) isDragging = true;
         if (!isDragging) continue;
 
-        // Find which gap the mouse is nearest to (among siblings)
         int gapIdx = N;
         for (int i = 0; i < N; ++i) {
-            short midY = static_cast<short>(sLayerRows[sibIdxs[i]].rowTop + kLayerRowH / 2);
+            short midY = static_cast<short>(sLayerRows[allIdxs[i]].rowTop + kLayerRowH / 2);
             if (docV < midY) { gapIdx = i; break; }
         }
         if (gapIdx == lastGapIdx) continue;
         lastGapIdx = gapIdx;
 
-        // Compute indicator Y in document coordinates, then convert to window coords
         short indicDocY;
         if (gapIdx <= 0)
-            indicDocY = sLayerRows[sibIdxs[0]].rowTop;
+            indicDocY = sLayerRows[allIdxs[0]].rowTop;
         else if (gapIdx >= N)
-            indicDocY = static_cast<short>(sLayerRows[sibIdxs[N-1]].rowTop + kLayerRowH);
+            indicDocY = static_cast<short>(sLayerRows[allIdxs[N-1]].rowTop + kLayerRowH);
         else
-            indicDocY = sLayerRows[sibIdxs[gapIdx]].rowTop;
+            indicDocY = sLayerRows[allIdxs[gapIdx]].rowTop;
         short newWinY = static_cast<short>(indicDocY - gLayersScrollY);
 
         Pattern blk; memset(&blk, 0xFF, sizeof(blk));
-
-        // Erase previous indicator
         if (prevWinY >= 0) {
             PenMode(patXor); PenSize(2, 2); PenPat(&blk);
             MoveTo(4, prevWinY); LineTo(static_cast<short>(panelW - 4), prevWinY);
         }
-        // Draw new indicator
         PenMode(patXor); PenSize(2, 2); PenPat(&blk);
         MoveTo(4, newWinY); LineTo(static_cast<short>(panelW - 4), newWinY);
         PenNormal();
-
         prevWinY = newWinY;
     }
 
-    // Erase final indicator
     if (prevWinY >= 0) {
         Pattern blk; memset(&blk, 0xFF, sizeof(blk));
         PenMode(patXor); PenSize(2, 2); PenPat(&blk);
@@ -496,39 +499,103 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
 
     if (!isDragging || lastGapIdx < 0) return;
 
-    // Compute final insertion position in the owner vector.
-    // Display is reversed from vector: display[0] = vec[N-1], display[N-1] = vec[0].
-    // "Insert before display gap gapIdx" = insert after vec[gapIdx] (from top) ...
-    // Concretely: gapIdx==0 → insert at highest z-order (append, vecIdx=N-1 after extraction)
-    //             gapIdx==N → insert at lowest  z-order (prepend, vecIdx=0)
-    //             gapIdx==k → insert just below display[k-1] = just above display[k]
-    //                         = vecIdx of display[k].vecIdx + 1, adjusted for extraction
+    // Determine destination owner from gap reference row
+    int refAllIdx = (lastGapIdx <= 0) ? 0 : (lastGapIdx >= N ? N-1 : lastGapIdx);
+    Frame* dstOwner = sLayerRows[allIdxs[refAllIdx]].owner;
 
-    int insertAt;
-    if (lastGapIdx == 0) {
-        insertAt = N - 1; // highest z-order after extraction (N items → N-1 max index)
-    } else if (lastGapIdx >= N) {
-        insertAt = 0;
-    } else {
-        int targetVecIdx = sLayerRows[sibIdxs[lastGapIdx]].vecIdx;
-        insertAt = targetVecIdx + 1;
-        if (src.vecIdx < targetVecIdx) insertAt--; // shift after extraction
-    }
-    if (insertAt < 0) insertAt = 0;
-    if (insertAt >= N) insertAt = N - 1;
-    if (insertAt == src.vecIdx) return; // no change
+    // Cycle check: can't drop a frame into itself or any of its descendants
+    if (src.isFrame && dstOwner && IsFrameAncestorOrSelf(src.frame, dstOwner))
+        return;
 
     PushUndo();
-    if (src.isFrame) {
-        auto& vec = src.owner ? src.owner->childFrames : gDocument->frames;
-        auto moved = std::move(vec[src.vecIdx]);
-        vec.erase(vec.begin() + src.vecIdx);
-        vec.insert(vec.begin() + insertAt, std::move(moved));
+
+    if (dstOwner == src.owner) {
+        // ── Same-parent reorder ──────────────────────────────────────────────
+        // Use sibling subset for correct insertion math (same as original logic).
+        std::vector<int> sibIdxs;
+        for (int i = 0; i < (int)sLayerRows.size(); ++i) {
+            const LayerRow& r = sLayerRows[i];
+            if (r.owner == src.owner && r.isFrame == src.isFrame)
+                sibIdxs.push_back(i);
+        }
+        int Ns = static_cast<int>(sibIdxs.size());
+
+        // Compute gapSibIdx: how many sibling rows appear above the gap in display
+        short gapDocY = (lastGapIdx <= 0) ? sLayerRows[allIdxs[0]].rowTop
+                      : (lastGapIdx >= N)  ? static_cast<short>(sLayerRows[allIdxs[N-1]].rowTop + kLayerRowH)
+                      : sLayerRows[allIdxs[lastGapIdx]].rowTop;
+        int gapSibIdx = 0;
+        for (int i = 0; i < Ns; ++i)
+            if (sLayerRows[sibIdxs[i]].rowTop < gapDocY) gapSibIdx = i + 1;
+
+        int insertAt;
+        if (gapSibIdx == 0) {
+            insertAt = Ns - 1;
+        } else if (gapSibIdx >= Ns) {
+            insertAt = 0;
+        } else {
+            int targetVecIdx = sLayerRows[sibIdxs[gapSibIdx]].vecIdx;
+            insertAt = targetVecIdx + 1;
+            if (src.vecIdx < targetVecIdx) insertAt--;
+        }
+        if (insertAt < 0) insertAt = 0;
+        if (insertAt >= Ns) insertAt = Ns - 1;
+        if (insertAt == src.vecIdx) return;
+
+        if (src.isFrame) {
+            auto& vec = src.owner ? src.owner->childFrames : gDocument->frames;
+            auto moved = std::move(vec[src.vecIdx]);
+            vec.erase(vec.begin() + src.vecIdx);
+            vec.insert(vec.begin() + insertAt, std::move(moved));
+        } else {
+            auto& vec = src.owner ? src.owner->children : gDocument->rootShapes;
+            auto moved = std::move(vec[src.vecIdx]);
+            vec.erase(vec.begin() + src.vecIdx);
+            vec.insert(vec.begin() + insertAt, std::move(moved));
+        }
     } else {
-        auto& vec = src.owner ? src.owner->children : gDocument->rootShapes;
-        auto moved = std::move(vec[src.vecIdx]);
-        vec.erase(vec.begin() + src.vecIdx);
-        vec.insert(vec.begin() + insertAt, std::move(moved));
+        // ── Cross-parent move ────────────────────────────────────────────────
+        // insertAt in dstVec: no extraction-shift adjustment (src and dst are different vectors).
+        // Display reversed from vector: gapIdx==0 → append (highest z), gapIdx>=N → prepend (lowest z).
+        int insertAt;
+        if (lastGapIdx <= 0) {
+            // Above all rows → highest z in dstOwner → append to dstVec
+            int dstSz = src.isFrame
+                ? static_cast<int>((dstOwner ? dstOwner->childFrames : gDocument->frames).size())
+                : static_cast<int>((dstOwner ? dstOwner->children    : gDocument->rootShapes).size());
+            insertAt = dstSz;
+        } else if (lastGapIdx >= N) {
+            insertAt = 0;
+        } else {
+            // Drop just above row at allIdxs[lastGapIdx] in z-order
+            insertAt = sLayerRows[allIdxs[lastGapIdx]].vecIdx + 1;
+        }
+        if (insertAt < 0) insertAt = 0;
+
+        if (src.isFrame) {
+            auto& srcVec = src.owner ? src.owner->childFrames : gDocument->frames;
+            auto& dstVec = dstOwner  ? dstOwner->childFrames  : gDocument->frames;
+            if (insertAt > (int)dstVec.size()) insertAt = static_cast<int>(dstVec.size());
+            auto moved = std::move(srcVec[src.vecIdx]);
+            srcVec.erase(srcVec.begin() + src.vecIdx);
+            moved->parent = dstOwner;
+            dstVec.insert(dstVec.begin() + insertAt, std::move(moved));
+            gSelectedFrame  = dstVec[insertAt].get();
+            gSelectedShape  = nullptr;
+            gSelectedFrames.clear();
+            gSelectedShapes.clear();
+        } else {
+            auto& srcVec = src.owner ? src.owner->children : gDocument->rootShapes;
+            auto& dstVec = dstOwner  ? dstOwner->children  : gDocument->rootShapes;
+            if (insertAt > (int)dstVec.size()) insertAt = static_cast<int>(dstVec.size());
+            auto moved = std::move(srcVec[src.vecIdx]);
+            srcVec.erase(srcVec.begin() + src.vecIdx);
+            dstVec.insert(dstVec.begin() + insertAt, std::move(moved));
+            gSelectedShape  = dstVec[insertAt].get();
+            gSelectedFrame  = dstOwner;
+            gSelectedFrames.clear();
+            gSelectedShapes.clear();
+        }
     }
 
     InvalidateLayers(); InvalidateMain();
