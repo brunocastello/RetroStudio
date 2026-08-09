@@ -33,6 +33,7 @@ static void RunFrameLayout(Frame* f) {
     };
 
     for (auto& s : f->children) {
+        if (!s->visible) continue;  // invisible items take no space in layout
         LayoutItem it;
         it.x = &s->bounds.x; it.y = &s->bounds.y;
         it.w = &s->bounds.w; it.h = &s->bounds.h;
@@ -47,6 +48,7 @@ static void RunFrameLayout(Frame* f) {
         items.push_back(it);
     }
     for (auto& cf : f->childFrames) {
+        if (!cf->visible) continue;  // invisible frames take no space in layout
         LayoutItem it;
         it.x = &cf->bounds.x; it.y = &cf->bounds.y;
         it.w = &cf->bounds.w; it.h = &cf->bounds.h;

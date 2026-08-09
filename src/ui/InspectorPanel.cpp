@@ -834,43 +834,62 @@ void DrawInspectorPanel() {
                 }
             }
 
-            // Right column: Gap + settings button (vertically centred in grid height)
+            // Right column: primary gap + optional counter gap (Wrap only)
             {
-                short rX      = static_cast<short>(gridX + gridSpan + 8); // x=66
-                short popW    = 46;
-                short valX    = static_cast<short>(rX + popW + 4);
-                short valW    = static_cast<short>(portRect.right - valX - 4);
-                short gapRowY = static_cast<short>(gridY + (gridSpan - 25) / 2);
+                short rX    = static_cast<short>(gridX + gridSpan + 8); // x=66
+                short popW  = 46;
+                short valX  = static_cast<short>(rX + popW + 4);        // x=116
+                short valW  = static_cast<short>(portRect.right - valX - 4); // 56px
 
+                // Row 1 y: centre in grid when no Wrap; shift up when Wrap to leave room
+                short row1Y = lf->layoutWrap
+                              ? static_cast<short>(gridY + 2)
+                              : static_cast<short>(gridY + (gridSpan - 25) / 2);
+
+                // — Primary gap row —
                 RGBForeColor(&labelClr); TextSize(9);
-                PStrC("Gap", ps); MoveTo(rX, static_cast<short>(gapRowY+9)); DrawString(ps);
+                PStrC("Gap", ps); MoveTo(rX, static_cast<short>(row1Y+9)); DrawString(ps);
                 TextSize(11);
                 const char* gapModeName = isSB ? "Auto" : "Fixed";
-                DrawPlatinumBtn(rX, static_cast<short>(gapRowY+11), popW, 14, gapModeName, sLayoutGapModeRect);
+                DrawPlatinumBtn(rX, static_cast<short>(row1Y+11), popW, 14, gapModeName, sLayoutGapModeRect);
                 if (!isSB) {
-                    DrawNumField(valX, static_cast<short>(gapRowY+23), valW,
+                    DrawNumField(valX, static_cast<short>(row1Y+23), valW,
                                  kFieldLayoutGap, static_cast<SInt32>(lf->layoutGap), sLayoutGapRect);
                 } else {
                     sLayoutGapRect = {0,0,0,0};
                 }
+
+                // — Counter gap row (cross-axis, Wrap only) —
+                if (lf->layoutWrap) {
+                    short row2Y = static_cast<short>(row1Y + 38);
+
+                    // Small ↕ icon: top bar, vertical shaft, bottom bar
+                    RGBForeColor(&labelClr);
+                    short ix = rX, iy = static_cast<short>(row2Y + 2);
+                    MoveTo(ix, iy); LineTo(static_cast<short>(ix+8), iy);
+                    MoveTo(static_cast<short>(ix+4), static_cast<short>(iy+2));
+                    LineTo(static_cast<short>(ix+4), static_cast<short>(iy+9));
+                    MoveTo(ix, static_cast<short>(iy+11));
+                    LineTo(static_cast<short>(ix+8), static_cast<short>(iy+11));
+
+                    TextSize(9);
+                    PStrC("Row", ps);
+                    MoveTo(static_cast<short>(rX+10), static_cast<short>(row2Y+9));
+                    DrawString(ps); TextSize(11);
+
+                    DrawNumField(valX, static_cast<short>(row2Y+11), valW,
+                                 kFieldCounterGap,
+                                 static_cast<SInt32>(lf->layoutCounterGap),
+                                 sLayoutCounterGapRect);
+                } else {
+                    sLayoutCounterGapRect = {0,0,0,0};
+                }
             }
 
-            y = static_cast<short>(gridY + gridSpan + 6);
-
-            // Counter gap row — only shown in Wrap mode
-            if (lf->layoutWrap) {
-                RGBForeColor(&labelClr); TextSize(9);
-                PStrC("Counter gap", ps); MoveTo(5, static_cast<short>(y+11)); DrawString(ps);
-                DrawNumField(80, static_cast<short>(y+11),
-                             static_cast<short>(portRect.right - 84),
-                             kFieldCounterGap,
-                             static_cast<SInt32>(lf->layoutCounterGap),
-                             sLayoutCounterGapRect);
-                TextSize(11);
-                y = static_cast<short>(y + 18);
-            } else {
-                sLayoutCounterGapRect = {0,0,0,0};
-            }
+            // Advance y past the gap column content (may extend below 50px grid when Wrap)
+            y = lf->layoutWrap
+                ? static_cast<short>(gridY + 2 + 38 + 30)   // row2 bottom + padding
+                : static_cast<short>(gridY + gridSpan + 6);
 
             // Padding section (full width, below grid+gap area)
             {
