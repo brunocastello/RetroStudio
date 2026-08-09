@@ -16,7 +16,7 @@
 
 WindowRef gInspectorWindow = nullptr;
 
-static ControlRef        gInspectorScrollCtrl = nullptr;
+static ControlHandle     gInspectorScrollCtrl = nullptr;
 static short             gInspectorScrollY    = 0;
 static short             gInspectorTotalH     = 0;
 static ControlActionUPP  gInspectorScrollUPP  = nullptr;
@@ -24,15 +24,15 @@ static const short       kInspSBW             = 16;
 
 static void InvalidateInspector();  // forward-declare for the action proc
 
-static void InspectorScrollAction(ControlRef ctrl, ControlPartCode part) {
+static void InspectorScrollAction(ControlHandle ctrl, short part) {
     short v  = GetControlValue(ctrl);
     short mn = GetControlMinimum(ctrl);
     short mx = GetControlMaximum(ctrl);
     short delta = 0;
-    if (part == kControlUpButtonPart)   delta = -16;
-    if (part == kControlDownButtonPart) delta = +16;
-    if (part == kControlPageUpPart)     delta = -80;
-    if (part == kControlPageDownPart)   delta = +80;
+    if (part == inUpButton)   delta = -16;
+    if (part == inDownButton) delta = +16;
+    if (part == inPageUp)     delta = -80;
+    if (part == inPageDown)   delta = +80;
     if (delta != 0) {
         v += delta;
         if (v < mn) v = mn;
@@ -1583,7 +1583,7 @@ void HandleInspectorClick(Point localPt) {
 
     // Check scroll bar first (in window coords — no offset)
     if (gInspectorScrollCtrl) {
-        ControlRef hitCtrl;
+        ControlHandle hitCtrl = nullptr;
         short ctrlPart = FindControl(localPt, gInspectorWindow, &hitCtrl);
         if (ctrlPart && hitCtrl == gInspectorScrollCtrl) {
             TrackControl(hitCtrl, localPt, gInspectorScrollUPP);

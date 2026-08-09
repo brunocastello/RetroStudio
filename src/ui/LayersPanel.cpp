@@ -6,7 +6,7 @@
 
 WindowRef gLayersWindow = nullptr;
 
-static ControlRef        gLayersScrollCtrl = nullptr;
+static ControlHandle     gLayersScrollCtrl = nullptr;
 static short             gLayersScrollY    = 0;  // current scroll offset in pixels
 static short             gLayersTotalH     = 0;  // total content height after last draw
 static ControlActionUPP  gLayersScrollUPP  = nullptr;
@@ -14,15 +14,15 @@ static const short       kLayersSBW        = 16; // scroll bar width
 
 static void InvalidateLayers();  // forward-declare so the action proc can call it
 
-static void LayersScrollAction(ControlRef ctrl, ControlPartCode part) {
+static void LayersScrollAction(ControlHandle ctrl, short part) {
     short v  = GetControlValue(ctrl);
     short mn = GetControlMinimum(ctrl);
     short mx = GetControlMaximum(ctrl);
     short delta = 0;
-    if (part == kControlUpButtonPart)   delta = -kLayerRowH;
-    if (part == kControlDownButtonPart) delta = +kLayerRowH;
-    if (part == kControlPageUpPart)     delta = -60;
-    if (part == kControlPageDownPart)   delta = +60;
+    if (part == inUpButton)   delta = -kLayerRowH;
+    if (part == inDownButton) delta = +kLayerRowH;
+    if (part == inPageUp)     delta = -60;
+    if (part == inPageDown)   delta = +60;
     if (delta != 0) {
         v += delta;
         if (v < mn) v = mn;
@@ -373,7 +373,7 @@ void HandleLayersPanelClick(Point localPt, UInt16 modifiers) {
 
     // Check scroll bar before anything else (it lives in the rightmost strip)
     if (gLayersScrollCtrl) {
-        ControlRef hitCtrl;
+        ControlHandle hitCtrl = nullptr;
         short ctrlPart = FindControl(localPt, gLayersWindow, &hitCtrl);
         if (ctrlPart && hitCtrl == gLayersScrollCtrl) {
             TrackControl(hitCtrl, localPt, gLayersScrollUPP);
