@@ -34,6 +34,13 @@ static Rect sItalicRect          = {0, 0, 0, 0};
 static Rect sTypographyBtnRect   = {0, 0, 0, 0};
 // Text sizing mode (AutoWidth / AutoHeight / Fixed)
 static Rect sTextSizingRect[3]   = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
+// Shape sizing buttons (Fixed / Fill) for W and H when inside a layout frame
+static Rect sShapeWFxRect        = {0,0,0,0};
+static Rect sShapeWFlRect        = {0,0,0,0};
+static Rect sShapeHFxRect        = {0,0,0,0};
+static Rect sShapeHFlRect        = {0,0,0,0};
+// Counter-axis gap field (Wrap mode only)
+static Rect sLayoutCounterGapRect = {0,0,0,0};
 
 // Auto Layout controls (frame selected)
 static Rect sLayoutModeRect[3]       = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
@@ -62,7 +69,8 @@ static Rect sClipContentRect         = {0, 0, 0, 0};
 
 // Inline text-edit state for numeric fields
 enum EditField { kNoField, kFieldX, kFieldY, kFieldW, kFieldH, kFieldStrokeWidth, kFieldFontSize, kFieldLayoutGap,
-                 kFieldPadH, kFieldPadV, kFieldPadTop, kFieldPadRight, kFieldPadBottom, kFieldPadLeft };
+                 kFieldPadH, kFieldPadV, kFieldPadTop, kFieldPadRight, kFieldPadBottom, kFieldPadLeft,
+                 kFieldCounterGap };
 static EditField sActiveField = kNoField;
 static char      sEditBuf[12] = {};
 static int       sEditLen     = 0;
@@ -432,6 +440,8 @@ void DrawInspectorPanel() {
     for (int i=0;i<3;++i) sLayoutModeRect[i]={0,0,0,0};
     for (int i=0;i<9;++i) sAlignCellRect[i]={0,0,0,0};
     for (int i=0;i<3;++i) sTextSizingRect[i]={0,0,0,0};
+    sShapeWFxRect = sShapeWFlRect = sShapeHFxRect = sShapeHFlRect = {0,0,0,0};
+    sLayoutCounterGapRect = {0,0,0,0};
 
     if (!gSelectedFrame && !gSelectedShape) {
         RGBColor gray = { 0x9999, 0x9999, 0x9999 }; RGBForeColor(&gray); TextSize(10);
@@ -847,6 +857,21 @@ void DrawInspectorPanel() {
 
             y = static_cast<short>(gridY + gridSpan + 6);
 
+            // Counter gap row — only shown in Wrap mode
+            if (lf->layoutWrap) {
+                RGBForeColor(&labelClr); TextSize(9);
+                PStrC("Counter gap", ps); MoveTo(5, static_cast<short>(y+11)); DrawString(ps);
+                DrawNumField(80, static_cast<short>(y+11),
+                             static_cast<short>(portRect.right - 84),
+                             kFieldCounterGap,
+                             static_cast<SInt32>(lf->layoutCounterGap),
+                             sLayoutCounterGapRect);
+                TextSize(11);
+                y = static_cast<short>(y + 18);
+            } else {
+                sLayoutCounterGapRect = {0,0,0,0};
+            }
+
             // Padding section (full width, below grid+gap area)
             {
                 short tBtnX = static_cast<short>(portRect.right - 18);
@@ -1009,11 +1034,49 @@ void DrawInspectorPanel() {
         sAspectLockRect = { static_cast<short>(y+1), 80, static_cast<short>(y+15), 94 };
         if (sAspectLocked) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); PaintRect(&sAspectLockRect); }
         else               { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); PaintRect(&sAspectLockRect); }
-        RGBColor bd={0x7777,0x7777,0x7777}; RGBForeColor(&bd); FrameRect(&sAspectLockRect);
+        RGBColor bd2={0x7777,0x7777,0x7777}; RGBForeColor(&bd2); FrameRect(&sAspectLockRect);
         DrawLockIcon(81, static_cast<short>(y+2), sAspectLocked);
         RGBForeColor(&labelClr); PStrC("H", ps); MoveTo(98, static_cast<short>(y+12)); DrawString(ps);
         DrawNumField(112, static_cast<short>(y+12), static_cast<short>(portRect.right-116), kFieldH, bounds.h, sFieldHRect);
         y = static_cast<short>(y + 22);
+
+        // Fill sizing buttons — only shown when shape lives inside an active layout frame
+        if (gSelectedShape && gSelectedFrame && gSelectedFrame->layoutMode != LayoutMode::None) {
+            const UInt8 wSz = gSelectedShape->wSizing;
+            const UInt8 hSz = gSelectedShape->hSizing;
+            const UInt8 kFx = 0, kFl = 2;  // Fixed=0, Fill=2 (matches SizingMode)
+
+            auto drawSzBtn = [&](Rect& outR, short x, short y2, short w2, UInt8 cur, UInt8 mode,
+                                 const char* lbl) {
+                outR = { y2, x, static_cast<short>(y2+14), static_cast<short>(x+w2) };
+                bool active = (cur == mode);
+                if (active) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
+                else        { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
+                PaintRect(&outR);
+                RGBColor bde={0x7777,0x7777,0x7777}; RGBForeColor(&bde); FrameRect(&outR);
+                RGBColor fg = active ? RGBColor{0xFFFF,0xFFFF,0xFFFF}
+                                     : RGBColor{0x2222,0x2222,0x2222};
+                RGBForeColor(&fg); TextSize(9);
+                Str255 pss; PStrC(lbl, pss);
+                MoveTo(static_cast<short>(x+3), static_cast<short>(y2+10)); DrawString(pss);
+                TextSize(11);
+            };
+
+            RGBForeColor(&labelClr); TextSize(9);
+            PStrC("W", ps); MoveTo(6,  static_cast<short>(y+11)); DrawString(ps);
+            drawSzBtn(sShapeWFxRect, 16, y, 26, wSz, kFx, "Fixed");
+            drawSzBtn(sShapeWFlRect, 45, y, 26, wSz, kFl, "Fill");
+
+            RGBForeColor(&labelClr);
+            PStrC("H", ps); MoveTo(82, static_cast<short>(y+11)); DrawString(ps);
+            drawSzBtn(sShapeHFxRect, 92,  y, 26, hSz, kFx, "Fixed");
+            drawSzBtn(sShapeHFlRect, 121, y, 26, hSz, kFl, "Fill");
+
+            TextSize(11);
+            y = static_cast<short>(y + 18);
+        } else {
+            sShapeWFxRect = sShapeWFlRect = sShapeHFxRect = sShapeHFlRect = {0,0,0,0};
+        }
     }
 
     TextSize(12); PenNormal(); RGBForeColor(&black); RGBBackColor(&white);
@@ -1041,6 +1104,9 @@ static void StartEditForField(EditField field) {
         }
         case kFieldLayoutGap:
             if (gSelectedFrame) StartEdit(field, static_cast<SInt32>(gSelectedFrame->layoutGap));
+            break;
+        case kFieldCounterGap:
+            if (gSelectedFrame) StartEdit(field, static_cast<SInt32>(gSelectedFrame->layoutCounterGap));
             break;
         case kFieldPadH:
             if (gSelectedFrame) {
@@ -1249,6 +1315,12 @@ void ApplyInspectorEdit() {
         if (val > 500) val = 500;
         UInt16 nv = static_cast<UInt16>(val);
         if (nv != gSelectedFrame->layoutGap) { PushUndo(); gSelectedFrame->layoutGap = nv; changed = true; }
+    }
+    if (sActiveField == kFieldCounterGap && gSelectedFrame) {
+        if (val < 0)   val = 0;
+        if (val > 500) val = 500;
+        UInt16 nv = static_cast<UInt16>(val);
+        if (nv != gSelectedFrame->layoutCounterGap) { PushUndo(); gSelectedFrame->layoutCounterGap = nv; changed = true; }
     }
     if (gSelectedFrame && (sActiveField == kFieldPadH || sActiveField == kFieldPadV ||
         sActiveField == kFieldPadTop   || sActiveField == kFieldPadRight  ||
@@ -1548,6 +1620,10 @@ void HandleInspectorClick(Point localPt) {
         if (PtInRect(localPt, &sLayoutGapRect)) {
             StartEdit(kFieldLayoutGap, static_cast<SInt32>(lf->layoutGap)); return;
         }
+        // Counter gap field (Wrap mode)
+        if (PtInRect(localPt, &sLayoutCounterGapRect)) {
+            StartEdit(kFieldCounterGap, static_cast<SInt32>(lf->layoutCounterGap)); return;
+        }
 
         // Padding expand toggle
         if (PtInRect(localPt, &sPadMixedBtnRect)) {
@@ -1593,6 +1669,18 @@ void HandleInspectorClick(Point localPt) {
             }
             return;
         }
+    }
+
+    // Shape W/H sizing buttons (Fixed / Fill within a layout frame)
+    if (gSelectedShape) {
+        auto setShapeSizing = [&](UInt8& field, UInt8 val) {
+            if (field != val) { PushUndo(); field = val; InvalidateInspector();
+                if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow,&r); InvalWindowRect(gMainWindow,&r); } }
+        };
+        if (PtInRect(localPt, &sShapeWFxRect)) { setShapeSizing(gSelectedShape->wSizing, 0); return; }
+        if (PtInRect(localPt, &sShapeWFlRect)) { setShapeSizing(gSelectedShape->wSizing, 2); return; }
+        if (PtInRect(localPt, &sShapeHFxRect)) { setShapeSizing(gSelectedShape->hSizing, 0); return; }
+        if (PtInRect(localPt, &sShapeHFlRect)) { setShapeSizing(gSelectedShape->hSizing, 2); return; }
     }
 
     // Aspect ratio lock toggle

@@ -36,8 +36,8 @@ static void RunFrameLayout(Frame* f) {
         LayoutItem it;
         it.x = &s->bounds.x; it.y = &s->bounds.y;
         it.w = &s->bounds.w; it.h = &s->bounds.h;
-        it.wSizing = static_cast<UInt8>(SizingMode::Fixed);
-        it.hSizing = static_cast<UInt8>(SizingMode::Fixed);
+        it.wSizing = s->wSizing;
+        it.hSizing = s->hSizing;
         computeXtra(s->hasStroke, s->strokeWidth, s->strokeAlign, it.xtraW, it.xtraH);
         it.baseline = 0;
         if (f->alignTextBaseline && s->GetType() == Shape::kText) {
@@ -105,6 +105,7 @@ static void RunFrameLayout(Frame* f) {
     // ---- Wrap layout ----
     if (f->layoutWrap) {
         struct WrapLine { std::vector<int> indices; SInt32 crossMax = 0; };
+        SInt32 counterGap = static_cast<SInt32>(f->layoutCounterGap);
 
         SInt32 available = framePri - padPri1 - padPri2;
         if (available < 1) available = 1;
@@ -136,7 +137,7 @@ static void RunFrameLayout(Frame* f) {
         SInt32 totalCross = 0;
         for (auto& ln : lines) totalCross += ln.crossMax;
         if (lines.size() > 1)
-            totalCross += gap * static_cast<SInt32>(lines.size() - 1);
+            totalCross += counterGap * static_cast<SInt32>(lines.size() - 1);
 
         SInt32 lineSecOff = padSec1;
         if (!hugSec && f->crossAlign != CrossAlign::Start) {
@@ -214,7 +215,7 @@ static void RunFrameLayout(Frame* f) {
             }
 
             applyBaselinePass(ln.indices, lineSecOff);
-            lineSecOff += ln.crossMax + gap;
+            lineSecOff += ln.crossMax + counterGap;
         }
 
         if (isHoriz && f->heightSizing == SizingMode::Hug) {

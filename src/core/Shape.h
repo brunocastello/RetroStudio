@@ -38,6 +38,9 @@ public:
     bool        visible     = true;
     bool        locked      = false;
     std::string name;
+    // Per-child sizing within an Auto Layout frame: 0=Fixed, 2=Fill (matches SizingMode values)
+    UInt8       wSizing     = 0;
+    UInt8       hSizing     = 0;
 };
 
 class RectShape : public Shape {

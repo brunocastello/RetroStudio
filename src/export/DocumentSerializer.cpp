@@ -6,7 +6,7 @@
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
 static const UInt32 kMagic   = 0x52535444;  // 'RSTD'
-static const UInt16 kVersion = 9;
+static const UInt16 kVersion = 10;
 
 // Folder Manager constants — defined here because Retro68 Carbon headers
 // don't always expose <Folders.h> constants via <Carbon.h>.
@@ -81,6 +81,8 @@ static void WriteShape(Writer& w, const Shape& s) {
     w.w8(s.locked     ? 1 : 0);
     w.w16(s.strokeWidth);
     w.w8(s.strokeAlign);
+    w.w8(s.wSizing);
+    w.w8(s.hSizing);
     if (s.GetType() == Shape::kRectangle)
         w.w16(static_cast<UInt16>(static_cast<const RectShape&>(s).cornerRadius));
     else if (s.GetType() == Shape::kText) {
@@ -110,6 +112,8 @@ static std::unique_ptr<Shape> ReadShape(Reader& r) {
     bool locked     = r.r8() != 0;
     UInt16 sw       = r.r16();
     UInt8  sa       = r.r8();
+    UInt8  wsz      = r.r8();
+    UInt8  hsz      = r.r8();
 
     std::unique_ptr<Shape> shape;
     if (type == Shape::kRectangle) {
@@ -142,6 +146,8 @@ static std::unique_ptr<Shape> ReadShape(Reader& r) {
     shape->locked      = locked;
     shape->strokeWidth = sw;
     shape->strokeAlign = sa;
+    shape->wSizing     = wsz;
+    shape->hSizing     = hsz;
     shape->name        = r.rStr();
     return r.ok ? std::move(shape) : nullptr;
 }
@@ -166,6 +172,7 @@ static void WriteFrame(Writer& w, const Frame& f) {
     // Auto Layout
     w.w8(static_cast<UInt8>(f.layoutMode));
     w.w8(f.layoutWrap ? 1 : 0);
+    w.w16(f.layoutCounterGap);
     w.w8(static_cast<UInt8>((f.strokesInLayout ? 1 : 0) |
                              (f.canvasStackReverse ? 2 : 0) |
                              (f.alignTextBaseline ? 4 : 0)));
@@ -204,6 +211,7 @@ static std::unique_ptr<Frame> ReadFrame(Reader& r, Frame* parent) {
     // Auto Layout
     f->layoutMode         = static_cast<LayoutMode>(r.r8());
     f->layoutWrap         = r.r8() != 0;
+    f->layoutCounterGap   = r.r16();
     { UInt8 fl = r.r8();
       f->strokesInLayout    = (fl & 1) != 0;
       f->canvasStackReverse = (fl & 2) != 0;

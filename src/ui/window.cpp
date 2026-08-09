@@ -1255,6 +1255,7 @@ static std::unique_ptr<Frame> CloneFrame(const Frame* src, Frame* newParent) {
     f->canvasStackReverse   = src->canvasStackReverse;
     f->alignTextBaseline    = src->alignTextBaseline;
     f->layoutGap            = src->layoutGap;
+    f->layoutCounterGap     = src->layoutCounterGap;
     f->paddingTop      = src->paddingTop;
     f->paddingRight    = src->paddingRight;
     f->paddingBottom   = src->paddingBottom;
