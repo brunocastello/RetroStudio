@@ -3,6 +3,7 @@
 #include "RenameDialog.h"
 #include "InspectorPanel.h"
 #include <algorithm>
+#include <cstring>
 
 WindowRef gLayersWindow = nullptr;
 
