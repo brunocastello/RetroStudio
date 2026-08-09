@@ -840,6 +840,24 @@ static ShapeLabelHit HitTestShapeLabelInFrame(Frame* f, Point pt) {
 }
 
 // --------------------------------------------------------------------------
+// Rubber-band helpers
+// --------------------------------------------------------------------------
+
+struct BandShape { Shape* shape; Frame* parent; };
+
+static void CollectBandShapes(Frame* frm, SInt32 l, SInt32 t, SInt32 r, SInt32 b,
+                               std::vector<BandShape>& out) {
+    for (auto& sp : frm->children) {
+        if (!sp->visible) continue;
+        const Bounds2& bnd = sp->bounds;
+        if (bnd.x < r && (bnd.x + bnd.w) > l && bnd.y < b && (bnd.y + bnd.h) > t)
+            out.push_back({ sp.get(), frm });
+    }
+    for (auto& cf : frm->childFrames)
+        CollectBandShapes(cf.get(), l, t, r, b, out);
+}
+
+// --------------------------------------------------------------------------
 // Select tool: resize handles → name labels → body hit-test → move + reparent
 // --------------------------------------------------------------------------
 
@@ -911,8 +929,12 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
 
     // ---- Shift+click: toggle shape in multi-select ----
     if (found && (modifiers & shiftKey) && hitShape) {
-        // Only multi-select shapes sharing the same parent frame
-        if (gSelectedFrame == nullptr || hitFrame == gSelectedFrame) {
+        // Allow adding when: no current context, same-frame context, or gSelectedShapes
+        // is already populated with shapes (rubber-band result with null gSelectedFrame).
+        bool canAdd = (gSelectedFrame == nullptr)
+                   || (hitFrame == gSelectedFrame)
+                   || (!gSelectedShapes.empty());
+        if (canAdd) {
             gSelectedFrame = hitFrame;
             auto it = std::find(gSelectedShapes.begin(), gSelectedShapes.end(), hitShape);
             if (it != gSelectedShapes.end()) {
@@ -1160,52 +1182,41 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
             SInt32 selR = std::max((SInt32)cAnchor.h, (SInt32)cEnd.h);
             SInt32 selB = std::max((SInt32)cAnchor.v, (SInt32)cEnd.v);
 
-            auto boundsIntersect = [&](const Bounds2& b) -> bool {
-                return b.x < selR && (b.x + b.w) > selL &&
-                       b.y < selB && (b.y + b.h) > selT;
-            };
-
             gSelectedShapes.clear();
             gSelectedShape = nullptr;
             gSelectedFrame = nullptr;
 
-            Frame* commonParent = nullptr;
-            bool   sameParent   = true;
-
-            // Collect shapes from all frames
-            for (auto& frm : gDocument->frames) {
-                for (auto& sp : frm->children) {
-                    if (!sp->visible) continue;
-                    if (boundsIntersect(sp->bounds)) {
-                        gSelectedShapes.push_back(sp.get());
-                        if (commonParent == nullptr) commonParent = frm.get();
-                        else if (commonParent != frm.get()) sameParent = false;
-                    }
-                }
-            }
-            // Collect root shapes
+            // Collect shapes (recursively through nested frames) that intersect the band
+            std::vector<BandShape> band;
+            for (auto& frm : gDocument->frames)
+                CollectBandShapes(frm.get(), selL, selT, selR, selB, band);
             for (auto& sp : gDocument->rootShapes) {
                 if (!sp->visible) continue;
-                if (boundsIntersect(sp->bounds)) {
-                    gSelectedShapes.push_back(sp.get());
-                    if (commonParent != nullptr) sameParent = false;
-                }
+                const Bounds2& bnd = sp->bounds;
+                if (bnd.x < selR && (bnd.x + bnd.w) > selL &&
+                    bnd.y < selB && (bnd.y + bnd.h) > selT)
+                    band.push_back({ sp.get(), nullptr });
             }
 
-            if (!gSelectedShapes.empty()) {
+            if (band.size() == 1) {
+                // Single hit: normal single-select with correct parent context
+                gSelectedShape = band[0].shape;
+                gSelectedFrame = band[0].parent;
+            } else if (band.size() > 1) {
+                // Multi-hit: populate gSelectedShapes; keep gSelectedFrame null so the
+                // parent frame is NOT shown as selected and shift+click works freely
+                for (auto& bs : band) gSelectedShapes.push_back(bs.shape);
                 gSelectedShape = gSelectedShapes.back();
-                if (gSelectedShapes.size() == 1) {
-                    gSelectedFrame = commonParent;
-                    gSelectedShapes.clear();  // single: use normal selection
-                } else if (sameParent) {
-                    gSelectedFrame = commonParent;
-                }
+                gSelectedFrame = nullptr;
             } else {
-                // No shapes: try selecting a top-level frame
-                for (auto& frm : gDocument->frames) {
+                // No shapes at all: try selecting the topmost frame whose bounds the band covers
+                for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend(); ++it) {
+                    const Frame* frm = it->get();
                     if (!frm->visible) continue;
-                    if (boundsIntersect(frm->bounds)) {
-                        gSelectedFrame = frm.get();
+                    const Bounds2& bnd = frm->bounds;
+                    if (bnd.x < selR && (bnd.x + bnd.w) > selL &&
+                        bnd.y < selB && (bnd.y + bnd.h) > selT) {
+                        gSelectedFrame = it->get();
                         break;
                     }
                 }

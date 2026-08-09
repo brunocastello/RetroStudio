@@ -340,9 +340,11 @@ static short HitTestFrameRows(Frame* frame, short y, short indent,
             } else if (lockZone) {
                 PushUndo(); s->locked = !s->locked;
                 InvalidateLayers(); InvalidateMain();
-            } else if ((modifiers & shiftKey) && (gSelectedFrame == frame || gSelectedShapes.size() > 0)) {
-                // Shift+click: toggle shape in multi-select (same parent frame required)
-                if (gSelectedFrame == nullptr || gSelectedFrame == frame) {
+            } else if (modifiers & shiftKey) {
+                // Shift+click: toggle shape in multi-select.
+                // Allow when: no context, same frame, or shapes already multi-selected (gSelectedFrame==null).
+                bool canAdd = (gSelectedFrame == nullptr || gSelectedFrame == frame || !gSelectedShapes.empty());
+                if (canAdd) {
                     gSelectedFrame = frame;
                     auto sit = std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s);
                     if (sit != gSelectedShapes.end()) {
@@ -419,7 +421,7 @@ void HandleLayersPanelClick(Point localPt, UInt16 modifiers) {
                 PushUndo(); s->locked = !s->locked;
                 InvalidateLayers(); InvalidateMain(); return;
             }
-            if ((modifiers & shiftKey) && (gSelectedFrame == nullptr)) {
+            if ((modifiers & shiftKey) && (gSelectedFrame == nullptr || !gSelectedShapes.empty())) {
                 // Shift+click root shape: toggle in multi-select
                 auto sit = std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s);
                 if (sit != gSelectedShapes.end()) {
