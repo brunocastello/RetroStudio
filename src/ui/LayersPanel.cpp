@@ -204,7 +204,8 @@ static short DrawRow(short y, short indent,
 
 // Recursively draw a frame and all its contents as rows.
 static short DrawFrameRows(const Frame* frame, short y, short indent, const Rect& portRect) {
-    bool fsel = (gSelectedFrame == frame && gSelectedShape == nullptr);
+    bool fsel = (gSelectedFrame == frame && gSelectedShape == nullptr)
+             || std::find(gSelectedFrames.begin(), gSelectedFrames.end(), frame) != gSelectedFrames.end();
     y = DrawRow(y, indent, frame->name, fsel, Shape::kRectangle, true,
                 frame->visible, frame->locked, portRect);
 
@@ -313,9 +314,26 @@ static short HitTestFrameRows(Frame* frame, short y, short indent,
         } else if (lockZone) {
             PushUndo(); frame->locked = !frame->locked;
             InvalidateLayers(); InvalidateMain();
-        } else {
-            // Frames don't participate in shape multi-select; always single-select
+        } else if (modifiers & shiftKey) {
+            // Shift+click: toggle frame in gSelectedFrames
             gSelectedShapes.clear();
+            gSelectedShape = nullptr;
+            auto fit = std::find(gSelectedFrames.begin(), gSelectedFrames.end(), frame);
+            if (fit != gSelectedFrames.end()) {
+                gSelectedFrames.erase(fit);
+                gSelectedFrame = gSelectedFrames.empty() ? nullptr : gSelectedFrames.back();
+            } else {
+                if (gSelectedFrame &&
+                    std::find(gSelectedFrames.begin(), gSelectedFrames.end(), gSelectedFrame) == gSelectedFrames.end())
+                    gSelectedFrames.push_back(gSelectedFrame);
+                gSelectedFrames.push_back(frame);
+                gSelectedFrame = frame;
+            }
+            InvalidateLayers(); InvalidateMain();
+        } else {
+            // Normal click: single-select this frame
+            gSelectedShapes.clear();
+            gSelectedFrames.clear();
             gSelectedFrame = frame; gSelectedShape = nullptr;
             InvalidateLayers(); InvalidateMain();
         }
@@ -457,6 +475,7 @@ void HandleLayersPanelClick(Point localPt, UInt16 modifiers) {
 
     // Empty area — deselect
     gSelectedShapes.clear();
+    gSelectedFrames.clear();
     gSelectedFrame = nullptr; gSelectedShape = nullptr;
     sLastWhen = 0; sLastFrame = nullptr; sLastShape = nullptr;
     InvalidateLayers(); InvalidateMain();

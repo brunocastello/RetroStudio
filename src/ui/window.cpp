@@ -15,6 +15,7 @@ Document*  gDocument      = nullptr;
 Frame*     gSelectedFrame = nullptr;
 Shape*     gSelectedShape = nullptr;
 std::vector<Shape*> gSelectedShapes;
+std::vector<Frame*> gSelectedFrames;
 Shape*              gLayoutDragShape   = nullptr;
 bool                gIsLayoutMultiDrag = false;
 int        gNextFrameNum  = 2;
@@ -457,6 +458,16 @@ static void DrawSelectionHighlight() {
         for (Shape* s : gSelectedShapes) {
             if (s == gSelectedShape) continue;
             Rect r2 = CanvasRect(s->bounds);
+            FrameRect(&r2);
+        }
+        PenSize(1, 1);
+    }
+    if (gSelectedFrames.size() > 1) {
+        RGBForeColor(&selBlue);
+        PenSize(2, 2);
+        for (Frame* f : gSelectedFrames) {
+            if (f == gSelectedFrame) continue;
+            Rect r2 = CanvasRect(f->bounds);
             FrameRect(&r2);
         }
         PenSize(1, 1);
@@ -957,16 +968,21 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         return;
     }
 
-    // If clicking on a shape that is already part of the multi-select,
-    // preserve the selection so the subsequent drag moves all shapes.
-    bool hitInSelection = hitShape && gSelectedShapes.size() > 1 &&
-        std::find(gSelectedShapes.begin(), gSelectedShapes.end(), hitShape) != gSelectedShapes.end();
+    // If clicking on an object already in the multi-select, preserve selection for drag.
+    bool hitInSelection =
+        (hitShape && gSelectedShapes.size() > 1 &&
+         std::find(gSelectedShapes.begin(), gSelectedShapes.end(), hitShape) != gSelectedShapes.end())
+        ||
+        (!hitShape && hitFrame && gSelectedFrames.size() > 1 &&
+         std::find(gSelectedFrames.begin(), gSelectedFrames.end(), hitFrame) != gSelectedFrames.end());
 
     if (hitInSelection) {
-        gSelectedShape = hitShape;  // update primary, but keep gSelectedShapes intact
+        if (hitShape) gSelectedShape = hitShape;
+        else          gSelectedFrame = hitFrame;
     } else {
-        // Normal click — clear multi-select, single selection
+        // Normal click — clear all multi-select, single selection
         gSelectedShapes.clear();
+        gSelectedFrames.clear();
         gSelectedFrame = hitFrame;
         gSelectedShape = hitShape;
     }
@@ -1016,7 +1032,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
 
         // Exclude dragged shape(s) from layout so they move freely.
         // Single-select: use gLayoutDragShape; multi-select: use gIsLayoutMultiDrag.
-        bool isMultiDrag  = (gSelectedShapes.size() > 1);
+        bool isMultiDrag  = (gSelectedShapes.size() > 1 || gSelectedFrames.size() > 1);
         bool isLayoutDrag = (!isMultiDrag && hitShape && hitFrame &&
                              hitFrame->layoutMode != LayoutMode::None);
         if (isLayoutDrag) gLayoutDragShape = hitShape;
@@ -1036,6 +1052,8 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                         s->bounds.x += dx;
                         s->bounds.y += dy;
                     }
+                } else if (gSelectedFrames.size() > 1) {
+                    for (Frame* f : gSelectedFrames) MoveFrameTree(f, dx, dy);
                 } else if (hitShape) {
                     hitShape->bounds.x += dx;
                     hitShape->bounds.y += dy;
@@ -1080,6 +1098,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         if (isMultiDrag) {
             Rect portRect; GetWindowPortBounds(win, &portRect); InvalWindowRect(win, &portRect);
             RefreshLayersPanel();
+            RefreshInspector();
             return;
         }
         Bounds2 finalB = hitShape ? hitShape->bounds : hitFrame->bounds;
@@ -1183,6 +1202,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
             SInt32 selB = std::max((SInt32)cAnchor.v, (SInt32)cEnd.v);
 
             gSelectedShapes.clear();
+            gSelectedFrames.clear();
             gSelectedShape = nullptr;
             gSelectedFrame = nullptr;
 
@@ -1198,28 +1218,31 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                     band.push_back({ sp.get(), nullptr });
             }
 
+            // Collect top-level frames that intersect the band
+            std::vector<Frame*> bandFrames;
+            for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend(); ++it) {
+                Frame* frm = it->get();
+                if (!frm->visible) continue;
+                const Bounds2& bnd = frm->bounds;
+                if (bnd.x < selR && (bnd.x + bnd.w) > selL &&
+                    bnd.y < selB && (bnd.y + bnd.h) > selT)
+                    bandFrames.push_back(frm);
+            }
+
             if (band.size() == 1) {
-                // Single hit: normal single-select with correct parent context
+                // Single shape hit: normal single-select with parent context
                 gSelectedShape = band[0].shape;
                 gSelectedFrame = band[0].parent;
             } else if (band.size() > 1) {
-                // Multi-hit: populate gSelectedShapes; keep gSelectedFrame null so the
-                // parent frame is NOT shown as selected and shift+click works freely
+                // Multi-shape hit: gSelectedFrame stays null (no parent highlighted)
                 for (auto& bs : band) gSelectedShapes.push_back(bs.shape);
                 gSelectedShape = gSelectedShapes.back();
-                gSelectedFrame = nullptr;
-            } else {
-                // No shapes at all: try selecting the topmost frame whose bounds the band covers
-                for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend(); ++it) {
-                    const Frame* frm = it->get();
-                    if (!frm->visible) continue;
-                    const Bounds2& bnd = frm->bounds;
-                    if (bnd.x < selR && (bnd.x + bnd.w) > selL &&
-                        bnd.y < selB && (bnd.y + bnd.h) > selT) {
-                        gSelectedFrame = it->get();
-                        break;
-                    }
-                }
+            } else if (bandFrames.size() == 1) {
+                gSelectedFrame = bandFrames[0];
+            } else if (bandFrames.size() > 1) {
+                // Multi-frame: use gSelectedFrames
+                gSelectedFrames = bandFrames;
+                gSelectedFrame  = gSelectedFrames.back();
             }
 
             RefreshLayersPanel();
@@ -1416,6 +1439,7 @@ static void NewDocument() {
     gSelectedFrame  = nullptr;
     gSelectedShape  = nullptr;
     gSelectedShapes.clear();
+    gSelectedFrames.clear();
     gNextFrameNum   = 2;
     gNextRectNum    = 1;
     gNextEllipseNum = 1;
@@ -1539,6 +1563,7 @@ void PerformUndo() {
     gSelectedFrame = nullptr;
     gSelectedShape = nullptr;
     gSelectedShapes.clear();
+    gSelectedFrames.clear();
     Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
     RefreshLayersPanel();
     RefreshInspector();
@@ -1553,6 +1578,7 @@ void PerformRedo() {
     gSelectedFrame = nullptr;
     gSelectedShape = nullptr;
     gSelectedShapes.clear();
+    gSelectedFrames.clear();
     Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
     RefreshLayersPanel();
     RefreshInspector();
@@ -1602,11 +1628,19 @@ void PasteClipboard() {
 
 void DeleteSelected() {
     if (!gDocument) return;
-    if (!gSelectedShape && !gSelectedFrame && gSelectedShapes.empty()) return;
+    if (!gSelectedShape && !gSelectedFrame && gSelectedShapes.empty() && gSelectedFrames.empty()) return;
     PushUndo();
     bool changed = false;
 
-    if (gSelectedShapes.size() > 1) {
+    if (gSelectedFrames.size() > 1) {
+        for (Frame* target : gSelectedFrames) {
+            auto owned = ExtractFrame(target);
+            if (owned) changed = true;
+        }
+        gSelectedFrames.clear();
+        gSelectedFrame  = nullptr;
+        gSelectedShape  = nullptr;
+    } else if (gSelectedShapes.size() > 1) {
         // Delete all shapes in the multi-select set
         auto& vec = gSelectedFrame ? gSelectedFrame->children : gDocument->rootShapes;
         for (Shape* target : gSelectedShapes) {
@@ -1653,6 +1687,7 @@ void HandleMenuCommand(long menuResult) {
                     gSelectedFrame  = nullptr;
                     gSelectedShape  = nullptr;
                     gSelectedShapes.clear();
+                    gSelectedFrames.clear();
                     gNextFrameNum   = static_cast<int>(gDocument->frames.size()) + 2;
                     gNextRectNum    = 1;
                     gNextEllipseNum = 1;

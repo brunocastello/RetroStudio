@@ -500,13 +500,46 @@ void DrawInspectorPanel() {
     sShapeWFxRect = sShapeWFlRect = sShapeHFxRect = sShapeHFlRect = {0,0,0,0};
     sLayoutCounterGapRect = sLayoutCounterGapModeRect = {0,0,0,0};
 
-    if (!gSelectedFrame && !gSelectedShape) {
-        SetOrigin(0, 0);  // restore before drawing at fixed positions
+    if (!gSelectedFrame && !gSelectedShape && gSelectedFrames.empty()) {
+        SetOrigin(0, 0);
         RGBColor gray = { 0x9999, 0x9999, 0x9999 }; RGBForeColor(&gray); TextSize(10);
         Str255 ps;
         PStrC("Select an object", ps);       MoveTo(8, 28); DrawString(ps);
         PStrC("to view its properties.", ps); MoveTo(8, 44); DrawString(ps);
         TextSize(12); PenNormal(); RGBForeColor(&black); RGBBackColor(&white);
+        return;
+    }
+
+    // Multi-frame selection: show count + aggregate bbox
+    if (gSelectedFrames.size() > 1) {
+        RGBColor labelClr2 = { 0x6666, 0x6666, 0x6666 };
+        RGBColor valueClr2 = { 0x1111, 0x1111, 0x1111 };
+        Str255 ps2;
+        RGBForeColor(&labelClr2); TextSize(9);
+        PStrC("NAME", ps2); MoveTo(4, 12); DrawString(ps2);
+        std::string countLabel = numStr(static_cast<SInt32>(gSelectedFrames.size())) + " frames";
+        RGBForeColor(&valueClr2); TextSize(11);
+        PStr(countLabel, ps2); MoveTo(4, 26); DrawString(ps2);
+        SInt32 minX = gSelectedFrames[0]->bounds.x, minY = gSelectedFrames[0]->bounds.y;
+        SInt32 maxX = minX + gSelectedFrames[0]->bounds.w, maxY = minY + gSelectedFrames[0]->bounds.h;
+        for (size_t i = 1; i < gSelectedFrames.size(); ++i) {
+            const Bounds2& b = gSelectedFrames[i]->bounds;
+            if (b.x < minX) minX = b.x;
+            if (b.y < minY) minY = b.y;
+            if (b.x + b.w > maxX) maxX = b.x + b.w;
+            if (b.y + b.h > maxY) maxY = b.y + b.h;
+        }
+        short y2 = 36;
+        RGBForeColor(&labelClr2); TextSize(9);
+        PStrC("SIZE", ps2); MoveTo(4, static_cast<short>(y2+8)); DrawString(ps2);
+        y2 = static_cast<short>(y2 + 12);
+        std::string xs = "X " + numStr(minX) + "   Y " + numStr(minY);
+        std::string ws = "W " + numStr(maxX-minX) + "   H " + numStr(maxY-minY);
+        RGBForeColor(&valueClr2); TextSize(11);
+        PStr(xs, ps2); MoveTo(4, static_cast<short>(y2+10)); DrawString(ps2);
+        PStr(ws, ps2); MoveTo(4, static_cast<short>(y2+24)); DrawString(ps2);
+        TextSize(12); PenNormal(); RGBForeColor(&black); RGBBackColor(&white);
+        SetOrigin(0, 0);
         return;
     }
 
