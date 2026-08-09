@@ -1,7 +1,11 @@
 #include "AutoLayout.h"
+#include <algorithm>
 
-// Shape being drag-sorted — excluded from layout so it follows the mouse freely.
+// Shape being drag-sorted (single-select) — excluded from layout.
 extern Shape* gLayoutDragShape;
+// During multi-select drag, all shapes in gSelectedShapes are excluded.
+extern bool                gIsLayoutMultiDrag;
+extern std::vector<Shape*> gSelectedShapes;
 
 // Unified view of one child item.  Both Shape* and Frame* children use this.
 struct LayoutItem {
@@ -36,8 +40,11 @@ static void RunFrameLayout(Frame* f) {
     };
 
     for (auto& s : f->children) {
-        if (!s->visible) continue;  // invisible items take no space in layout
-        if (s.get() == gLayoutDragShape) continue;  // excluded during drag-to-sort
+        if (!s->visible) continue;
+        if (s.get() == gLayoutDragShape) continue;
+        if (gIsLayoutMultiDrag &&
+            std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s.get()) != gSelectedShapes.end())
+            continue;
         LayoutItem it;
         it.x = &s->bounds.x; it.y = &s->bounds.y;
         it.w = &s->bounds.w; it.h = &s->bounds.h;

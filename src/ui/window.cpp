@@ -14,7 +14,8 @@ Document*  gDocument      = nullptr;
 Frame*     gSelectedFrame = nullptr;
 Shape*     gSelectedShape = nullptr;
 std::vector<Shape*> gSelectedShapes;
-Shape*              gLayoutDragShape = nullptr;
+Shape*              gLayoutDragShape   = nullptr;
+bool                gIsLayoutMultiDrag = false;
 int        gNextFrameNum  = 2;
 bool       gIsDoubleClick = false;
 SInt32     gCanvasOffsetX = 0;
@@ -933,10 +934,19 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         return;
     }
 
-    // Normal click — clear multi-select
-    gSelectedShapes.clear();
-    gSelectedFrame = hitFrame;
-    gSelectedShape = hitShape;
+    // If clicking on a shape that is already part of the multi-select,
+    // preserve the selection so the subsequent drag moves all shapes.
+    bool hitInSelection = hitShape && gSelectedShapes.size() > 1 &&
+        std::find(gSelectedShapes.begin(), gSelectedShapes.end(), hitShape) != gSelectedShapes.end();
+
+    if (hitInSelection) {
+        gSelectedShape = hitShape;  // update primary, but keep gSelectedShapes intact
+    } else {
+        // Normal click — clear multi-select, single selection
+        gSelectedShapes.clear();
+        gSelectedFrame = hitFrame;
+        gSelectedShape = hitShape;
+    }
 
     // ---- Double-click: rename the hit object ----
     if (found && gIsDoubleClick) {
@@ -981,12 +991,14 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         Point prevPt = pt, currPt = pt;
         bool pushedUndo = false;
 
-        // If dragging a shape inside a layout frame, exclude it from layout so
-        // it moves freely (enables drag-to-sort and drag-out-of-layout)
-        bool isLayoutDrag = (hitShape && hitFrame &&
-                             hitFrame->layoutMode != LayoutMode::None &&
-                             gSelectedShapes.size() <= 1);
+        // Exclude dragged shape(s) from layout so they move freely.
+        // Single-select: use gLayoutDragShape; multi-select: use gIsLayoutMultiDrag.
+        bool isMultiDrag  = (gSelectedShapes.size() > 1);
+        bool isLayoutDrag = (!isMultiDrag && hitShape && hitFrame &&
+                             hitFrame->layoutMode != LayoutMode::None);
         if (isLayoutDrag) gLayoutDragShape = hitShape;
+        if (isMultiDrag && hitFrame && hitFrame->layoutMode != LayoutMode::None)
+            gIsLayoutMultiDrag = true;
 
         while (Button()) {
             GetMouse(&currPt);
@@ -1013,11 +1025,36 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
             }
         }
 
-        gLayoutDragShape = nullptr;  // always clear after drag
+        gLayoutDragShape   = nullptr;
+        gIsLayoutMultiDrag = false;
 
-        // ---- Re-parent on drop (skipped for multi-select drags) ----
-        // Center in screen space (DeepestFrameAt uses CanvasRect = screen space rects)
-        if (gSelectedShapes.size() > 1) {
+        // ---- Re-parent on drop ----
+        // Multi-select: move all shapes to the frame under the drag endpoint.
+        if (isMultiDrag && hitShape) {
+            Bounds2 hitB = hitShape->bounds;
+            Point hitCenter;
+            hitCenter.h = static_cast<short>(SInt32(hitB.x + hitB.w/2) * gCanvasZoom / 100 + gCanvasOffsetX);
+            hitCenter.v = static_cast<short>(SInt32(hitB.y + hitB.h/2) * gCanvasZoom / 100 + gCanvasOffsetY);
+            Frame* newParent = DeepestFrameAt(hitCenter);
+            if (newParent != origParent) {
+                auto& srcVec = origParent ? origParent->children : gDocument->rootShapes;
+                auto& dstVec = newParent  ? newParent->children  : gDocument->rootShapes;
+                for (Shape* target : gSelectedShapes) {
+                    for (auto it = srcVec.begin(); it != srcVec.end(); ++it) {
+                        if (it->get() == target) {
+                            dstVec.push_back(std::move(*it));
+                            srcVec.erase(it);
+                            break;
+                        }
+                    }
+                }
+                gSelectedFrame = newParent;
+            }
+            Rect portRect; GetWindowPortBounds(win, &portRect); InvalWindowRect(win, &portRect);
+            RefreshLayersPanel();
+            return;
+        }
+        if (isMultiDrag) {
             Rect portRect; GetWindowPortBounds(win, &portRect); InvalWindowRect(win, &portRect);
             RefreshLayersPanel();
             return;

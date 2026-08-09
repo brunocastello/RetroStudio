@@ -13,7 +13,8 @@ extern Document*         gDocument;
 extern Frame*            gSelectedFrame;
 extern Shape*            gSelectedShape;
 extern std::vector<Shape*> gSelectedShapes;  // multi-select; always same parent as gSelectedFrame
-extern Shape*              gLayoutDragShape; // excluded from auto layout during drag-to-sort
+extern Shape*              gLayoutDragShape;    // single-shape drag: excluded from auto layout
+extern bool                gIsLayoutMultiDrag;  // multi-select drag: all gSelectedShapes excluded
 extern int        gNextFrameNum;
 extern bool       gIsDoubleClick;
 extern SInt32     gCanvasOffsetX;
