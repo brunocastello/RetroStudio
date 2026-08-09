@@ -6,7 +6,7 @@
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
 static const UInt32 kMagic   = 0x52535444;  // 'RSTD'
-static const UInt16 kVersion = 10;
+static const UInt16 kVersion = 11;
 
 // Folder Manager constants — defined here because Retro68 Carbon headers
 // don't always expose <Folders.h> constants via <Carbon.h>.
@@ -173,9 +173,10 @@ static void WriteFrame(Writer& w, const Frame& f) {
     w.w8(static_cast<UInt8>(f.layoutMode));
     w.w8(f.layoutWrap ? 1 : 0);
     w.w16(f.layoutCounterGap);
-    w.w8(static_cast<UInt8>((f.strokesInLayout ? 1 : 0) |
-                             (f.canvasStackReverse ? 2 : 0) |
-                             (f.alignTextBaseline ? 4 : 0)));
+    w.w8(static_cast<UInt8>((f.strokesInLayout      ? 1 : 0) |
+                             (f.canvasStackReverse   ? 2 : 0) |
+                             (f.alignTextBaseline    ? 4 : 0) |
+                             (f.layoutCounterGapAuto ? 8 : 0)));
     w.w16(f.layoutGap);
     w.w8(f.paddingTop); w.w8(f.paddingRight);
     w.w8(f.paddingBottom); w.w8(f.paddingLeft);
@@ -213,9 +214,10 @@ static std::unique_ptr<Frame> ReadFrame(Reader& r, Frame* parent) {
     f->layoutWrap         = r.r8() != 0;
     f->layoutCounterGap   = r.r16();
     { UInt8 fl = r.r8();
-      f->strokesInLayout    = (fl & 1) != 0;
-      f->canvasStackReverse = (fl & 2) != 0;
-      f->alignTextBaseline  = (fl & 4) != 0; }
+      f->strokesInLayout      = (fl & 1) != 0;
+      f->canvasStackReverse   = (fl & 2) != 0;
+      f->alignTextBaseline    = (fl & 4) != 0;
+      f->layoutCounterGapAuto = (fl & 8) != 0; }
     f->layoutGap          = r.r16();
     f->paddingTop    = r.r8(); f->paddingRight  = r.r8();
     f->paddingBottom = r.r8(); f->paddingLeft   = r.r8();

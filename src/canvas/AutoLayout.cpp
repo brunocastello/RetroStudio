@@ -107,7 +107,6 @@ static void RunFrameLayout(Frame* f) {
     // ---- Wrap layout ----
     if (f->layoutWrap) {
         struct WrapLine { std::vector<int> indices; SInt32 crossMax = 0; };
-        SInt32 counterGap = static_cast<SInt32>(f->layoutCounterGap);
 
         SInt32 available = framePri - padPri1 - padPri2;
         if (available < 1) available = 1;
@@ -136,8 +135,18 @@ static void RunFrameLayout(Frame* f) {
         }
         if (!cur.indices.empty()) lines.push_back(cur);
 
-        SInt32 totalCross = 0;
-        for (auto& ln : lines) totalCross += ln.crossMax;
+        SInt32 rawCross = 0;
+        for (auto& ln : lines) rawCross += ln.crossMax;
+
+        SInt32 counterGap;
+        if (f->layoutCounterGapAuto && static_cast<SInt32>(lines.size()) > 1) {
+            SInt32 avail = frameSec - padSec1 - padSec2 - rawCross;
+            counterGap = (avail > 0) ? avail / (static_cast<SInt32>(lines.size()) - 1) : 0;
+        } else {
+            counterGap = static_cast<SInt32>(f->layoutCounterGap);
+        }
+
+        SInt32 totalCross = rawCross;
         if (lines.size() > 1)
             totalCross += counterGap * static_cast<SInt32>(lines.size() - 1);
 

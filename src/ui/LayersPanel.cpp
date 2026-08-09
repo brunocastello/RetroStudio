@@ -2,6 +2,7 @@
 #include "window.h"
 #include "RenameDialog.h"
 #include "InspectorPanel.h"
+#include <algorithm>
 
 WindowRef gLayersWindow = nullptr;
 
@@ -177,7 +178,8 @@ static short DrawFrameRows(const Frame* frame, short y, short indent, const Rect
 
     for (auto it = frame->children.rbegin(); it != frame->children.rend(); ++it) {
         const Shape* s = it->get();
-        bool ssel = (gSelectedShape == s);
+        bool ssel = (gSelectedShape == s) ||
+                    std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s) != gSelectedShapes.end();
         std::string lbl = s->name;
         if (lbl.empty()) lbl = (s->GetType() == Shape::kEllipse) ? "Ellipse" : "Rectangle";
         y = DrawRow(y, static_cast<short>(indent + 10), lbl, ssel, s->GetType(), false,
@@ -204,7 +206,9 @@ void DrawLayersPanel() {
 
     for (auto it = gDocument->rootShapes.rbegin(); it != gDocument->rootShapes.rend(); ++it) {
         const Shape* s = it->get();
-        bool sel = (gSelectedShape == s && gSelectedFrame == nullptr);
+        bool sel = (gSelectedShape == s && gSelectedFrame == nullptr) ||
+                   (gSelectedFrame == nullptr &&
+                    std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s) != gSelectedShapes.end());
         std::string lbl = s->name;
         if (lbl.empty()) lbl = (s->GetType() == Shape::kEllipse) ? "Ellipse" : "Rectangle";
         y = DrawRow(y, 0, lbl, sel, s->GetType(), false, s->visible, s->locked, portRect);

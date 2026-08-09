@@ -4,6 +4,7 @@
 #include "RenameDialog.h"
 #include "../export/DocumentSerializer.h"
 #include "../canvas/AutoLayout.h"
+#include <algorithm>
 
 WindowRef  gMainWindow    = nullptr;
 Boolean    gQuitFlag      = false;
@@ -12,6 +13,7 @@ Renderer*  gRenderer      = nullptr;
 Document*  gDocument      = nullptr;
 Frame*     gSelectedFrame = nullptr;
 Shape*     gSelectedShape = nullptr;
+std::vector<Shape*> gSelectedShapes;
 int        gNextFrameNum  = 2;
 bool       gIsDoubleClick = false;
 SInt32     gCanvasOffsetX = 0;
@@ -891,6 +893,34 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         }
     }
 
+    // ---- Shift+click: toggle shape in multi-select ----
+    if (found && (modifiers & shiftKey) && hitShape) {
+        // Only multi-select shapes sharing the same parent frame
+        if (gSelectedFrame == nullptr || hitFrame == gSelectedFrame) {
+            gSelectedFrame = hitFrame;
+            auto it = std::find(gSelectedShapes.begin(), gSelectedShapes.end(), hitShape);
+            if (it != gSelectedShapes.end()) {
+                // Already selected — deselect it
+                gSelectedShapes.erase(it);
+                gSelectedShape = gSelectedShapes.empty() ? nullptr : gSelectedShapes.back();
+            } else {
+                // Add existing single selection to pool first
+                if (gSelectedShape &&
+                    std::find(gSelectedShapes.begin(), gSelectedShapes.end(), gSelectedShape) == gSelectedShapes.end()) {
+                    gSelectedShapes.push_back(gSelectedShape);
+                }
+                gSelectedShapes.push_back(hitShape);
+                gSelectedShape = hitShape;
+            }
+            Rect portRect2; GetWindowPortBounds(win, &portRect2); InvalWindowRect(win, &portRect2);
+            RefreshLayersPanel();
+            RefreshInspector();
+        }
+        return;
+    }
+
+    // Normal click — clear multi-select
+    gSelectedShapes.clear();
     gSelectedFrame = hitFrame;
     gSelectedShape = hitShape;
 
@@ -945,7 +975,12 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                 SInt32 dx = SInt32(currPt.h - prevPt.h) * 100 / gCanvasZoom;
                 SInt32 dy = SInt32(currPt.v - prevPt.v) * 100 / gCanvasZoom;
 
-                if (hitShape) {
+                if (gSelectedShapes.size() > 1) {
+                    for (Shape* s : gSelectedShapes) {
+                        s->bounds.x += dx;
+                        s->bounds.y += dy;
+                    }
+                } else if (hitShape) {
                     hitShape->bounds.x += dx;
                     hitShape->bounds.y += dy;
                 } else {
@@ -957,8 +992,12 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
             }
         }
 
-        // ---- Re-parent on drop ----
+        // ---- Re-parent on drop (skipped for multi-select drags) ----
         // Center in screen space (DeepestFrameAt uses CanvasRect = screen space rects)
+        if (gSelectedShapes.size() > 1) {
+            Rect portRect; GetWindowPortBounds(win, &portRect); InvalWindowRect(win, &portRect);
+            return;
+        }
         Bounds2 finalB = hitShape ? hitShape->bounds : hitFrame->bounds;
         Point center;
         center.h = static_cast<short>(SInt32(finalB.x + finalB.w / 2) * gCanvasZoom / 100 + gCanvasOffsetX);
@@ -1177,6 +1216,7 @@ static void NewDocument() {
 
     gSelectedFrame  = nullptr;
     gSelectedShape  = nullptr;
+    gSelectedShapes.clear();
     gNextFrameNum   = 2;
     gNextRectNum    = 1;
     gNextEllipseNum = 1;
@@ -1256,6 +1296,7 @@ static std::unique_ptr<Frame> CloneFrame(const Frame* src, Frame* newParent) {
     f->alignTextBaseline    = src->alignTextBaseline;
     f->layoutGap            = src->layoutGap;
     f->layoutCounterGap     = src->layoutCounterGap;
+    f->layoutCounterGapAuto = src->layoutCounterGapAuto;
     f->paddingTop      = src->paddingTop;
     f->paddingRight    = src->paddingRight;
     f->paddingBottom   = src->paddingBottom;
@@ -1298,6 +1339,7 @@ void PerformUndo() {
     sUndoStack.pop_back();
     gSelectedFrame = nullptr;
     gSelectedShape = nullptr;
+    gSelectedShapes.clear();
     Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
     RefreshLayersPanel();
     RefreshInspector();
@@ -1311,6 +1353,7 @@ void PerformRedo() {
     sRedoStack.pop_back();
     gSelectedFrame = nullptr;
     gSelectedShape = nullptr;
+    gSelectedShapes.clear();
     Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
     RefreshLayersPanel();
     RefreshInspector();
@@ -1360,11 +1403,21 @@ void PasteClipboard() {
 
 void DeleteSelected() {
     if (!gDocument) return;
-    if (!gSelectedShape && !gSelectedFrame) return;
+    if (!gSelectedShape && !gSelectedFrame && gSelectedShapes.empty()) return;
     PushUndo();
     bool changed = false;
 
-    if (gSelectedShape) {
+    if (gSelectedShapes.size() > 1) {
+        // Delete all shapes in the multi-select set
+        auto& vec = gSelectedFrame ? gSelectedFrame->children : gDocument->rootShapes;
+        for (Shape* target : gSelectedShapes) {
+            for (auto it = vec.begin(); it != vec.end(); ++it) {
+                if (it->get() == target) { vec.erase(it); changed = true; break; }
+            }
+        }
+        gSelectedShapes.clear();
+        gSelectedShape = nullptr;
+    } else if (gSelectedShape) {
         // Works for both in-frame children and floating rootShapes
         auto& vec = gSelectedFrame ? gSelectedFrame->children : gDocument->rootShapes;
         for (auto it = vec.begin(); it != vec.end(); ++it) {
@@ -1400,6 +1453,7 @@ void HandleMenuCommand(long menuResult) {
                 if (LoadDocument(gDocument)) {
                     gSelectedFrame  = nullptr;
                     gSelectedShape  = nullptr;
+                    gSelectedShapes.clear();
                     gNextFrameNum   = static_cast<int>(gDocument->frames.size()) + 2;
                     gNextRectNum    = 1;
                     gNextEllipseNum = 1;

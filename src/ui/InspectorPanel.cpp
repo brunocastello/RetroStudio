@@ -39,8 +39,9 @@ static Rect sShapeWFxRect        = {0,0,0,0};
 static Rect sShapeWFlRect        = {0,0,0,0};
 static Rect sShapeHFxRect        = {0,0,0,0};
 static Rect sShapeHFlRect        = {0,0,0,0};
-// Counter-axis gap field (Wrap mode only)
-static Rect sLayoutCounterGapRect = {0,0,0,0};
+// Counter-axis gap field and mode popup (Wrap mode only)
+static Rect sLayoutCounterGapRect     = {0,0,0,0};
+static Rect sLayoutCounterGapModeRect = {0,0,0,0};
 
 // Auto Layout controls (frame selected)
 static Rect sLayoutModeRect[3]       = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
@@ -441,13 +442,48 @@ void DrawInspectorPanel() {
     for (int i=0;i<9;++i) sAlignCellRect[i]={0,0,0,0};
     for (int i=0;i<3;++i) sTextSizingRect[i]={0,0,0,0};
     sShapeWFxRect = sShapeWFlRect = sShapeHFxRect = sShapeHFlRect = {0,0,0,0};
-    sLayoutCounterGapRect = {0,0,0,0};
+    sLayoutCounterGapRect = sLayoutCounterGapModeRect = {0,0,0,0};
 
     if (!gSelectedFrame && !gSelectedShape) {
         RGBColor gray = { 0x9999, 0x9999, 0x9999 }; RGBForeColor(&gray); TextSize(10);
         Str255 ps;
         PStrC("Select an object", ps);       MoveTo(8, 28); DrawString(ps);
         PStrC("to view its properties.", ps); MoveTo(8, 44); DrawString(ps);
+        TextSize(12); PenNormal(); RGBForeColor(&black); RGBBackColor(&white);
+        return;
+    }
+
+    // Multi-select view: show count + aggregate bounding box, no fill/stroke editing
+    if (gSelectedShapes.size() > 1) {
+        RGBColor labelClr2 = { 0x6666, 0x6666, 0x6666 };
+        RGBColor valueClr2 = { 0x1111, 0x1111, 0x1111 };
+        Str255 ps2;
+        // Name row
+        RGBForeColor(&labelClr2); TextSize(9);
+        PStrC("NAME", ps2); MoveTo(4, 12); DrawString(ps2);
+        std::string countLabel = numStr(static_cast<SInt32>(gSelectedShapes.size())) + " objects";
+        RGBForeColor(&valueClr2); TextSize(11);
+        PStr(countLabel, ps2); MoveTo(4, 26); DrawString(ps2);
+        // Aggregate bounding box
+        SInt32 minX = gSelectedShapes[0]->bounds.x, minY = gSelectedShapes[0]->bounds.y;
+        SInt32 maxX = minX + gSelectedShapes[0]->bounds.w;
+        SInt32 maxY = minY + gSelectedShapes[0]->bounds.h;
+        for (size_t i = 1; i < gSelectedShapes.size(); ++i) {
+            const Bounds2& b = gSelectedShapes[i]->bounds;
+            if (b.x         < minX) minX = b.x;
+            if (b.y         < minY) minY = b.y;
+            if (b.x + b.w   > maxX) maxX = b.x + b.w;
+            if (b.y + b.h   > maxY) maxY = b.y + b.h;
+        }
+        short y2 = 36;
+        RGBForeColor(&labelClr2); TextSize(9);
+        PStrC("SIZE", ps2); MoveTo(4, static_cast<short>(y2+8)); DrawString(ps2);
+        y2 = static_cast<short>(y2 + 12);
+        std::string xs = "X " + numStr(minX) + "   Y " + numStr(minY);
+        std::string ws = "W " + numStr(maxX - minX) + "   H " + numStr(maxY - minY);
+        RGBForeColor(&valueClr2); TextSize(11);
+        PStr(xs, ps2); MoveTo(4, static_cast<short>(y2+10)); DrawString(ps2);
+        PStr(ws, ps2); MoveTo(4, static_cast<short>(y2+24)); DrawString(ps2);
         TextSize(12); PenNormal(); RGBForeColor(&black); RGBBackColor(&white);
         return;
     }
@@ -877,18 +913,25 @@ void DrawInspectorPanel() {
                     MoveTo(static_cast<short>(rX+10), static_cast<short>(row2Y+9));
                     DrawString(ps); TextSize(11);
 
-                    DrawNumField(valX, static_cast<short>(row2Y+11), valW,
-                                 kFieldCounterGap,
-                                 static_cast<SInt32>(lf->layoutCounterGap),
-                                 sLayoutCounterGapRect);
+                    const char* cgModeName = lf->layoutCounterGapAuto ? "Auto" : "Fixed";
+                    DrawPlatinumBtn(rX, static_cast<short>(row2Y+11), popW, 14,
+                                    cgModeName, sLayoutCounterGapModeRect);
+                    if (!lf->layoutCounterGapAuto) {
+                        DrawNumField(valX, static_cast<short>(row2Y+23), valW,
+                                     kFieldCounterGap,
+                                     static_cast<SInt32>(lf->layoutCounterGap),
+                                     sLayoutCounterGapRect);
+                    } else {
+                        sLayoutCounterGapRect = {0,0,0,0};
+                    }
                 } else {
-                    sLayoutCounterGapRect = {0,0,0,0};
+                    sLayoutCounterGapRect = sLayoutCounterGapModeRect = {0,0,0,0};
                 }
             }
 
             // Advance y past the gap column content (may extend below 50px grid when Wrap)
             y = lf->layoutWrap
-                ? static_cast<short>(gridY + 2 + 38 + 30)   // row2 bottom + padding
+                ? static_cast<short>(gridY + 2 + 38 + 43)   // row2 (popup+field) + padding
                 : static_cast<short>(gridY + gridSpan + 6);
 
             // Padding section (full width, below grid+gap area)
@@ -1639,7 +1682,27 @@ void HandleInspectorClick(Point localPt) {
         if (PtInRect(localPt, &sLayoutGapRect)) {
             StartEdit(kFieldLayoutGap, static_cast<SInt32>(lf->layoutGap)); return;
         }
-        // Counter gap field (Wrap mode)
+        // Counter gap mode popup (Fixed / Auto)
+        if (PtInRect(localPt, &sLayoutCounterGapModeRect)) {
+            MenuRef pm = NewMenu(6005, "\p");
+            AppendMenu(pm, "\pFixed");
+            AppendMenu(pm, "\pAuto");
+            InsertMenu(pm, -1);
+            short curItem = lf->layoutCounterGapAuto ? 2 : 1;
+            Point pt = { sLayoutCounterGapModeRect.top, sLayoutCounterGapModeRect.left };
+            SetPortWindowPort(gInspectorWindow); LocalToGlobal(&pt);
+            long result = PopUpMenuSelect(pm, pt.v, pt.h, curItem);
+            DeleteMenu(6005); DisposeMenu(pm);
+            short item = static_cast<short>(result & 0xFFFF);
+            if (item > 0) {
+                PushUndo();
+                lf->layoutCounterGapAuto = (item == 2);
+                InvalidateInspector();
+                if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
+            }
+            return;
+        }
+        // Counter gap field (Wrap mode, Fixed only)
         if (PtInRect(localPt, &sLayoutCounterGapRect)) {
             StartEdit(kFieldCounterGap, static_cast<SInt32>(lf->layoutCounterGap)); return;
         }

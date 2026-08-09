@@ -29,7 +29,8 @@ public:
     bool         canvasStackReverse   = false;  // true = first child on top
     bool         alignTextBaseline    = false;  // true = H-layout aligns text baselines
     UInt16       layoutGap            = 0;
-    UInt16       layoutCounterGap     = 0;  // cross-axis gap between Wrap rows
+    UInt16       layoutCounterGap     = 0;    // cross-axis gap between Wrap rows
+    bool         layoutCounterGapAuto = false; // true = SpaceBetween distribution for rows
     UInt8        paddingTop    = 0;
     UInt8        paddingRight  = 0;
     UInt8        paddingBottom = 0;

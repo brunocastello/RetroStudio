@@ -1,16 +1,18 @@
 #pragma once
 #include <Carbon.h>
+#include <vector>
 #include "../canvas/Renderer.h"
 #include "../core/Document.h"
 #include "../core/Tool.h"
 
-extern WindowRef  gMainWindow;
-extern Boolean    gQuitFlag;
-extern Tool       gActiveTool;
-extern Renderer*  gRenderer;
-extern Document*  gDocument;
-extern Frame*     gSelectedFrame;
-extern Shape*     gSelectedShape;
+extern WindowRef         gMainWindow;
+extern Boolean           gQuitFlag;
+extern Tool              gActiveTool;
+extern Renderer*         gRenderer;
+extern Document*         gDocument;
+extern Frame*            gSelectedFrame;
+extern Shape*            gSelectedShape;
+extern std::vector<Shape*> gSelectedShapes;  // multi-select; always same parent as gSelectedFrame
 extern int        gNextFrameNum;
 extern bool       gIsDoubleClick;
 extern SInt32     gCanvasOffsetX;
