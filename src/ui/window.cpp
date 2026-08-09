@@ -1103,6 +1103,116 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                 }
             }
         }
+    } else {
+        // No hit — rubber-band marquee selection (Finder-style).
+        // Use XOR pen to draw/erase the selection rect without redrawing canvas.
+        Point anchorPt  = pt;
+        Point prevEndPt = pt;
+        bool  tracking  = false;
+        bool  didDrag   = false;
+
+        PenMode(patXor);
+        Pattern blkPat; GetQDGlobalsBlack(&blkPat);
+        PenPat(&blkPat);
+        PenSize(1, 1);
+
+        while (Button()) {
+            Point loopPt; GetMouse(&loopPt);
+            if (!tracking || loopPt.h != prevEndPt.h || loopPt.v != prevEndPt.v) {
+                if (tracking) {
+                    Rect prev;
+                    prev.top    = static_cast<short>(std::min((int)anchorPt.v, (int)prevEndPt.v));
+                    prev.left   = static_cast<short>(std::min((int)anchorPt.h, (int)prevEndPt.h));
+                    prev.bottom = static_cast<short>(std::max((int)anchorPt.v, (int)prevEndPt.v) + 1);
+                    prev.right  = static_cast<short>(std::max((int)anchorPt.h, (int)prevEndPt.h) + 1);
+                    FrameRect(&prev);
+                }
+                Rect band;
+                band.top    = static_cast<short>(std::min((int)anchorPt.v, (int)loopPt.v));
+                band.left   = static_cast<short>(std::min((int)anchorPt.h, (int)loopPt.h));
+                band.bottom = static_cast<short>(std::max((int)anchorPt.v, (int)loopPt.v) + 1);
+                band.right  = static_cast<short>(std::max((int)anchorPt.h, (int)loopPt.h) + 1);
+                FrameRect(&band);
+                tracking = true;
+                didDrag  = true;
+                prevEndPt = loopPt;
+            }
+        }
+
+        // Erase final rubber-band
+        if (tracking) {
+            Rect finalBand;
+            finalBand.top    = static_cast<short>(std::min((int)anchorPt.v, (int)prevEndPt.v));
+            finalBand.left   = static_cast<short>(std::min((int)anchorPt.h, (int)prevEndPt.h));
+            finalBand.bottom = static_cast<short>(std::max((int)anchorPt.v, (int)prevEndPt.v) + 1);
+            finalBand.right  = static_cast<short>(std::max((int)anchorPt.h, (int)prevEndPt.h) + 1);
+            FrameRect(&finalBand);
+        }
+        PenNormal();
+
+        if (didDrag) {
+            // Convert rubber-band corners to canvas space
+            Point cAnchor = ScreenToCanvas(anchorPt);
+            Point cEnd    = ScreenToCanvas(prevEndPt);
+            SInt32 selL = std::min((SInt32)cAnchor.h, (SInt32)cEnd.h);
+            SInt32 selT = std::min((SInt32)cAnchor.v, (SInt32)cEnd.v);
+            SInt32 selR = std::max((SInt32)cAnchor.h, (SInt32)cEnd.h);
+            SInt32 selB = std::max((SInt32)cAnchor.v, (SInt32)cEnd.v);
+
+            auto boundsIntersect = [&](const Bounds2& b) -> bool {
+                return b.x < selR && (b.x + b.w) > selL &&
+                       b.y < selB && (b.y + b.h) > selT;
+            };
+
+            gSelectedShapes.clear();
+            gSelectedShape = nullptr;
+            gSelectedFrame = nullptr;
+
+            Frame* commonParent = nullptr;
+            bool   sameParent   = true;
+
+            // Collect shapes from all frames
+            for (auto& frm : gDocument->frames) {
+                for (auto& sp : frm->children) {
+                    if (!sp->visible) continue;
+                    if (boundsIntersect(sp->bounds)) {
+                        gSelectedShapes.push_back(sp.get());
+                        if (commonParent == nullptr) commonParent = frm.get();
+                        else if (commonParent != frm.get()) sameParent = false;
+                    }
+                }
+            }
+            // Collect root shapes
+            for (auto& sp : gDocument->rootShapes) {
+                if (!sp->visible) continue;
+                if (boundsIntersect(sp->bounds)) {
+                    gSelectedShapes.push_back(sp.get());
+                    if (commonParent != nullptr) sameParent = false;
+                }
+            }
+
+            if (!gSelectedShapes.empty()) {
+                gSelectedShape = gSelectedShapes.back();
+                if (gSelectedShapes.size() == 1) {
+                    gSelectedFrame = commonParent;
+                    gSelectedShapes.clear();  // single: use normal selection
+                } else if (sameParent) {
+                    gSelectedFrame = commonParent;
+                }
+            } else {
+                // No shapes: try selecting a top-level frame
+                for (auto& frm : gDocument->frames) {
+                    if (!frm->visible) continue;
+                    if (boundsIntersect(frm->bounds)) {
+                        gSelectedFrame = frm.get();
+                        break;
+                    }
+                }
+            }
+
+            RefreshLayersPanel();
+            RefreshInspector();
+        }
     }
 
     Rect portRect;

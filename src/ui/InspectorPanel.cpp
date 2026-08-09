@@ -456,6 +456,7 @@ void DrawInspectorPanel() {
     Rect portRect; GetWindowPortBounds(gInspectorWindow, &portRect);
     short panelW = portRect.right;
     short panelH = portRect.bottom;
+    short cRight = static_cast<short>(portRect.right - kInspSBW);
 
     // Refit scroll bar only when window was actually resized (MoveControl/SizeControl
     // call HideControl/ShowControl which call InvalWindowRect — doing this every draw
@@ -607,8 +608,8 @@ void DrawInspectorPanel() {
         y = DrawSectionHeader(y, "TEXT", portRect);
 
         // "Aa" button in right corner of TEXT header opens/closes Typography panel
-        sTypographyBtnRect = { static_cast<short>(y-16+1), static_cast<short>(portRect.right-26),
-                               static_cast<short>(y-1),    static_cast<short>(portRect.right-2) };
+        sTypographyBtnRect = { static_cast<short>(y-16+1), static_cast<short>(cRight-26),
+                               static_cast<short>(y-1),    static_cast<short>(cRight-2) };
         {
             bool open = IsTypographyPanelVisible();
             if (open) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
@@ -669,7 +670,7 @@ void DrawInspectorPanel() {
             TextSizing tsz = tsh.textSizing;
 
             // Three equal-width buttons fitting the inspector width
-            short bw = static_cast<short>((portRect.right - 10 - 4) / 3);
+            short bw = static_cast<short>((cRight - 10 - 4) / 3);
             short bh = 22;
             for (int i = 0; i < 3; ++i) {
                 short bx = static_cast<short>(5 + i * (bw + 2));
@@ -942,7 +943,7 @@ void DrawInspectorPanel() {
                 short rX    = static_cast<short>(gridX + gridSpan + 8); // x=66
                 short popW  = 46;
                 short valX  = static_cast<short>(rX + popW + 4);        // x=116
-                short valW  = static_cast<short>(portRect.right - valX - 4); // 56px
+                short valW  = static_cast<short>(cRight - valX - 4); // 56px
 
                 // Row 1 y: centre in grid when no Wrap; shift up when Wrap to leave room
                 short row1Y = lf->layoutWrap
@@ -1003,7 +1004,7 @@ void DrawInspectorPanel() {
 
             // Padding section (full width, below grid+gap area)
             {
-                short tBtnX = static_cast<short>(portRect.right - 18);
+                short tBtnX = static_cast<short>(cRight - 18);
                 // Expand/collapse toggle button
                 Rect tBtn = { y, tBtnX, static_cast<short>(y+14), static_cast<short>(tBtnX+14) };
                 sPadMixedBtnRect = tBtn;
@@ -1081,7 +1082,7 @@ void DrawInspectorPanel() {
 
         // Layout settings button — visible below Clip content when a layout mode is active
         if (lf->layoutMode != LayoutMode::None) {
-            DrawPlatinumBtn(5, y, static_cast<short>(portRect.right - 10), 14,
+            DrawPlatinumBtn(5, y, static_cast<short>(cRight - 10), 14,
                             "Layout settings...", sLayoutSettingsRect);
             y = static_cast<short>(y + 18);
         } else {
@@ -1110,7 +1111,7 @@ void DrawInspectorPanel() {
     if (isFrameSel) {
         // Frames: W and H on separate rows with sizing popup. Lock button at right edge.
         short lockW  = 14;
-        short lockX  = static_cast<short>(portRect.right - lockW - 4);
+        short lockX  = static_cast<short>(cRight - lockW - 4);
         short popW   = 54;
         short popX   = static_cast<short>(lockX - 4 - popW);
         short valW   = static_cast<short>(popX - 20 - 4);
@@ -1152,7 +1153,7 @@ void DrawInspectorPanel() {
         RGBColor bd2={0x7777,0x7777,0x7777}; RGBForeColor(&bd2); FrameRect(&sAspectLockRect);
         DrawLockIcon(81, static_cast<short>(y+2), sAspectLocked);
         RGBForeColor(&labelClr); PStrC("H", ps); MoveTo(98, static_cast<short>(y+12)); DrawString(ps);
-        DrawNumField(112, static_cast<short>(y+12), static_cast<short>(portRect.right-116), kFieldH, bounds.h, sFieldHRect);
+        DrawNumField(112, static_cast<short>(y+12), static_cast<short>(cRight-116), kFieldH, bounds.h, sFieldHRect);
         y = static_cast<short>(y + 22);
 
         // Fill sizing buttons — only shown when shape lives inside an active layout frame
