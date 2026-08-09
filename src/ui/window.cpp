@@ -685,14 +685,23 @@ static Frame* DeepestFrameAtExcl(Point pt, const std::vector<Frame*>& excl) {
     return result;
 }
 
-// Recursively collect all frames whose bounds intersect (l,t,r,b) in canvas space
+// Recursively collect frames intersecting (l,t,r,b) in canvas space.
+// If the band fully contains a frame, select that frame (not its children).
+// If the band only partially overlaps a frame, recurse into children.
+// A leaf frame (no child frames) is always selected on any intersection.
 static void CollectAllBandFrames(Frame* frm, SInt32 l, SInt32 t, SInt32 r, SInt32 b,
                                   std::vector<Frame*>& out) {
     const Bounds2& bnd = frm->bounds;
-    if (bnd.x < r && (bnd.x + bnd.w) > l && bnd.y < b && (bnd.y + bnd.h) > t)
+    bool intersects = bnd.x < r && (bnd.x + bnd.w) > l && bnd.y < b && (bnd.y + bnd.h) > t;
+    if (!intersects) return;
+    bool contained  = (l <= bnd.x && (bnd.x + bnd.w) <= r &&
+                       t <= bnd.y && (bnd.y + bnd.h) <= b);
+    if (contained || frm->childFrames.empty()) {
         out.push_back(frm);
-    for (auto& cf : frm->childFrames)
-        CollectAllBandFrames(cf.get(), l, t, r, b, out);
+    } else {
+        for (auto& cf : frm->childFrames)
+            CollectAllBandFrames(cf.get(), l, t, r, b, out);
+    }
 }
 
 // Extract a Shape unique_ptr from its current owner (Frame or rootShapes)
@@ -1296,24 +1305,11 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                     band.push_back({ sp.get(), nullptr });
             }
 
-            // Collect frames that intersect the band, at all nesting levels
-            std::vector<Frame*> allBandFrames;
-            for (auto& frm : gDocument->frames)
-                CollectAllBandFrames(frm.get(), selL, selT, selR, selB, allBandFrames);
-
-            // Keep only the deepest frames (drop ancestors when a descendant is also hit)
+            // Collect frames: fully-contained frames selected directly;
+            // partially-overlapped frames recurse into children.
             std::vector<Frame*> bandFrames;
-            for (Frame* f : allBandFrames) {
-                bool isAncestor = false;
-                for (Frame* other : allBandFrames) {
-                    if (other == f) continue;
-                    for (Frame* p = other->parent; p; p = p->parent) {
-                        if (p == f) { isAncestor = true; break; }
-                    }
-                    if (isAncestor) break;
-                }
-                if (!isAncestor) bandFrames.push_back(f);
-            }
+            for (auto& frm : gDocument->frames)
+                CollectAllBandFrames(frm.get(), selL, selT, selR, selB, bandFrames);
 
             if (band.size() == 1) {
                 gSelectedShape = band[0].shape;

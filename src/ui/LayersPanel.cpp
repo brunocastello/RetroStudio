@@ -58,6 +58,17 @@ static void InvalidateLayers() {
 static const short kEyeColW  = 18;  // rightmost N pixels: eye toggle
 static const short kLockColW = 18;  // next N pixels left of eye: lock toggle
 
+// Flat row list rebuilt each draw; used for drag-reorder hit-testing
+struct LayerRow {
+    bool   isFrame;
+    Frame* frame;   // non-null when isFrame
+    Shape* shape;   // non-null when !isFrame
+    Frame* owner;   // parent frame (nullptr = doc root)
+    short  rowTop;  // document-coordinate Y of the row top
+    int    vecIdx;  // index in owner's vector (childFrames or children / frames or rootShapes)
+};
+static std::vector<LayerRow> sLayerRows;
+
 // --------------------------------------------------------------------------
 // Setup
 // --------------------------------------------------------------------------
@@ -202,18 +213,25 @@ static short DrawRow(short y, short indent,
     return static_cast<short>(y + kLayerRowH);
 }
 
-// Recursively draw a frame and all its contents as rows.
-static short DrawFrameRows(const Frame* frame, short y, short indent, const Rect& portRect) {
+// Recursively draw a frame and all its contents as rows; populates sLayerRows.
+static short DrawFrameRows(const Frame* frame, short y, short indent,
+                           const Rect& portRect, int myVecIdx) {
+    sLayerRows.push_back({ true, const_cast<Frame*>(frame), nullptr,
+                           frame->parent, y, myVecIdx });
     bool fsel = (gSelectedFrame == frame && gSelectedShape == nullptr)
              || std::find(gSelectedFrames.begin(), gSelectedFrames.end(), frame) != gSelectedFrames.end();
     y = DrawRow(y, indent, frame->name, fsel, Shape::kRectangle, true,
                 frame->visible, frame->locked, portRect);
 
-    for (auto it = frame->childFrames.rbegin(); it != frame->childFrames.rend(); ++it)
-        y = DrawFrameRows(it->get(), y, static_cast<short>(indent + 10), portRect);
+    int cfIdx = static_cast<int>(frame->childFrames.size()) - 1;
+    for (auto it = frame->childFrames.rbegin(); it != frame->childFrames.rend(); ++it, --cfIdx)
+        y = DrawFrameRows(it->get(), y, static_cast<short>(indent + 10), portRect, cfIdx);
 
-    for (auto it = frame->children.rbegin(); it != frame->children.rend(); ++it) {
+    int chIdx = static_cast<int>(frame->children.size()) - 1;
+    for (auto it = frame->children.rbegin(); it != frame->children.rend(); ++it, --chIdx) {
         const Shape* s = it->get();
+        sLayerRows.push_back({ false, nullptr, const_cast<Shape*>(s),
+                               const_cast<Frame*>(frame), y, chIdx });
         bool ssel = (gSelectedShape == s) ||
                     std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s) != gSelectedShapes.end();
         std::string lbl = s->name;
@@ -265,8 +283,12 @@ void DrawLayersPanel() {
     TextFont(0); TextSize(11);
     short y = 2;
 
-    for (auto it = gDocument->rootShapes.rbegin(); it != gDocument->rootShapes.rend(); ++it) {
+    sLayerRows.clear();
+
+    int rsIdx = static_cast<int>(gDocument->rootShapes.size()) - 1;
+    for (auto it = gDocument->rootShapes.rbegin(); it != gDocument->rootShapes.rend(); ++it, --rsIdx) {
         const Shape* s = it->get();
+        sLayerRows.push_back({ false, nullptr, const_cast<Shape*>(s), nullptr, y, rsIdx });
         bool sel = (gSelectedShape == s && gSelectedFrame == nullptr) ||
                    (gSelectedFrame == nullptr &&
                     std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s) != gSelectedShapes.end());
@@ -275,8 +297,9 @@ void DrawLayersPanel() {
         y = DrawRow(y, 0, lbl, sel, s->GetType(), false, s->visible, s->locked, contentRect);
     }
 
-    for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend(); ++it)
-        y = DrawFrameRows(it->get(), y, 0, contentRect);
+    int fIdx = static_cast<int>(gDocument->frames.size()) - 1;
+    for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend(); ++it, --fIdx)
+        y = DrawFrameRows(it->get(), y, 0, contentRect, fIdx);
 
     gLayersTotalH = y;
 
@@ -388,6 +411,127 @@ static short HitTestFrameRows(Frame* frame, short y, short indent,
         y = static_cast<short>(y + kLayerRowH);
     }
     return y;
+}
+
+// --------------------------------------------------------------------------
+// Layer drag-reorder
+// --------------------------------------------------------------------------
+
+// Track mouse during a drag-reorder operation.  srcIdx is the index of the
+// dragged row in sLayerRows; startDocPt is the click position in document
+// coordinates (v already offset by gLayersScrollY).
+static void TrackLayerDrag(int srcIdx, Point startDocPt) {
+    if (srcIdx < 0 || srcIdx >= (int)sLayerRows.size()) return;
+    const LayerRow src = sLayerRows[srcIdx]; // copy — sLayerRows may be rebuilt later
+
+    SetPortWindowPort(gLayersWindow);
+    Rect portRect;
+    GetWindowPortBounds(gLayersWindow, &portRect);
+    short panelW = static_cast<short>(portRect.right - kLayersSBW);
+
+    // Collect sibling row indices (same owner, same type = same vector)
+    std::vector<int> sibIdxs;
+    for (int i = 0; i < (int)sLayerRows.size(); ++i) {
+        const LayerRow& r = sLayerRows[i];
+        if (r.owner == src.owner && r.isFrame == src.isFrame)
+            sibIdxs.push_back(i);
+    }
+    int N = static_cast<int>(sibIdxs.size());
+    if (N < 2) return; // nothing to reorder
+
+    short prevWinY = -1;
+    bool  isDragging = false;
+    int   lastGapIdx = -2; // sentinel "unknown"
+
+    while (StillDown()) {
+        Point rawPt;
+        GetMouse(&rawPt);
+        short docV = static_cast<short>(rawPt.v + gLayersScrollY);
+        short dy   = static_cast<short>(docV - startDocPt.v);
+        if (!isDragging && (dy > 4 || dy < -4)) isDragging = true;
+        if (!isDragging) continue;
+
+        // Find which gap the mouse is nearest to (among siblings)
+        int gapIdx = N;
+        for (int i = 0; i < N; ++i) {
+            short midY = static_cast<short>(sLayerRows[sibIdxs[i]].rowTop + kLayerRowH / 2);
+            if (docV < midY) { gapIdx = i; break; }
+        }
+        if (gapIdx == lastGapIdx) continue;
+        lastGapIdx = gapIdx;
+
+        // Compute indicator Y in document coordinates, then convert to window coords
+        short indicDocY;
+        if (gapIdx <= 0)
+            indicDocY = sLayerRows[sibIdxs[0]].rowTop;
+        else if (gapIdx >= N)
+            indicDocY = static_cast<short>(sLayerRows[sibIdxs[N-1]].rowTop + kLayerRowH);
+        else
+            indicDocY = sLayerRows[sibIdxs[gapIdx]].rowTop;
+        short newWinY = static_cast<short>(indicDocY - gLayersScrollY);
+
+        Pattern blk; memset(&blk, 0xFF, sizeof(blk));
+
+        // Erase previous indicator
+        if (prevWinY >= 0) {
+            PenMode(patXor); PenSize(2, 2); PenPat(&blk);
+            MoveTo(4, prevWinY); LineTo(static_cast<short>(panelW - 4), prevWinY);
+        }
+        // Draw new indicator
+        PenMode(patXor); PenSize(2, 2); PenPat(&blk);
+        MoveTo(4, newWinY); LineTo(static_cast<short>(panelW - 4), newWinY);
+        PenNormal();
+
+        prevWinY = newWinY;
+    }
+
+    // Erase final indicator
+    if (prevWinY >= 0) {
+        Pattern blk; memset(&blk, 0xFF, sizeof(blk));
+        PenMode(patXor); PenSize(2, 2); PenPat(&blk);
+        MoveTo(4, prevWinY); LineTo(static_cast<short>(portRect.right - kLayersSBW - 4), prevWinY);
+        PenNormal();
+    }
+
+    if (!isDragging || lastGapIdx < 0) return;
+
+    // Compute final insertion position in the owner vector.
+    // Display is reversed from vector: display[0] = vec[N-1], display[N-1] = vec[0].
+    // "Insert before display gap gapIdx" = insert after vec[gapIdx] (from top) ...
+    // Concretely: gapIdx==0 → insert at highest z-order (append, vecIdx=N-1 after extraction)
+    //             gapIdx==N → insert at lowest  z-order (prepend, vecIdx=0)
+    //             gapIdx==k → insert just below display[k-1] = just above display[k]
+    //                         = vecIdx of display[k].vecIdx + 1, adjusted for extraction
+
+    int insertAt;
+    if (lastGapIdx == 0) {
+        insertAt = N - 1; // highest z-order after extraction (N items → N-1 max index)
+    } else if (lastGapIdx >= N) {
+        insertAt = 0;
+    } else {
+        int targetVecIdx = sLayerRows[sibIdxs[lastGapIdx]].vecIdx;
+        insertAt = targetVecIdx + 1;
+        if (src.vecIdx < targetVecIdx) insertAt--; // shift after extraction
+    }
+    if (insertAt < 0) insertAt = 0;
+    if (insertAt >= N) insertAt = N - 1;
+    if (insertAt == src.vecIdx) return; // no change
+
+    PushUndo();
+    if (src.isFrame) {
+        auto& vec = src.owner ? src.owner->childFrames : gDocument->frames;
+        auto moved = std::move(vec[src.vecIdx]);
+        vec.erase(vec.begin() + src.vecIdx);
+        vec.insert(vec.begin() + insertAt, std::move(moved));
+    } else {
+        auto& vec = src.owner ? src.owner->children : gDocument->rootShapes;
+        auto moved = std::move(vec[src.vecIdx]);
+        vec.erase(vec.begin() + src.vecIdx);
+        vec.insert(vec.begin() + insertAt, std::move(moved));
+    }
+
+    InvalidateLayers(); InvalidateMain();
+    RefreshInspector();
 }
 
 void HandleLayersPanelClick(Point localPt, UInt16 modifiers) {
@@ -509,6 +653,19 @@ check_dbl: {
                 RefreshInspector();
             }
             sLastWhen = 0;
+        } else if (!eyeZone && !lockZone && !(modifiers & shiftKey)) {
+            // Drag-reorder: find the just-selected item in sLayerRows and track
+            int srcIdx = -1;
+            for (int i = 0; i < (int)sLayerRows.size(); ++i) {
+                const LayerRow& r = sLayerRows[i];
+                if (r.isFrame && r.frame == gSelectedFrame && gSelectedShape == nullptr) {
+                    srcIdx = i; break;
+                }
+                if (!r.isFrame && r.shape == gSelectedShape) {
+                    srcIdx = i; break;
+                }
+            }
+            if (srcIdx >= 0) TrackLayerDrag(srcIdx, localPt);
         }
     }
 }

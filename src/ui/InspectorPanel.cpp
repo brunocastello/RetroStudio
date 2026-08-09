@@ -510,36 +510,89 @@ void DrawInspectorPanel() {
         return;
     }
 
-    // Multi-frame selection: show count + aggregate bbox
+    // Multi-frame selection: editable properties for all selected frames
     if (gSelectedFrames.size() > 1) {
         RGBColor labelClr2 = { 0x6666, 0x6666, 0x6666 };
         RGBColor valueClr2 = { 0x1111, 0x1111, 0x1111 };
+        RGBColor hint2     = { 0x9999, 0x9999, 0x9999 };
         Str255 ps2;
-        RGBForeColor(&labelClr2); TextSize(9);
-        PStrC("NAME", ps2); MoveTo(4, 12); DrawString(ps2);
+        short y2 = 4;
+
+        // NAME
+        y2 = DrawSectionHeader(y2, "NAME", portRect);
+        y2 = static_cast<short>(y2 + 6);
         std::string countLabel = numStr(static_cast<SInt32>(gSelectedFrames.size())) + " frames";
         RGBForeColor(&valueClr2); TextSize(11);
-        PStr(countLabel, ps2); MoveTo(4, 26); DrawString(ps2);
-        SInt32 minX = gSelectedFrames[0]->bounds.x, minY = gSelectedFrames[0]->bounds.y;
-        SInt32 maxX = minX + gSelectedFrames[0]->bounds.w, maxY = minY + gSelectedFrames[0]->bounds.h;
-        for (size_t i = 1; i < gSelectedFrames.size(); ++i) {
-            const Bounds2& b = gSelectedFrames[i]->bounds;
-            if (b.x < minX) minX = b.x;
-            if (b.y < minY) minY = b.y;
-            if (b.x + b.w > maxX) maxX = b.x + b.w;
-            if (b.y + b.h > maxY) maxY = b.y + b.h;
+        PStr(countLabel, ps2); MoveTo(6, static_cast<short>(y2 + 12)); DrawString(ps2);
+        y2 = static_cast<short>(y2 + 22);
+
+        // FILL — uses gSelectedFrame (the last selected frame) as reference color
+        y2 = DrawSectionHeader(y2, "FILL", portRect);
+        y2 = static_cast<short>(y2 + 6);
+        RGBColor mfc = gSelectedFrame->backgroundColor;
+        sFillSwatchRect = { y2, 6, static_cast<short>(y2 + 18), 42 };
+        RGBForeColor(&mfc); PaintRect(&sFillSwatchRect);
+        { RGBColor swBd2 = { 0x7777, 0x7777, 0x7777 }; RGBForeColor(&swBd2); FrameRect(&sFillSwatchRect); }
+        RGBForeColor(&hint2); TextSize(9);
+        PStrC("Click to change", ps2); MoveTo(48, static_cast<short>(y2 + 13)); DrawString(ps2);
+        TextSize(11);
+        y2 = static_cast<short>(y2 + 26);
+
+        // STROKE
+        y2 = DrawSectionHeader(y2, "STROKE", portRect);
+        y2 = static_cast<short>(y2 + 5);
+        bool mhs = gSelectedFrame->hasStroke;
+        sStrokeToggleRect = { static_cast<short>(y2+2), 5, static_cast<short>(y2+14), 17 };
+        { RGBColor cbBd2 = { 0x7777, 0x7777, 0x7777 }; RGBForeColor(&cbBd2); FrameRect(&sStrokeToggleRect); }
+        if (mhs) {
+            RGBColor chk = { 0x3333, 0x6666, 0xCCCC }; RGBForeColor(&chk);
+            Rect inner2 = { static_cast<short>(y2+4), 7, static_cast<short>(y2+12), 15 };
+            PaintRect(&inner2);
+            sStrokeSwatchRect = { y2, 22, static_cast<short>(y2+18), 58 };
+            RGBColor msc = gSelectedFrame->strokeColor;
+            RGBForeColor(&msc); PaintRect(&sStrokeSwatchRect);
+            { RGBColor cbBd2 = { 0x7777, 0x7777, 0x7777 }; RGBForeColor(&cbBd2); FrameRect(&sStrokeSwatchRect); }
+            RGBForeColor(&labelClr2); TextSize(9);
+            PStrC("W", ps2); MoveTo(64, static_cast<short>(y2+13)); DrawString(ps2); TextSize(11);
+            DrawNumField(78, static_cast<short>(y2+13), 26, kFieldStrokeWidth,
+                         static_cast<SInt32>(gSelectedFrame->strokeWidth), sFieldSwRect);
         }
-        short y2 = 36;
+        y2 = static_cast<short>(y2 + 24);
+
+        // POSITION — X/Y show gSelectedFrame; editing applies delta to all
+        y2 = DrawSectionHeader(y2, "POSITION", portRect);
+        y2 = static_cast<short>(y2 + 5);
         RGBForeColor(&labelClr2); TextSize(9);
-        PStrC("SIZE", ps2); MoveTo(4, static_cast<short>(y2+8)); DrawString(ps2);
-        y2 = static_cast<short>(y2 + 12);
-        std::string xs = "X " + numStr(minX) + "   Y " + numStr(minY);
-        std::string ws = "W " + numStr(maxX-minX) + "   H " + numStr(maxY-minY);
-        RGBForeColor(&valueClr2); TextSize(11);
-        PStr(xs, ps2); MoveTo(4, static_cast<short>(y2+10)); DrawString(ps2);
-        PStr(ws, ps2); MoveTo(4, static_cast<short>(y2+24)); DrawString(ps2);
-        TextSize(12); PenNormal(); RGBForeColor(&black); RGBBackColor(&white);
+        PStrC("X", ps2); MoveTo(6,  static_cast<short>(y2+12)); DrawString(ps2);
+        DrawNumField(20, static_cast<short>(y2+12), 64, kFieldX,
+                     gSelectedFrame->bounds.x, sFieldXRect);
+        PStrC("Y", ps2); MoveTo(92, static_cast<short>(y2+12)); DrawString(ps2);
+        DrawNumField(106, static_cast<short>(y2+12), 62, kFieldY,
+                     gSelectedFrame->bounds.y, sFieldYRect);
+        y2 = static_cast<short>(y2 + 22);
+
+        // SIZE — W/H set the same value on all frames
+        y2 = DrawSectionHeader(y2, "SIZE", portRect);
+        y2 = static_cast<short>(y2 + 5);
+        RGBForeColor(&labelClr2); TextSize(9);
+        PStrC("W", ps2); MoveTo(6,  static_cast<short>(y2+12)); DrawString(ps2);
+        DrawNumField(20, static_cast<short>(y2+12), 56, kFieldW,
+                     gSelectedFrame->bounds.w, sFieldWRect);
+        PStrC("H", ps2); MoveTo(86, static_cast<short>(y2+12)); DrawString(ps2);
+        DrawNumField(100, static_cast<short>(y2+12), static_cast<short>(cRight - 104), kFieldH,
+                     gSelectedFrame->bounds.h, sFieldHRect);
+        y2 = static_cast<short>(y2 + 22);
+
+        gInspectorTotalH = y2;
         SetOrigin(0, 0);
+        if (gInspectorScrollCtrl) {
+            short iMax2 = (gInspectorTotalH > panelH) ? static_cast<short>(gInspectorTotalH - panelH) : 0;
+            SetControlMaximum(gInspectorScrollCtrl, iMax2);
+            SetControlValue(gInspectorScrollCtrl, gInspectorScrollY);
+            HiliteControl(gInspectorScrollCtrl, (iMax2 > 0) ? 0 : 255);
+            DrawControls(gInspectorWindow);
+        }
+        TextSize(12); PenNormal(); RGBForeColor(&black); RGBBackColor(&white);
         return;
     }
 
@@ -1428,7 +1481,8 @@ void ApplyInspectorEdit() {
             val = val * 10 + (sEditBuf[i] - '0');
     if (neg) val = -val;
 
-    const bool applyMulti = (gSelectedShapes.size() > 1);
+    const bool applyMulti      = (gSelectedShapes.size() > 1);
+    const bool applyMultiFrame = (gSelectedFrames.size() > 1);
 
     Bounds2* b  = gSelectedShape ? &gSelectedShape->bounds
                                  : (gSelectedFrame ? &gSelectedFrame->bounds : nullptr);
@@ -1440,7 +1494,34 @@ void ApplyInspectorEdit() {
     EditField appliedField = sActiveField;
 
     bool changed = false;
-    if (b) {
+
+    // Multi-frame edits: apply delta for X/Y, set value for W/H
+    if (applyMultiFrame && b) {
+        switch (sActiveField) {
+            case kFieldX: {
+                SInt32 dx = val - b->x;
+                if (dx != 0) { PushUndo(); for (Frame* f : gSelectedFrames) f->bounds.x += dx; changed = true; }
+            } break;
+            case kFieldY: {
+                SInt32 dy = val - b->y;
+                if (dy != 0) { PushUndo(); for (Frame* f : gSelectedFrames) f->bounds.y += dy; changed = true; }
+            } break;
+            case kFieldW:
+                if (val < 1) val = 1;
+                if (val != b->w) { PushUndo(); for (Frame* f : gSelectedFrames) f->bounds.w = val; changed = true; }
+                break;
+            case kFieldH:
+                if (val < 1) val = 1;
+                if (val != b->h) { PushUndo(); for (Frame* f : gSelectedFrames) f->bounds.h = val; changed = true; }
+                break;
+            default: break;
+        }
+        if (sActiveField == kFieldStrokeWidth) {
+            if (val < 1) val = 1; if (val > 20) val = 20;
+            UInt16 nv = static_cast<UInt16>(val);
+            if (sw && nv != *sw) { PushUndo(); for (Frame* f : gSelectedFrames) f->strokeWidth = nv; changed = true; }
+        }
+    } else if (b) {
         switch (sActiveField) {
             case kFieldX:
                 if (val != b->x) {
@@ -1464,13 +1545,11 @@ void ApplyInspectorEdit() {
                 if (val < 1) val = 1;
                 if (!applyMulti && gSelectedFrame &&
                         gSelectedFrame->widthSizing != SizingMode::Fixed) {
-                    // Typing a value auto-switches frame from Hug/Fill → Fixed
                     PushUndo();
                     gSelectedFrame->widthSizing = SizingMode::Fixed;
                     b->w = val;
                     changed = true;
                 } else if (!applyMulti && gSelectedShape && gSelectedShape->wSizing != 0) {
-                    // Typing a value auto-switches shape from Fill → Fixed
                     PushUndo();
                     gSelectedShape->wSizing = 0;
                     b->w = val;
@@ -1485,13 +1564,11 @@ void ApplyInspectorEdit() {
                 if (val < 1) val = 1;
                 if (!applyMulti && gSelectedFrame &&
                         gSelectedFrame->heightSizing != SizingMode::Fixed) {
-                    // Typing a value auto-switches frame from Hug/Fill → Fixed
                     PushUndo();
                     gSelectedFrame->heightSizing = SizingMode::Fixed;
                     b->h = val;
                     changed = true;
                 } else if (!applyMulti && gSelectedShape && gSelectedShape->hSizing != 0) {
-                    // Typing a value auto-switches shape from Fill → Fixed
                     PushUndo();
                     gSelectedShape->hSizing = 0;
                     b->h = val;
@@ -1506,7 +1583,7 @@ void ApplyInspectorEdit() {
         }
     }
     // Aspect ratio lock: single select only
-    if (!applyMulti && sAspectLocked && changed && b && origW > 0 && origH > 0) {
+    if (!applyMulti && !applyMultiFrame && sAspectLocked && changed && b && origW > 0 && origH > 0) {
         if (appliedField == kFieldW && val > 0) {
             b->h = val * origH / origW;
             if (b->h < 1) b->h = 1;
@@ -1515,7 +1592,7 @@ void ApplyInspectorEdit() {
             if (b->w < 1) b->w = 1;
         }
     }
-    if (sActiveField == kFieldStrokeWidth) {
+    if (!applyMultiFrame && sActiveField == kFieldStrokeWidth) {
         if (val < 1) val = 1; if (val > 20) val = 20;
         UInt16 nv = static_cast<UInt16>(val);
         if (applyMulti) {
@@ -1636,10 +1713,16 @@ void HandleInspectorClick(Point localPt) {
     // Adjust click y for scroll offset (hit-test rects are in document coordinates)
     localPt.v += gInspectorScrollY;
 
+    const bool isMultiFrame = (gSelectedFrames.size() > 1);
+
     // Locked objects are read-only — no inspector edits allowed
-    bool isLocked = gSelectedShape ? gSelectedShape->locked
-                                   : gSelectedFrame->locked;
-    if (isLocked) return;
+    if (isMultiFrame) {
+        for (Frame* f : gSelectedFrames) if (f->locked) return;
+    } else {
+        bool isLocked = gSelectedShape ? gSelectedShape->locked
+                                       : gSelectedFrame->locked;
+        if (isLocked) return;
+    }
 
     // Multi-select: refuse edit if any shape is locked
     const bool isMulti = (gSelectedShapes.size() > 1);
@@ -1665,7 +1748,8 @@ void HandleInspectorClick(Point localPt) {
 #endif
         if (changed) {
             PushUndo();
-            if (isMulti) { for (Shape* s : gSelectedShapes) s->fillColor = newColor; }
+            if (isMultiFrame) { for (Frame* f : gSelectedFrames) f->backgroundColor = newColor; }
+            else if (isMulti) { for (Shape* s : gSelectedShapes) s->fillColor = newColor; }
             else if (gSelectedShape) gSelectedShape->fillColor = newColor;
             else                gSelectedFrame->backgroundColor = newColor;
             InvalidateInspector();
@@ -1677,7 +1761,10 @@ void HandleInspectorClick(Point localPt) {
     // Stroke toggle
     if (PtInRect(localPt, &sStrokeToggleRect)) {
         PushUndo();
-        if (isMulti) {
+        if (isMultiFrame) {
+            bool nv = !gSelectedFrame->hasStroke;
+            for (Frame* f : gSelectedFrames) f->hasStroke = nv;
+        } else if (isMulti) {
             bool newStroke = !gSelectedShapes[0]->hasStroke;
             for (Shape* s : gSelectedShapes) s->hasStroke = newStroke;
         } else if (gSelectedShape) gSelectedShape->hasStroke = !gSelectedShape->hasStroke;
@@ -1702,7 +1789,8 @@ void HandleInspectorClick(Point localPt) {
 #endif
         if (changed) {
             PushUndo();
-            if (isMulti) { for (Shape* s : gSelectedShapes) { s->strokeColor = newColor; s->hasStroke = true; } }
+            if (isMultiFrame) { for (Frame* f : gSelectedFrames) { f->strokeColor = newColor; f->hasStroke = true; } }
+            else if (isMulti) { for (Shape* s : gSelectedShapes) { s->strokeColor = newColor; s->hasStroke = true; } }
             else if (gSelectedShape) gSelectedShape->strokeColor = newColor;
             else                gSelectedFrame->strokeColor = newColor;
             InvalidateInspector();
@@ -1717,7 +1805,8 @@ void HandleInspectorClick(Point localPt) {
         if (sw > 1) {
             PushUndo();
             UInt16 nv = static_cast<UInt16>(sw - 1);
-            if (isMulti) { for (Shape* s : gSelectedShapes) if (s->strokeWidth > 1) s->strokeWidth = nv; }
+            if (isMultiFrame) { for (Frame* f : gSelectedFrames) if (f->strokeWidth > 1) f->strokeWidth = nv; }
+            else if (isMulti) { for (Shape* s : gSelectedShapes) if (s->strokeWidth > 1) s->strokeWidth = nv; }
             else if (gSelectedShape) gSelectedShape->strokeWidth = nv;
             else                gSelectedFrame->strokeWidth = nv;
             InvalidateInspector();
@@ -1732,7 +1821,8 @@ void HandleInspectorClick(Point localPt) {
         if (sw < 20) {
             PushUndo();
             UInt16 nv = static_cast<UInt16>(sw + 1);
-            if (isMulti) { for (Shape* s : gSelectedShapes) if (s->strokeWidth < 20) s->strokeWidth = nv; }
+            if (isMultiFrame) { for (Frame* f : gSelectedFrames) if (f->strokeWidth < 20) f->strokeWidth = nv; }
+            else if (isMulti) { for (Shape* s : gSelectedShapes) if (s->strokeWidth < 20) s->strokeWidth = nv; }
             else if (gSelectedShape) gSelectedShape->strokeWidth = nv;
             else                gSelectedFrame->strokeWidth = nv;
             InvalidateInspector();
