@@ -6,6 +6,33 @@
 
 WindowRef gLayersWindow = nullptr;
 
+static ControlRef        gLayersScrollCtrl = nullptr;
+static short             gLayersScrollY    = 0;  // current scroll offset in pixels
+static short             gLayersTotalH     = 0;  // total content height after last draw
+static ControlActionUPP  gLayersScrollUPP  = nullptr;
+static const short       kLayersSBW        = 16; // scroll bar width
+
+static void InvalidateLayers();  // forward-declare so the action proc can call it
+
+static void LayersScrollAction(ControlRef ctrl, ControlPartCode part) {
+    short v  = GetControlValue(ctrl);
+    short mn = GetControlMinimum(ctrl);
+    short mx = GetControlMaximum(ctrl);
+    short delta = 0;
+    if (part == kControlUpButtonPart)   delta = -kLayerRowH;
+    if (part == kControlDownButtonPart) delta = +kLayerRowH;
+    if (part == kControlPageUpPart)     delta = -60;
+    if (part == kControlPageDownPart)   delta = +60;
+    if (delta != 0) {
+        v += delta;
+        if (v < mn) v = mn;
+        if (v > mx) v = mx;
+        SetControlValue(ctrl, v);
+        gLayersScrollY = v;
+        InvalidateLayers();
+    }
+}
+
 // --------------------------------------------------------------------------
 // Helpers
 // --------------------------------------------------------------------------
@@ -47,7 +74,13 @@ void SetupLayersPanel() {
     pr.bottom = static_cast<short>(pr.top + kLayersPanelHeight);
 
     gLayersWindow = NewCWindow(nullptr, &pr, "\pLayers", true,
-                               noGrowDocProc, (WindowRef)-1L, true, 0);
+                               documentProc, (WindowRef)-1L, true, 0);
+
+    // Vertical scroll bar at right edge
+    Rect sbRect = {0, static_cast<short>(kLayersPanelWidth - kLayersSBW),
+                   kLayersPanelHeight, kLayersPanelWidth};
+    gLayersScrollCtrl = NewControl(gLayersWindow, &sbRect, "\p", true, 0, 0, 0, scrollBarProc, 0);
+    gLayersScrollUPP  = NewControlActionUPP(LayersScrollAction);
 }
 
 // --------------------------------------------------------------------------
@@ -194,12 +227,33 @@ void DrawLayersPanel() {
 
     Rect portRect;
     GetWindowPortBounds(gLayersWindow, &portRect);
+    short panelW = portRect.right;
+    short panelH = portRect.bottom;
 
+    // Refit scroll bar to current window dimensions
+    if (gLayersScrollCtrl) {
+        MoveControl(gLayersScrollCtrl, static_cast<short>(panelW - kLayersSBW), 0);
+        SizeControl(gLayersScrollCtrl, kLayersSBW, panelH);
+    }
+
+    // Clamp scroll offset
+    short maxScroll = (gLayersTotalH > panelH) ? static_cast<short>(gLayersTotalH - panelH) : 0;
+    if (gLayersScrollY > maxScroll) gLayersScrollY = maxScroll;
+    if (gLayersScrollY < 0)         gLayersScrollY = 0;
+
+    // Clear visible window area (window coords, before SetOrigin)
     RGBColor bg = { 0xFFFF, 0xFFFF, 0xFFFF };
     RGBBackColor(&bg);
     RGBColor black = { 0, 0, 0 };
     RGBForeColor(&black);
     EraseRect(&portRect);
+
+    // Content rect: exclude the scroll bar strip on the right
+    Rect contentRect = portRect;
+    contentRect.right = static_cast<short>(panelW - kLayersSBW);
+
+    // Shift drawing coordinate system so rows scroll correctly
+    SetOrigin(0, gLayersScrollY);
 
     TextFont(0); TextSize(11);
     short y = 2;
@@ -211,11 +265,25 @@ void DrawLayersPanel() {
                     std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s) != gSelectedShapes.end());
         std::string lbl = s->name;
         if (lbl.empty()) lbl = (s->GetType() == Shape::kEllipse) ? "Ellipse" : "Rectangle";
-        y = DrawRow(y, 0, lbl, sel, s->GetType(), false, s->visible, s->locked, portRect);
+        y = DrawRow(y, 0, lbl, sel, s->GetType(), false, s->visible, s->locked, contentRect);
     }
 
     for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend(); ++it)
-        y = DrawFrameRows(it->get(), y, 0, portRect);
+        y = DrawFrameRows(it->get(), y, 0, contentRect);
+
+    gLayersTotalH = y;
+
+    // Restore origin before drawing controls
+    SetOrigin(0, 0);
+
+    // Update and redraw scroll bar
+    if (gLayersScrollCtrl) {
+        maxScroll = (gLayersTotalH > panelH) ? static_cast<short>(gLayersTotalH - panelH) : 0;
+        SetControlMaximum(gLayersScrollCtrl, maxScroll);
+        SetControlValue(gLayersScrollCtrl, gLayersScrollY);
+        HiliteControl(gLayersScrollCtrl, (maxScroll > 0) ? 0 : 255);
+        DrawControls(gLayersWindow);
+    }
 
     TextSize(12); PenNormal();
     RGBColor white = { 0xFFFF, 0xFFFF, 0xFFFF };
@@ -303,8 +371,27 @@ void HandleLayersPanelClick(Point localPt, UInt16 modifiers) {
     Rect portRect;
     GetWindowPortBounds(gLayersWindow, &portRect);
 
-    bool eyeZone  = (localPt.h >= portRect.right - kEyeColW);
-    bool lockZone = !eyeZone && (localPt.h >= portRect.right - kEyeColW - kLockColW);
+    // Check scroll bar before anything else (it lives in the rightmost strip)
+    if (gLayersScrollCtrl) {
+        ControlRef hitCtrl;
+        short ctrlPart = FindControl(localPt, gLayersWindow, &hitCtrl);
+        if (ctrlPart && hitCtrl == gLayersScrollCtrl) {
+            TrackControl(hitCtrl, localPt, gLayersScrollUPP);
+            gLayersScrollY = GetControlValue(hitCtrl);  // sync for thumb drag
+            InvalidateLayers();
+            return;
+        }
+    }
+
+    // Adjust click y for scroll offset so hit-testing uses document coordinates
+    localPt.v += gLayersScrollY;
+
+    // Content rect excludes scroll bar strip
+    Rect contentRect = portRect;
+    contentRect.right = static_cast<short>(portRect.right - kLayersSBW);
+
+    bool eyeZone  = (localPt.h >= contentRect.right - kEyeColW);
+    bool lockZone = !eyeZone && (localPt.h >= contentRect.right - kEyeColW - kLockColW);
 
     // Double-click detection (only meaningful for selection clicks, not eye)
     static UInt32  sLastWhen  = 0;
@@ -317,7 +404,7 @@ void HandleLayersPanelClick(Point localPt, UInt16 modifiers) {
     for (auto it = gDocument->rootShapes.rbegin(); it != gDocument->rootShapes.rend(); ++it) {
         Shape* s = it->get();
         Rect row = { y, 2, static_cast<short>(y + kLayerRowH - 1),
-                     static_cast<short>(portRect.right - 2) };
+                     static_cast<short>(contentRect.right - 2) };
         if (PtInRect(localPt, &row)) {
             if (eyeZone) {
                 PushUndo(); s->visible = !s->visible;
@@ -353,7 +440,7 @@ void HandleLayersPanelClick(Point localPt, UInt16 modifiers) {
 
     // Top-level frames
     for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend(); ++it) {
-        y = HitTestFrameRows(it->get(), y, 0, localPt, portRect, eyeZone, lockZone, modifiers);
+        y = HitTestFrameRows(it->get(), y, 0, localPt, contentRect, eyeZone, lockZone, modifiers);
         if (y == -1) {
             if (eyeZone) return;
             goto check_dbl;
@@ -381,7 +468,9 @@ check_dbl: {
                 ? &gSelectedShape->name
                 : &gSelectedFrame->name;
 
-            Point globalPt = localPt;
+            // localPt is in document coords (v adjusted by +gLayersScrollY);
+            // convert back to window-local before GlobalToLocal
+            Point globalPt = { static_cast<short>(localPt.v - gLayersScrollY), localPt.h };
             SetPortWindowPort(gLayersWindow);
             LocalToGlobal(&globalPt);
 

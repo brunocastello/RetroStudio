@@ -1262,7 +1262,11 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
 // --------------------------------------------------------------------------
 
 void HandleWindowGrow(WindowRef win, Point where) {
-    Rect c = { 300, 400, 2000, 4000 };
+    Rect c;
+    if (win == gLayersWindow || win == gInspectorWindow)
+        c = { 80, 130, 2000, 600 };   // panels: small minimum, generous maximum
+    else
+        c = { 300, 400, 2000, 4000 }; // main canvas
     long sz = GrowWindow(win, where, &c);
     if (!sz) return;
     SizeWindow(win, static_cast<SInt16>(sz & 0xFFFF),

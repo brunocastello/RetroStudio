@@ -16,6 +16,33 @@
 
 WindowRef gInspectorWindow = nullptr;
 
+static ControlRef        gInspectorScrollCtrl = nullptr;
+static short             gInspectorScrollY    = 0;
+static short             gInspectorTotalH     = 0;
+static ControlActionUPP  gInspectorScrollUPP  = nullptr;
+static const short       kInspSBW             = 16;
+
+static void InvalidateInspector();  // forward-declare for the action proc
+
+static void InspectorScrollAction(ControlRef ctrl, ControlPartCode part) {
+    short v  = GetControlValue(ctrl);
+    short mn = GetControlMinimum(ctrl);
+    short mx = GetControlMaximum(ctrl);
+    short delta = 0;
+    if (part == kControlUpButtonPart)   delta = -16;
+    if (part == kControlDownButtonPart) delta = +16;
+    if (part == kControlPageUpPart)     delta = -80;
+    if (part == kControlPageDownPart)   delta = +80;
+    if (delta != 0) {
+        v += delta;
+        if (v < mn) v = mn;
+        if (v > mx) v = mx;
+        SetControlValue(ctrl, v);
+        gInspectorScrollY = v;
+        InvalidateInspector();
+    }
+}
+
 // Hit-test rects — rebuilt every draw; {0,0,0,0} = not clickable this frame
 static Rect sFillSwatchRect      = {0, 0, 0, 0};
 static Rect sStrokeToggleRect    = {0, 0, 0, 0};
@@ -408,7 +435,11 @@ void SetupInspectorPanel() {
     pr.bottom = static_cast<short>(pr.top + 400);
 
     gInspectorWindow = NewCWindow(nullptr, &pr, "\pInspector", true,
-                                  noGrowDocProc, (WindowRef)-1L, true, 0);
+                                  documentProc, (WindowRef)-1L, true, 0);
+
+    Rect sbRect = {0, static_cast<short>(kInspectorWidth - kInspSBW), 400, kInspectorWidth};
+    gInspectorScrollCtrl = NewControl(gInspectorWindow, &sbRect, "\p", true, 0, 0, 0, scrollBarProc, 0);
+    gInspectorScrollUPP  = NewControlActionUPP(InspectorScrollAction);
 }
 
 // --------------------------------------------------------------------------
@@ -421,10 +452,28 @@ void DrawInspectorPanel() {
     SetPortWindowPort(gInspectorWindow);
 
     Rect portRect; GetWindowPortBounds(gInspectorWindow, &portRect);
+    short panelW = portRect.right;
+    short panelH = portRect.bottom;
+
+    // Refit scroll bar to current window dimensions
+    if (gInspectorScrollCtrl) {
+        MoveControl(gInspectorScrollCtrl, static_cast<short>(panelW - kInspSBW), 0);
+        SizeControl(gInspectorScrollCtrl, kInspSBW, panelH);
+    }
+
+    // Clamp scroll
+    short inspMax = (gInspectorTotalH > panelH) ? static_cast<short>(gInspectorTotalH - panelH) : 0;
+    if (gInspectorScrollY > inspMax) gInspectorScrollY = inspMax;
+    if (gInspectorScrollY < 0)       gInspectorScrollY = 0;
+
     RGBColor white = { 0xFFFF, 0xFFFF, 0xFFFF };
     RGBColor black = { 0, 0, 0 };
     RGBBackColor(&white); RGBForeColor(&black);
-    EraseRect(&portRect);
+    EraseRect(&portRect);  // clear in window coords before SetOrigin
+
+    // Shift drawing for scroll
+    SetOrigin(0, gInspectorScrollY);
+
     TextFont(0); TextSize(11);
 
     // Reset all hit-test rects each frame
@@ -445,6 +494,7 @@ void DrawInspectorPanel() {
     sLayoutCounterGapRect = sLayoutCounterGapModeRect = {0,0,0,0};
 
     if (!gSelectedFrame && !gSelectedShape) {
+        SetOrigin(0, 0);  // restore before drawing at fixed positions
         RGBColor gray = { 0x9999, 0x9999, 0x9999 }; RGBForeColor(&gray); TextSize(10);
         Str255 ps;
         PStrC("Select an object", ps);       MoveTo(8, 28); DrawString(ps);
@@ -489,6 +539,7 @@ void DrawInspectorPanel() {
             PStr(xs, ps2); MoveTo(4, static_cast<short>(y2+10)); DrawString(ps2);
             PStr(ws, ps2); MoveTo(4, static_cast<short>(y2+24)); DrawString(ps2);
             TextSize(12); PenNormal(); RGBForeColor(&black); RGBBackColor(&white);
+            SetOrigin(0, 0);
             return;
         }
         // Same type: fall through to full inspector (objName overridden below)
@@ -1059,31 +1110,17 @@ void DrawInspectorPanel() {
         short valW   = static_cast<short>(popX - 20 - 4);
         short yStart = y;
 
-        // W row
-        bool wAuto = (gSelectedFrame->widthSizing != SizingMode::Fixed);
+        // W row — always editable; typing auto-switches to Fixed
         RGBForeColor(&labelClr); PStrC("W", ps); MoveTo(6, static_cast<short>(y+13)); DrawString(ps);
-        if (wAuto) {
-            sFieldWRect = {0,0,0,0};
-            RGBColor gc={0x9999,0x9999,0x9999}; RGBForeColor(&gc);
-            PStr(numStr(bounds.w), ps); MoveTo(20, static_cast<short>(y+13)); DrawString(ps);
-        } else {
-            DrawNumField(20, static_cast<short>(y+13), valW, kFieldW, bounds.w, sFieldWRect);
-        }
+        DrawNumField(20, static_cast<short>(y+13), valW, kFieldW, bounds.w, sFieldWRect);
         const char* wSizName = (gSelectedFrame->widthSizing == SizingMode::Hug)  ? "Hug"
                              : (gSelectedFrame->widthSizing == SizingMode::Fill) ? "Fill" : "Fixed";
         DrawPlatinumBtn(popX, y, popW, 18, wSizName, sWidthSizingPopupRect);
         y = static_cast<short>(y + 22);
 
-        // H row
-        bool hAuto = (gSelectedFrame->heightSizing != SizingMode::Fixed);
+        // H row — always editable; typing auto-switches to Fixed
         RGBForeColor(&labelClr); PStrC("H", ps); MoveTo(6, static_cast<short>(y+13)); DrawString(ps);
-        if (hAuto) {
-            sFieldHRect = {0,0,0,0};
-            RGBColor gc={0x9999,0x9999,0x9999}; RGBForeColor(&gc);
-            PStr(numStr(bounds.h), ps); MoveTo(20, static_cast<short>(y+13)); DrawString(ps);
-        } else {
-            DrawNumField(20, static_cast<short>(y+13), valW, kFieldH, bounds.h, sFieldHRect);
-        }
+        DrawNumField(20, static_cast<short>(y+13), valW, kFieldH, bounds.h, sFieldHRect);
         const char* hSizName = (gSelectedFrame->heightSizing == SizingMode::Hug)  ? "Hug"
                              : (gSelectedFrame->heightSizing == SizingMode::Fill) ? "Fill" : "Fixed";
         DrawPlatinumBtn(popX, y, popW, 18, hSizName, sHeightSizingPopupRect);
@@ -1149,6 +1186,20 @@ void DrawInspectorPanel() {
         } else {
             sShapeWFxRect = sShapeWFlRect = sShapeHFxRect = sShapeHFlRect = {0,0,0,0};
         }
+    }
+
+    gInspectorTotalH = static_cast<short>(y + 8);  // record content height
+
+    // Restore origin before drawing controls
+    SetOrigin(0, 0);
+
+    // Update and redraw scroll bar
+    if (gInspectorScrollCtrl) {
+        short iMax = (gInspectorTotalH > panelH) ? static_cast<short>(gInspectorTotalH - panelH) : 0;
+        SetControlMaximum(gInspectorScrollCtrl, iMax);
+        SetControlValue(gInspectorScrollCtrl, gInspectorScrollY);
+        HiliteControl(gInspectorScrollCtrl, (iMax > 0) ? 0 : 255);
+        DrawControls(gInspectorWindow);
     }
 
     TextSize(12); PenNormal(); RGBForeColor(&black); RGBBackColor(&white);
@@ -1237,11 +1288,9 @@ static EditField TabToNextField(EditField cur, bool reverse) {
     order.push_back(kFieldX);
     order.push_back(kFieldY);
 
-    // Size (only editable when Fixed sizing)
-    bool wFixed = !gSelectedFrame || gSelectedFrame->widthSizing  == SizingMode::Fixed;
-    bool hFixed = !gSelectedFrame || gSelectedFrame->heightSizing == SizingMode::Fixed;
-    if (wFixed) order.push_back(kFieldW);
-    if (hFixed) order.push_back(kFieldH);
+    // Size — always in tab order (typing auto-switches Hug/Fill frames to Fixed)
+    order.push_back(kFieldW);
+    order.push_back(kFieldH);
 
     if (order.empty()) return kNoField;
 
@@ -1373,7 +1422,20 @@ void ApplyInspectorEdit() {
                 } break;
             case kFieldW:
                 if (val < 1) val = 1;
-                if (val != b->w) {
+                if (!applyMulti && gSelectedFrame &&
+                        gSelectedFrame->widthSizing != SizingMode::Fixed) {
+                    // Typing a value auto-switches frame from Hug/Fill → Fixed
+                    PushUndo();
+                    gSelectedFrame->widthSizing = SizingMode::Fixed;
+                    b->w = val;
+                    changed = true;
+                } else if (!applyMulti && gSelectedShape && gSelectedShape->wSizing != 0) {
+                    // Typing a value auto-switches shape from Fill → Fixed
+                    PushUndo();
+                    gSelectedShape->wSizing = 0;
+                    b->w = val;
+                    changed = true;
+                } else if (val != b->w) {
                     PushUndo();
                     if (applyMulti) { for (Shape* s : gSelectedShapes) s->bounds.w = val; }
                     else { b->w = val; }
@@ -1381,7 +1443,20 @@ void ApplyInspectorEdit() {
                 } break;
             case kFieldH:
                 if (val < 1) val = 1;
-                if (val != b->h) {
+                if (!applyMulti && gSelectedFrame &&
+                        gSelectedFrame->heightSizing != SizingMode::Fixed) {
+                    // Typing a value auto-switches frame from Hug/Fill → Fixed
+                    PushUndo();
+                    gSelectedFrame->heightSizing = SizingMode::Fixed;
+                    b->h = val;
+                    changed = true;
+                } else if (!applyMulti && gSelectedShape && gSelectedShape->hSizing != 0) {
+                    // Typing a value auto-switches shape from Fill → Fixed
+                    PushUndo();
+                    gSelectedShape->hSizing = 0;
+                    b->h = val;
+                    changed = true;
+                } else if (val != b->h) {
                     PushUndo();
                     if (applyMulti) { for (Shape* s : gSelectedShapes) s->bounds.h = val; }
                     else { b->h = val; }
@@ -1506,6 +1581,21 @@ void HandleInspectorClick(Point localPt) {
     if (!gDocument) return;
     if (!gSelectedFrame && !gSelectedShape) return;
 
+    // Check scroll bar first (in window coords — no offset)
+    if (gInspectorScrollCtrl) {
+        ControlRef hitCtrl;
+        short ctrlPart = FindControl(localPt, gInspectorWindow, &hitCtrl);
+        if (ctrlPart && hitCtrl == gInspectorScrollCtrl) {
+            TrackControl(hitCtrl, localPt, gInspectorScrollUPP);
+            gInspectorScrollY = GetControlValue(hitCtrl);
+            InvalidateInspector();
+            return;
+        }
+    }
+
+    // Adjust click y for scroll offset (hit-test rects are in document coordinates)
+    localPt.v += gInspectorScrollY;
+
     // Locked objects are read-only — no inspector edits allowed
     bool isLocked = gSelectedShape ? gSelectedShape->locked
                                    : gSelectedFrame->locked;
@@ -1528,7 +1618,10 @@ void HandleInspectorClick(Point localPt) {
         Str255 p; PStrC("Choose Color", p); Point where = {-1,-1};
         changed = GetColor(where, p, &cur, &newColor);
 #else
-        changed = ShowColorSwatchPicker(sFillSwatchRect, newColor);
+        Rect swR = sFillSwatchRect;
+        swR.top    -= gInspectorScrollY;
+        swR.bottom -= gInspectorScrollY;
+        changed = ShowColorSwatchPicker(swR, newColor);
 #endif
         if (changed) {
             PushUndo();
@@ -1562,7 +1655,10 @@ void HandleInspectorClick(Point localPt) {
         Str255 p; PStrC("Choose Stroke Color", p); Point where = {-1,-1};
         changed = GetColor(where, p, &cur, &newColor);
 #else
-        changed = ShowColorSwatchPicker(sStrokeSwatchRect, newColor);
+        Rect ssR = sStrokeSwatchRect;
+        ssR.top    -= gInspectorScrollY;
+        ssR.bottom -= gInspectorScrollY;
+        changed = ShowColorSwatchPicker(ssR, newColor);
 #endif
         if (changed) {
             PushUndo();
@@ -1616,7 +1712,7 @@ void HandleInspectorClick(Point localPt) {
         UInt8 curAlign = gSelectedShape ? gSelectedShape->strokeAlign : gSelectedFrame->strokeAlign;
         short popItem = (curAlign == 2) ? 1 : (curAlign == 1) ? 3 : 2;
 
-        Point popPt = { sStrokeAlignRect.top, sStrokeAlignRect.left };
+        Point popPt = { static_cast<short>(sStrokeAlignRect.top - gInspectorScrollY), sStrokeAlignRect.left };
         SetPortWindowPort(gInspectorWindow);
         LocalToGlobal(&popPt);
 
@@ -1700,7 +1796,7 @@ void HandleInspectorClick(Point localPt) {
 
         // Settings icon → open Auto Layout Settings panel
         if (PtInRect(localPt, &sLayoutSettingsRect)) {
-            Point anchor = { sLayoutSettingsRect.top, sLayoutSettingsRect.right };
+            Point anchor = { static_cast<short>(sLayoutSettingsRect.top - gInspectorScrollY), sLayoutSettingsRect.right };
             SetPortWindowPort(gInspectorWindow); LocalToGlobal(&anchor);
             OpenAutoLayoutSettingsPanel(anchor);
             return;
@@ -1732,7 +1828,7 @@ void HandleInspectorClick(Point localPt) {
             InsertMenu(pm, -1);
             bool isSB = (lf->primaryAlign == PrimaryAlign::SpaceBetween);
             short curItem = isSB ? 2 : 1;
-            Point pt = { sLayoutGapModeRect.top, sLayoutGapModeRect.left };
+            Point pt = { static_cast<short>(sLayoutGapModeRect.top - gInspectorScrollY), sLayoutGapModeRect.left };
             SetPortWindowPort(gInspectorWindow); LocalToGlobal(&pt);
             long result = PopUpMenuSelect(pm, pt.v, pt.h, curItem);
             DeleteMenu(6004); DisposeMenu(pm);
@@ -1762,7 +1858,7 @@ void HandleInspectorClick(Point localPt) {
             AppendMenu(pm, "\pAuto");
             InsertMenu(pm, -1);
             short curItem = lf->layoutCounterGapAuto ? 2 : 1;
-            Point pt = { sLayoutCounterGapModeRect.top, sLayoutCounterGapModeRect.left };
+            Point pt = { static_cast<short>(sLayoutCounterGapModeRect.top - gInspectorScrollY), sLayoutCounterGapModeRect.left };
             SetPortWindowPort(gInspectorWindow); LocalToGlobal(&pt);
             long result = PopUpMenuSelect(pm, pt.v, pt.h, curItem);
             DeleteMenu(6005); DisposeMenu(pm);
@@ -1804,7 +1900,8 @@ void HandleInspectorClick(Point localPt) {
         // Width sizing popup
         if (PtInRect(localPt, &sWidthSizingPopupRect)) {
             bool hasFill = (lf->parent && lf->parent->layoutMode != LayoutMode::None);
-            SizingMode nm = ShowSizingPopup(sWidthSizingPopupRect, lf->widthSizing, hasFill);
+            Rect wSzR = sWidthSizingPopupRect; wSzR.top -= gInspectorScrollY; wSzR.bottom -= gInspectorScrollY;
+            SizingMode nm = ShowSizingPopup(wSzR, lf->widthSizing, hasFill);
             if (nm != lf->widthSizing) {
                 PushUndo(); lf->widthSizing = nm;
                 InvalidateInspector();
@@ -1816,7 +1913,8 @@ void HandleInspectorClick(Point localPt) {
         // Height sizing popup
         if (PtInRect(localPt, &sHeightSizingPopupRect)) {
             bool hasFill = (lf->parent && lf->parent->layoutMode != LayoutMode::None);
-            SizingMode nm = ShowSizingPopup(sHeightSizingPopupRect, lf->heightSizing, hasFill);
+            Rect hSzR = sHeightSizingPopupRect; hSzR.top -= gInspectorScrollY; hSzR.bottom -= gInspectorScrollY;
+            SizingMode nm = ShowSizingPopup(hSzR, lf->heightSizing, hasFill);
             if (nm != lf->heightSizing) {
                 PushUndo(); lf->heightSizing = nm;
                 InvalidateInspector();
