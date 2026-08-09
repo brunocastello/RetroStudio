@@ -5,6 +5,7 @@
 #include "../export/DocumentSerializer.h"
 #include "../canvas/AutoLayout.h"
 #include <algorithm>
+#include <cstring>
 
 WindowRef  gMainWindow    = nullptr;
 Boolean    gQuitFlag      = false;
@@ -1111,8 +1112,8 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         bool  tracking  = false;
         bool  didDrag   = false;
 
+        Pattern blkPat; memset(&blkPat, 0xFF, sizeof(blkPat));
         PenMode(patXor);
-        Pattern blkPat; GetQDGlobalsBlack(&blkPat);
         PenPat(&blkPat);
         PenSize(1, 1);
 
