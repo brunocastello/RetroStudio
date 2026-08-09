@@ -11,6 +11,8 @@ static short             gLayersScrollY    = 0;  // current scroll offset in pix
 static short             gLayersTotalH     = 0;  // total content height after last draw
 static ControlActionUPP  gLayersScrollUPP  = nullptr;
 static const short       kLayersSBW        = 16; // scroll bar width
+static short             gLayersPrevW      = 0;  // last known panel width (for resize detection)
+static short             gLayersPrevH      = 0;
 
 static void InvalidateLayers();  // forward-declare so the action proc can call it
 
@@ -230,8 +232,12 @@ void DrawLayersPanel() {
     short panelW = portRect.right;
     short panelH = portRect.bottom;
 
-    // Refit scroll bar to current window dimensions
-    if (gLayersScrollCtrl) {
+    // Refit scroll bar only when the window was actually resized.
+    // MoveControl/SizeControl call HideControl/ShowControl which internally
+    // call InvalWindowRect — doing this every draw creates an infinite update loop.
+    if (gLayersScrollCtrl && (panelW != gLayersPrevW || panelH != gLayersPrevH)) {
+        gLayersPrevW = panelW;
+        gLayersPrevH = panelH;
         MoveControl(gLayersScrollCtrl, static_cast<short>(panelW - kLayersSBW), 0);
         SizeControl(gLayersScrollCtrl, kLayersSBW, panelH);
     }

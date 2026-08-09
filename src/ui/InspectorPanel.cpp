@@ -21,6 +21,8 @@ static short             gInspectorScrollY    = 0;
 static short             gInspectorTotalH     = 0;
 static ControlActionUPP  gInspectorScrollUPP  = nullptr;
 static const short       kInspSBW             = 16;
+static short             gInspectorPrevW      = 0;  // last known panel width (resize detection)
+static short             gInspectorPrevH      = 0;
 
 static void InvalidateInspector();  // forward-declare for the action proc
 
@@ -455,8 +457,12 @@ void DrawInspectorPanel() {
     short panelW = portRect.right;
     short panelH = portRect.bottom;
 
-    // Refit scroll bar to current window dimensions
-    if (gInspectorScrollCtrl) {
+    // Refit scroll bar only when window was actually resized (MoveControl/SizeControl
+    // call HideControl/ShowControl which call InvalWindowRect — doing this every draw
+    // creates an infinite update loop that starves all other windows).
+    if (gInspectorScrollCtrl && (panelW != gInspectorPrevW || panelH != gInspectorPrevH)) {
+        gInspectorPrevW = panelW;
+        gInspectorPrevH = panelH;
         MoveControl(gInspectorScrollCtrl, static_cast<short>(panelW - kInspSBW), 0);
         SizeControl(gInspectorScrollCtrl, kInspSBW, panelH);
     }
