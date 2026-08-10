@@ -863,9 +863,36 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
     std::vector<Frame*> movedFramePtrs;
 
     // Determine where frames and shapes go in the destination typed vectors.
-    // Primary type (isSrcFrame) uses insertAt computed above; secondary type always appends.
-    int frameInsertAt = isSrcFrame ? insertAt : static_cast<int>((dstOwner ? dstOwner->childFrames : gDocument->frames).size());
-    int shapeInsertAt = isSrcFrame ? static_cast<int>((dstOwner ? dstOwner->children : gDocument->rootShapes).size()) : insertAt;
+    // For mixed-type drags at root level, compute each type's position from the drop reference row
+    // instead of forcing the secondary type to always append at end.
+    bool hasMixedTypes = false;
+    {
+        bool hf = false, hs = false;
+        for (const auto& si : srcItems) { if (si.isFrame) hf = true; else hs = true; }
+        hasMixedTypes = hf && hs;
+    }
+    int frameInsertAt, shapeInsertAt;
+    if (hasMixedTypes && !dstOwner && !isInto) {
+        if (dropPos <= 0) {
+            frameInsertAt = 0;
+            shapeInsertAt = 0;
+        } else if (dropPos >= N) {
+            frameInsertAt = static_cast<int>(gDocument->frames.size());
+            shapeInsertAt = static_cast<int>(gDocument->rootShapes.size());
+        } else {
+            const LayerRow& refRow = sLayerRows[allIdxs[dropPos]];
+            if (refRow.isFrame) {
+                frameInsertAt = refRow.vecIdx;
+                shapeInsertAt = static_cast<int>(gDocument->rootShapes.size());
+            } else {
+                frameInsertAt = 0;
+                shapeInsertAt = refRow.vecIdx;
+            }
+        }
+    } else {
+        frameInsertAt = isSrcFrame ? insertAt : static_cast<int>((dstOwner ? dstOwner->childFrames : gDocument->frames).size());
+        shapeInsertAt = isSrcFrame ? static_cast<int>((dstOwner ? dstOwner->children : gDocument->rootShapes).size()) : insertAt;
+    }
 
     // Compute childOrder insert position in destination.
     // Forward iteration: top of panel = lowest z = front of childOrder (pos 0).
