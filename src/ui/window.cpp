@@ -405,12 +405,27 @@ static void DrawFrame(const Frame& frame) {
 
     // Draw children, optionally clipped and optionally in reverse z-order.
     auto drawChildren = [&]() {
-        if (frame.canvasStackReverse) {
-            for (auto it = frame.children.rbegin();   it != frame.children.rend();   ++it) DrawShape(**it);
-            for (auto it = frame.childFrames.rbegin(); it != frame.childFrames.rend(); ++it) DrawFrame(**it);
+        if (frame.childOrder.empty()) {
+            // Legacy / newly-created frames without explicit childOrder: shapes first, then frames
+            if (frame.canvasStackReverse) {
+                for (auto it = frame.children.rbegin();    it != frame.children.rend();    ++it) DrawShape(**it);
+                for (auto it = frame.childFrames.rbegin(); it != frame.childFrames.rend(); ++it) DrawFrame(**it);
+            } else {
+                for (const auto& s  : frame.children)    DrawShape(*s);
+                for (const auto& cf : frame.childFrames)  DrawFrame(*cf);
+            }
         } else {
-            for (const auto& s  : frame.children)    DrawShape(*s);
-            for (const auto& cf : frame.childFrames)  DrawFrame(*cf);
+            if (frame.canvasStackReverse) {
+                for (auto it = frame.childOrder.rbegin(); it != frame.childOrder.rend(); ++it) {
+                    if (it->isFrame) DrawFrame(*frame.childFrames[it->idx]);
+                    else             DrawShape(*frame.children[it->idx]);
+                }
+            } else {
+                for (const auto& cr : frame.childOrder) {
+                    if (cr.isFrame) DrawFrame(*frame.childFrames[cr.idx]);
+                    else            DrawShape(*frame.children[cr.idx]);
+                }
+            }
         }
     };
     if (frame.clipContent) {
@@ -632,15 +647,28 @@ static HitResult HitTestFrame(Frame* f, Point pt) {
     Rect r = CanvasRect(f->bounds);
     if (!PtInRect(pt, &r)) return {};
 
-    // Child frames first (last added = topmost z-order)
-    for (auto it = f->childFrames.rbegin(); it != f->childFrames.rend(); ++it) {
-        HitResult res = HitTestFrame(it->get(), pt);
-        if (res.found) return res;
-    }
-    // Shapes within this frame
-    for (auto it = f->children.rbegin(); it != f->children.rend(); ++it) {
-        Rect sr = CanvasRect((*it)->bounds);
-        if (PtInRect(pt, &sr)) return { f, it->get(), true };
+    if (!f->childOrder.empty()) {
+        // Iterate in reverse childOrder (topmost first for correct z-order hit-testing)
+        for (auto it = f->childOrder.rbegin(); it != f->childOrder.rend(); ++it) {
+            if (it->isFrame) {
+                HitResult res = HitTestFrame(f->childFrames[it->idx].get(), pt);
+                if (res.found) return res;
+            } else {
+                const auto& s = f->children[it->idx];
+                Rect sr = CanvasRect(s->bounds);
+                if (PtInRect(pt, &sr)) return { f, s.get(), true };
+            }
+        }
+    } else {
+        // Legacy fallback: child frames then shapes (both in reverse for topmost-first)
+        for (auto it = f->childFrames.rbegin(); it != f->childFrames.rend(); ++it) {
+            HitResult res = HitTestFrame(it->get(), pt);
+            if (res.found) return res;
+        }
+        for (auto it = f->children.rbegin(); it != f->children.rend(); ++it) {
+            Rect sr = CanvasRect((*it)->bounds);
+            if (PtInRect(pt, &sr)) return { f, it->get(), true };
+        }
     }
     return { f, nullptr, true };  // hit frame body
 }
@@ -705,20 +733,47 @@ static void CollectAllBandFrames(Frame* frm, SInt32 l, SInt32 t, SInt32 r, SInt3
     }
 }
 
-// Extract a Shape unique_ptr from its current owner (Frame or rootShapes)
+// Extract a Shape unique_ptr from its current owner (Frame or rootShapes).
+// Also removes and reindexes the entry in parent->childOrder.
 static std::unique_ptr<Shape> ExtractShape(Shape* s, Frame* parent) {
     auto& vec = parent ? parent->children : gDocument->rootShapes;
-    for (auto it = vec.begin(); it != vec.end(); ++it) {
-        if (it->get() == s) { auto o = std::move(*it); vec.erase(it); return o; }
+    for (int i = 0; i < (int)vec.size(); ++i) {
+        if (vec[i].get() == s) {
+            auto o = std::move(vec[i]);
+            vec.erase(vec.begin() + i);
+            if (parent) {
+                // Remove the childOrder entry for this shape and fix up higher indices
+                for (auto it = parent->childOrder.begin(); it != parent->childOrder.end(); ) {
+                    if (!it->isFrame && it->idx == i) { it = parent->childOrder.erase(it); continue; }
+                    if (!it->isFrame && it->idx > i) --it->idx;
+                    ++it;
+                }
+            }
+            return o;
+        }
     }
     return nullptr;
 }
 
-// Extract a Frame unique_ptr from its current owner
+// Extract a Frame unique_ptr from its current owner.
+// Also removes and reindexes the entry in parent->childOrder.
 static std::unique_ptr<Frame> ExtractFrame(Frame* f) {
-    auto& vec = f->parent ? f->parent->childFrames : gDocument->frames;
-    for (auto it = vec.begin(); it != vec.end(); ++it) {
-        if (it->get() == f) { auto o = std::move(*it); vec.erase(it); return o; }
+    Frame* par = f->parent;
+    auto& vec = par ? par->childFrames : gDocument->frames;
+    for (int i = 0; i < (int)vec.size(); ++i) {
+        if (vec[i].get() == f) {
+            auto o = std::move(vec[i]);
+            vec.erase(vec.begin() + i);
+            if (par) {
+                // Remove the childOrder entry for this frame and fix up higher indices
+                for (auto it = par->childOrder.begin(); it != par->childOrder.end(); ) {
+                    if (it->isFrame && it->idx == i) { it = par->childOrder.erase(it); continue; }
+                    if (it->isFrame && it->idx > i) --it->idx;
+                    ++it;
+                }
+            }
+            return o;
+        }
     }
     return nullptr;
 }
@@ -1192,14 +1247,14 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
             hitCenter.v = static_cast<short>(SInt32(hitB.y + hitB.h/2) * gCanvasZoom / 100 + gCanvasOffsetY);
             Frame* newParent = DeepestFrameAt(hitCenter);
             if (newParent != origParent) {
-                auto& srcVec = origParent ? origParent->children : gDocument->rootShapes;
-                auto& dstVec = newParent  ? newParent->children  : gDocument->rootShapes;
                 for (Shape* target : gSelectedShapes) {
-                    for (auto it = srcVec.begin(); it != srcVec.end(); ++it) {
-                        if (it->get() == target) {
-                            dstVec.push_back(std::move(*it));
-                            srcVec.erase(it);
-                            break;
+                    auto owned = ExtractShape(target, origParent);
+                    if (owned) {
+                        if (newParent) {
+                            newParent->childOrder.push_back({ false, (int)newParent->children.size() });
+                            newParent->children.push_back(std::move(owned));
+                        } else {
+                            gDocument->rootShapes.push_back(std::move(owned));
                         }
                     }
                 }
@@ -1223,6 +1278,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                     if (owned) {
                         if (newParent) {
                             owned->parent = newParent;
+                            newParent->childOrder.push_back({ true, (int)newParent->childFrames.size() });
                             newParent->childFrames.push_back(std::move(owned));
                         } else {
                             owned->parent = nullptr;
@@ -1252,44 +1308,79 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
             Frame* newParent = DeepestFrameAt(center);
 
             if (isLayoutDrag && newParent == hitFrame) {
-                // Dropped inside same layout frame — sort children by primary axis
+                // Dropped inside same layout frame — sort childOrder by primary axis center
                 bool isHoriz = (hitFrame->layoutMode == LayoutMode::Horizontal);
-                std::stable_sort(hitFrame->children.begin(), hitFrame->children.end(),
-                    [isHoriz](const std::unique_ptr<Shape>& a, const std::unique_ptr<Shape>& b) {
-                        SInt32 aM = isHoriz ? (a->bounds.x + a->bounds.w/2)
-                                            : (a->bounds.y + a->bounds.h/2);
-                        SInt32 bM = isHoriz ? (b->bounds.x + b->bounds.w/2)
-                                            : (b->bounds.y + b->bounds.h/2);
-                        return aM < bM;
-                    });
+                if (!hitFrame->childOrder.empty()) {
+                    std::stable_sort(hitFrame->childOrder.begin(), hitFrame->childOrder.end(),
+                        [hitFrame, isHoriz](const ChildRef& a, const ChildRef& b) {
+                            auto center = [hitFrame, isHoriz](const ChildRef& cr) -> SInt32 {
+                                if (cr.isFrame) {
+                                    const Bounds2& bnd = hitFrame->childFrames[cr.idx]->bounds;
+                                    return isHoriz ? bnd.x + bnd.w/2 : bnd.y + bnd.h/2;
+                                }
+                                const Bounds2& bnd = hitFrame->children[cr.idx]->bounds;
+                                return isHoriz ? bnd.x + bnd.w/2 : bnd.y + bnd.h/2;
+                            };
+                            return center(a) < center(b);
+                        });
+                } else {
+                    std::stable_sort(hitFrame->children.begin(), hitFrame->children.end(),
+                        [isHoriz](const std::unique_ptr<Shape>& a, const std::unique_ptr<Shape>& b) {
+                            SInt32 aM = isHoriz ? (a->bounds.x + a->bounds.w/2)
+                                                : (a->bounds.y + a->bounds.h/2);
+                            SInt32 bM = isHoriz ? (b->bounds.x + b->bounds.w/2)
+                                                : (b->bounds.y + b->bounds.h/2);
+                            return aM < bM;
+                        });
+                }
             } else if (newParent != origParent) {
                 auto owned = ExtractShape(hitShape, origParent);
                 if (owned) {
-                    if (newParent) newParent->children.push_back(std::move(owned));
-                    else           gDocument->rootShapes.push_back(std::move(owned));
+                    if (newParent) {
+                        newParent->childOrder.push_back({ false, (int)newParent->children.size() });
+                        newParent->children.push_back(std::move(owned));
+                    } else {
+                        gDocument->rootShapes.push_back(std::move(owned));
+                    }
                     gSelectedFrame = newParent;
                 }
             }
         } else {
             Frame* newParent = DeepestFrameAt(center, hitFrame);
             if (isLayoutFrameDrag && newParent == hitFrame->parent && hitFrame->parent) {
-                // Dropped back inside same layout parent — sort childFrames by primary axis
+                // Dropped back inside same layout parent — sort childOrder by primary axis
                 Frame* layoutParent = hitFrame->parent;
                 bool isHoriz = (layoutParent->layoutMode == LayoutMode::Horizontal);
-                std::stable_sort(layoutParent->childFrames.begin(), layoutParent->childFrames.end(),
-                    [isHoriz](const std::unique_ptr<Frame>& a, const std::unique_ptr<Frame>& b) {
-                        SInt32 aM = isHoriz ? (a->bounds.x + a->bounds.w/2)
-                                            : (a->bounds.y + a->bounds.h/2);
-                        SInt32 bM = isHoriz ? (b->bounds.x + b->bounds.w/2)
-                                            : (b->bounds.y + b->bounds.h/2);
-                        return aM < bM;
-                    });
+                if (!layoutParent->childOrder.empty()) {
+                    std::stable_sort(layoutParent->childOrder.begin(), layoutParent->childOrder.end(),
+                        [layoutParent, isHoriz](const ChildRef& a, const ChildRef& b) {
+                            auto center = [layoutParent, isHoriz](const ChildRef& cr) -> SInt32 {
+                                if (cr.isFrame) {
+                                    const Bounds2& bnd = layoutParent->childFrames[cr.idx]->bounds;
+                                    return isHoriz ? bnd.x + bnd.w/2 : bnd.y + bnd.h/2;
+                                }
+                                const Bounds2& bnd = layoutParent->children[cr.idx]->bounds;
+                                return isHoriz ? bnd.x + bnd.w/2 : bnd.y + bnd.h/2;
+                            };
+                            return center(a) < center(b);
+                        });
+                } else {
+                    std::stable_sort(layoutParent->childFrames.begin(), layoutParent->childFrames.end(),
+                        [isHoriz](const std::unique_ptr<Frame>& a, const std::unique_ptr<Frame>& b) {
+                            SInt32 aM = isHoriz ? (a->bounds.x + a->bounds.w/2)
+                                                : (a->bounds.y + a->bounds.h/2);
+                            SInt32 bM = isHoriz ? (b->bounds.x + b->bounds.w/2)
+                                                : (b->bounds.y + b->bounds.h/2);
+                            return aM < bM;
+                        });
+                }
             } else if (newParent != hitFrame->parent) {
                 auto owned = ExtractFrame(hitFrame);
                 if (owned) {
                     Frame* raw = owned.get();
                     if (newParent) {
                         owned->parent = newParent;
+                        newParent->childOrder.push_back({ true, (int)newParent->childFrames.size() });
                         newParent->childFrames.push_back(std::move(owned));
                     } else {
                         owned->parent = nullptr;
@@ -1444,8 +1535,12 @@ static void HandleTextPlace(WindowRef win, Point localPt, Point globalPt) {
     Frame* target  = DeepestFrameAt(localPt);
     gSelectedShape = t.get();
     gSelectedFrame = target;
-    if (target) target->children.push_back(std::move(t));
-    else        gDocument->rootShapes.push_back(std::move(t));
+    if (target) {
+        target->childOrder.push_back({ false, (int)target->children.size() });
+        target->children.push_back(std::move(t));
+    } else {
+        gDocument->rootShapes.push_back(std::move(t));
+    }
 
     Rect portRect;
     GetWindowPortBounds(win, &portRect);
@@ -1520,6 +1615,7 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
             Frame* raw    = f.get();
             if (parent) {
                 f->parent = parent;
+                parent->childOrder.push_back({ true, (int)parent->childFrames.size() });
                 parent->childFrames.push_back(std::move(f));
             } else {
                 f->parent = nullptr;
@@ -1554,8 +1650,12 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
             gSelectedShape = shape.get();
             gSelectedFrame = target;
 
-            if (target) target->children.push_back(std::move(shape));
-            else        gDocument->rootShapes.push_back(std::move(shape));
+            if (target) {
+                target->childOrder.push_back({ false, (int)target->children.size() });
+                target->children.push_back(std::move(shape));
+            } else {
+                gDocument->rootShapes.push_back(std::move(shape));
+            }
         }
 
     }
@@ -1696,6 +1796,9 @@ static std::unique_ptr<Frame> CloneFrame(const Frame* src, Frame* newParent) {
         f->children.push_back(s->Clone());
     for (const auto& cf : src->childFrames)
         f->childFrames.push_back(CloneFrame(cf.get(), f.get()));
+    // Clone childOrder (indices are the same in the cloned vectors)
+    for (const auto& cr : src->childOrder)
+        f->childOrder.push_back(cr);
     return f;
 }
 
@@ -1771,8 +1874,12 @@ void PasteClipboard() {
         copy->bounds.x = sClipShape->bounds.x + off;
         copy->bounds.y = sClipShape->bounds.y + off;
         Shape* raw = copy.get();
-        if (gSelectedFrame) gSelectedFrame->children.push_back(std::move(copy));
-        else                gDocument->rootShapes.push_back(std::move(copy));
+        if (gSelectedFrame) {
+            gSelectedFrame->childOrder.push_back({ false, (int)gSelectedFrame->children.size() });
+            gSelectedFrame->children.push_back(std::move(copy));
+        } else {
+            gDocument->rootShapes.push_back(std::move(copy));
+        }
         gSelectedShape = raw;
     } else {
         auto copy = CloneFrame(sClipFrame.get(), nullptr);
@@ -1802,11 +1909,9 @@ void DeleteSelected() {
             if (owned) changed = true;
         }
         gSelectedFrames.clear();
-        auto& vec = gSelectedFrame ? gSelectedFrame->children : gDocument->rootShapes;
         for (Shape* target : gSelectedShapes) {
-            for (auto it = vec.begin(); it != vec.end(); ++it) {
-                if (it->get() == target) { vec.erase(it); changed = true; break; }
-            }
+            auto owned = ExtractShape(target, gSelectedFrame);
+            if (owned) changed = true;
         }
         gSelectedShapes.clear();
         gSelectedShape  = nullptr;
@@ -1820,21 +1925,17 @@ void DeleteSelected() {
         gSelectedFrame  = nullptr;
         gSelectedShape  = nullptr;
     } else if (gSelectedShapes.size() > 1) {
-        // Delete all shapes in the multi-select set
-        auto& vec = gSelectedFrame ? gSelectedFrame->children : gDocument->rootShapes;
+        // Delete all shapes in the multi-select set via ExtractShape (maintains childOrder)
         for (Shape* target : gSelectedShapes) {
-            for (auto it = vec.begin(); it != vec.end(); ++it) {
-                if (it->get() == target) { vec.erase(it); changed = true; break; }
-            }
+            auto owned = ExtractShape(target, gSelectedFrame);
+            if (owned) changed = true;
         }
         gSelectedShapes.clear();
         gSelectedShape = nullptr;
     } else if (gSelectedShape) {
         // Works for both in-frame children and floating rootShapes
-        auto& vec = gSelectedFrame ? gSelectedFrame->children : gDocument->rootShapes;
-        for (auto it = vec.begin(); it != vec.end(); ++it) {
-            if (it->get() == gSelectedShape) { vec.erase(it); changed = true; break; }
-        }
+        auto owned = ExtractShape(gSelectedShape, gSelectedFrame);
+        if (owned) changed = true;
         gSelectedShape = nullptr;
     } else if (gSelectedFrame) {
         // ExtractFrame handles both top-level and nested (child) frames

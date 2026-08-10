@@ -6,6 +6,11 @@ enum class PrimaryAlign : UInt8 { Start = 0, Center = 1, End = 2, SpaceBetween =
 enum class CrossAlign   : UInt8 { Start = 0, Center = 1, End = 2 };
 enum class SizingMode   : UInt8 { Fixed = 0, Hug = 1, Fill = 2 };
 
+// Unified z-order reference: either a Shape (isFrame=false) or child Frame (isFrame=true),
+// with idx pointing into children[] or childFrames[] respectively.
+// childOrder[0] = bottom-most, childOrder.back() = topmost.
+struct ChildRef { bool isFrame; int idx; };
+
 // Frame = artboard / screen in the prototype.
 // Frames own their Shape children and can contain nested child Frames.
 // `parent` is a raw observer pointer (non-owning); null means top-level.
@@ -46,4 +51,5 @@ public:
 
     std::vector<std::unique_ptr<Shape>> children;
     std::vector<std::unique_ptr<Frame>> childFrames;
+    std::vector<ChildRef>               childOrder;  // z-order: [0]=bottom, [back()]=top
 };

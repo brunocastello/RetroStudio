@@ -41,36 +41,74 @@ static void RunFrameLayout(Frame* f) {
         // inside (1): stroke stays within bounds — no extra
     };
 
-    for (auto& s : f->children) {
-        if (!s->visible) continue;
-        if (s.get() == gLayoutDragShape) continue;
-        if (gIsLayoutMultiDrag &&
-            std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s.get()) != gSelectedShapes.end())
-            continue;
-        LayoutItem it;
-        it.x = &s->bounds.x; it.y = &s->bounds.y;
-        it.w = &s->bounds.w; it.h = &s->bounds.h;
-        it.wSizing = s->wSizing;
-        it.hSizing = s->hSizing;
-        computeXtra(s->hasStroke, s->strokeWidth, s->strokeAlign, it.xtraW, it.xtraH);
-        it.baseline = 0;
-        if (f->alignTextBaseline && s->GetType() == Shape::kText) {
-            it.baseline = static_cast<SInt32>(
-                static_cast<TextShape*>(s.get())->fontSize) * 3 / 4;
+    if (!f->childOrder.empty()) {
+        // Unified z-order iteration
+        for (const auto& cr : f->childOrder) {
+            if (cr.isFrame) {
+                const auto& cf = f->childFrames[cr.idx];
+                if (!cf->visible || cf.get() == gLayoutDragFrame) continue;
+                LayoutItem it;
+                it.x = &cf->bounds.x; it.y = &cf->bounds.y;
+                it.w = &cf->bounds.w; it.h = &cf->bounds.h;
+                it.wSizing = static_cast<UInt8>(cf->widthSizing);
+                it.hSizing = static_cast<UInt8>(cf->heightSizing);
+                computeXtra(cf->hasStroke, cf->strokeWidth, cf->strokeAlign, it.xtraW, it.xtraH);
+                it.baseline = 0;
+                items.push_back(it);
+            } else {
+                const auto& s = f->children[cr.idx];
+                if (!s->visible) continue;
+                if (s.get() == gLayoutDragShape) continue;
+                if (gIsLayoutMultiDrag &&
+                    std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s.get()) != gSelectedShapes.end())
+                    continue;
+                LayoutItem it;
+                it.x = &s->bounds.x; it.y = &s->bounds.y;
+                it.w = &s->bounds.w; it.h = &s->bounds.h;
+                it.wSizing = s->wSizing;
+                it.hSizing = s->hSizing;
+                computeXtra(s->hasStroke, s->strokeWidth, s->strokeAlign, it.xtraW, it.xtraH);
+                it.baseline = 0;
+                if (f->alignTextBaseline && s->GetType() == Shape::kText) {
+                    it.baseline = static_cast<SInt32>(
+                        static_cast<TextShape*>(s.get())->fontSize) * 3 / 4;
+                }
+                items.push_back(it);
+            }
         }
-        items.push_back(it);
-    }
-    for (auto& cf : f->childFrames) {
-        if (!cf->visible) continue;
-        if (cf.get() == gLayoutDragFrame) continue;  // drag-sorted child frame: free-floating
-        LayoutItem it;
-        it.x = &cf->bounds.x; it.y = &cf->bounds.y;
-        it.w = &cf->bounds.w; it.h = &cf->bounds.h;
-        it.wSizing = static_cast<UInt8>(cf->widthSizing);
-        it.hSizing = static_cast<UInt8>(cf->heightSizing);
-        computeXtra(cf->hasStroke, cf->strokeWidth, cf->strokeAlign, it.xtraW, it.xtraH);
-        it.baseline = 0;
-        items.push_back(it);
+    } else {
+        // Legacy fallback: shapes first, then frames
+        for (auto& s : f->children) {
+            if (!s->visible) continue;
+            if (s.get() == gLayoutDragShape) continue;
+            if (gIsLayoutMultiDrag &&
+                std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s.get()) != gSelectedShapes.end())
+                continue;
+            LayoutItem it;
+            it.x = &s->bounds.x; it.y = &s->bounds.y;
+            it.w = &s->bounds.w; it.h = &s->bounds.h;
+            it.wSizing = s->wSizing;
+            it.hSizing = s->hSizing;
+            computeXtra(s->hasStroke, s->strokeWidth, s->strokeAlign, it.xtraW, it.xtraH);
+            it.baseline = 0;
+            if (f->alignTextBaseline && s->GetType() == Shape::kText) {
+                it.baseline = static_cast<SInt32>(
+                    static_cast<TextShape*>(s.get())->fontSize) * 3 / 4;
+            }
+            items.push_back(it);
+        }
+        for (auto& cf : f->childFrames) {
+            if (!cf->visible) continue;
+            if (cf.get() == gLayoutDragFrame) continue;
+            LayoutItem it;
+            it.x = &cf->bounds.x; it.y = &cf->bounds.y;
+            it.w = &cf->bounds.w; it.h = &cf->bounds.h;
+            it.wSizing = static_cast<UInt8>(cf->widthSizing);
+            it.hSizing = static_cast<UInt8>(cf->heightSizing);
+            computeXtra(cf->hasStroke, cf->strokeWidth, cf->strokeAlign, it.xtraW, it.xtraH);
+            it.baseline = 0;
+            items.push_back(it);
+        }
     }
 
     if (items.empty()) {

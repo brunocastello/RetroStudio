@@ -6,7 +6,7 @@
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
 static const UInt32 kMagic   = 0x52535444;  // 'RSTD'
-static const UInt16 kVersion = 11;
+static const UInt16 kVersion = 12;
 
 // Folder Manager constants — defined here because Retro68 Carbon headers
 // don't always expose <Folders.h> constants via <Carbon.h>.
@@ -185,13 +185,21 @@ static void WriteFrame(Writer& w, const Frame& f) {
     w.w8(static_cast<UInt8>(f.widthSizing));
     w.w8(static_cast<UInt8>(f.heightSizing));
 
-    w.w16(static_cast<UInt16>(f.children.size()));
-    for (const auto& s : f.children)
-        WriteShape(w, *s);
-
-    w.w16(static_cast<UInt16>(f.childFrames.size()));
-    for (const auto& cf : f.childFrames)
-        WriteFrame(w, *cf);
+    // Interleaved child serialization preserving childOrder z-ordering.
+    // If childOrder is empty (legacy), fall back to shapes-then-frames.
+    UInt16 nTotal = static_cast<UInt16>(f.children.size() + f.childFrames.size());
+    w.w16(nTotal);
+    if (!f.childOrder.empty()) {
+        for (const auto& cr : f.childOrder) {
+            w.w8(cr.isFrame ? 1 : 0);
+            if (cr.isFrame) WriteFrame(w, *f.childFrames[cr.idx]);
+            else            WriteShape(w, *f.children[cr.idx]);
+        }
+    } else {
+        // Legacy fallback: shapes first, then frames
+        for (const auto& s  : f.children)    { w.w8(0); WriteShape(w, *s); }
+        for (const auto& cf : f.childFrames) { w.w8(1); WriteFrame(w, *cf); }
+    }
 }
 
 static std::unique_ptr<Frame> ReadFrame(Reader& r, Frame* parent) {
@@ -226,16 +234,24 @@ static std::unique_ptr<Frame> ReadFrame(Reader& r, Frame* parent) {
     f->widthSizing   = static_cast<SizingMode>(r.r8());
     f->heightSizing  = static_cast<SizingMode>(r.r8());
 
-    UInt16 nShapes = r.r16();
-    for (UInt16 i = 0; i < nShapes && r.ok; ++i) {
-        auto s = ReadShape(r);
-        if (s) f->children.push_back(std::move(s));
-    }
-
-    UInt16 nFrames = r.r16();
-    for (UInt16 i = 0; i < nFrames && r.ok; ++i) {
-        auto cf = ReadFrame(r, f.get());
-        if (cf) f->childFrames.push_back(std::move(cf));
+    // Interleaved child deserialization (v12+). Each entry: type byte (0=shape,1=frame)
+    // followed by the serialized child. Rebuilds childOrder alongside typed vectors.
+    UInt16 nTotal = r.r16();
+    for (UInt16 i = 0; i < nTotal && r.ok; ++i) {
+        UInt8 type = r.r8();
+        if (type == 1) {
+            auto cf = ReadFrame(r, f.get());
+            if (cf) {
+                f->childOrder.push_back({ true, static_cast<int>(f->childFrames.size()) });
+                f->childFrames.push_back(std::move(cf));
+            }
+        } else {
+            auto s = ReadShape(r);
+            if (s) {
+                f->childOrder.push_back({ false, static_cast<int>(f->children.size()) });
+                f->children.push_back(std::move(s));
+            }
+        }
     }
 
     return r.ok ? std::move(f) : nullptr;
