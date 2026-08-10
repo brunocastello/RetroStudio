@@ -339,19 +339,32 @@ static short HitTestFrameRows(Frame* frame, short y, short indent,
             PushUndo(); frame->locked = !frame->locked;
             InvalidateLayers(); InvalidateMain();
         } else if (modifiers & shiftKey) {
-            // Shift+click: toggle frame in gSelectedFrames
-            gSelectedShapes.clear();
-            gSelectedShape = nullptr;
+            // Shift+click: toggle frame in gSelectedFrames.
+            // Allow mixing with shape selection when the clicked frame's parent
+            // is the same as the shapes' context frame (gSelectedFrame).
+            bool shapesPresent = (gSelectedShape != nullptr || !gSelectedShapes.empty());
+            bool mixOK = shapesPresent && (frame->parent == gSelectedFrame);
+            if (!mixOK) {
+                gSelectedShapes.clear(); gSelectedShape = nullptr;
+            } else {
+                // Promote single gSelectedShape into the pool so it stays selected.
+                if (gSelectedShape &&
+                    std::find(gSelectedShapes.begin(), gSelectedShapes.end(), gSelectedShape) == gSelectedShapes.end())
+                    gSelectedShapes.push_back(gSelectedShape);
+                // gSelectedFrame stays as the parent-context frame (= frame->parent).
+            }
             auto fit = std::find(gSelectedFrames.begin(), gSelectedFrames.end(), frame);
             if (fit != gSelectedFrames.end()) {
                 gSelectedFrames.erase(fit);
-                gSelectedFrame = gSelectedFrames.empty() ? nullptr : gSelectedFrames.back();
+                if (!mixOK)
+                    gSelectedFrame = gSelectedFrames.empty() ? nullptr : gSelectedFrames.back();
             } else {
-                if (gSelectedFrame &&
+                if (!mixOK && gSelectedFrame &&
                     std::find(gSelectedFrames.begin(), gSelectedFrames.end(), gSelectedFrame) == gSelectedFrames.end())
                     gSelectedFrames.push_back(gSelectedFrame);
                 gSelectedFrames.push_back(frame);
-                gSelectedFrame = frame;
+                if (!mixOK) gSelectedFrame = frame;
+                // In mixed mode, gSelectedFrame remains the parent context — not updated to child frame.
             }
             InvalidateLayers(); InvalidateMain();
         } else {
@@ -388,20 +401,36 @@ static short HitTestFrameRows(Frame* frame, short y, short indent,
                 PushUndo(); s->locked = !s->locked;
                 InvalidateLayers(); InvalidateMain();
             } else if (modifiers & shiftKey) {
-                // Shift+click: toggle shape in multi-select.
-                // Allow when: no context, same frame, or shapes already multi-selected (gSelectedFrame==null).
-                bool canAdd = (gSelectedFrame == nullptr || gSelectedFrame == frame || !gSelectedShapes.empty());
+                // Shift+click shape: add to multi-select.
+                // Allow same-parent mixing with frame selections.
+                // "Parent of currently selected frames" — single: gSelectedFrame->parent;
+                // multi: gSelectedFrames[0]->parent.
+                Frame* selFramesParent = nullptr;
+                if (!gSelectedFrames.empty())
+                    selFramesParent = gSelectedFrames[0]->parent;
+                else if (gSelectedFrame && gSelectedShape == nullptr)
+                    selFramesParent = gSelectedFrame->parent;
+                bool mixOK = (selFramesParent != nullptr) && (selFramesParent == frame);
+                bool canAdd = mixOK ||
+                              (gSelectedFrame == nullptr || gSelectedFrame == frame || !gSelectedShapes.empty());
                 if (canAdd) {
-                    gSelectedFrame = frame;
+                    if (mixOK) {
+                        // Promote the single selected frame into gSelectedFrames so it stays selected.
+                        if (gSelectedFrame && gSelectedShape == nullptr &&
+                            std::find(gSelectedFrames.begin(), gSelectedFrames.end(), gSelectedFrame) == gSelectedFrames.end())
+                            gSelectedFrames.push_back(gSelectedFrame);
+                        gSelectedFrame = frame; // switch to parent-context
+                    } else {
+                        gSelectedFrame = frame;
+                    }
                     auto sit = std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s);
                     if (sit != gSelectedShapes.end()) {
                         gSelectedShapes.erase(sit);
                         gSelectedShape = gSelectedShapes.empty() ? nullptr : gSelectedShapes.back();
                     } else {
                         if (gSelectedShape &&
-                            std::find(gSelectedShapes.begin(), gSelectedShapes.end(), gSelectedShape) == gSelectedShapes.end()) {
+                            std::find(gSelectedShapes.begin(), gSelectedShapes.end(), gSelectedShape) == gSelectedShapes.end())
                             gSelectedShapes.push_back(gSelectedShape);
-                        }
                         gSelectedShapes.push_back(s);
                         gSelectedShape = s;
                     }
@@ -775,17 +804,29 @@ void HandleLayersPanelClick(Point localPt, UInt16 modifiers) {
                 PushUndo(); s->locked = !s->locked;
                 InvalidateLayers(); InvalidateMain(); return;
             }
-            if ((modifiers & shiftKey) && (gSelectedFrame == nullptr || !gSelectedShapes.empty())) {
-                // Shift+click root shape: toggle in multi-select
+            // Allow mixing root shapes with root-level frames (parent == nullptr).
+            bool rootMixOK = !gSelectedFrames.empty() &&
+                             (!gSelectedFrames.empty() && gSelectedFrames[0]->parent == nullptr);
+            // Also allow single root-frame: gSelectedFrame && gSelectedShape==null && gSelectedFrame->parent==null
+            if (!rootMixOK && gSelectedFrame && gSelectedShape == nullptr && gSelectedFrame->parent == nullptr)
+                rootMixOK = true;
+            if ((modifiers & shiftKey) && (gSelectedFrame == nullptr || !gSelectedShapes.empty() || rootMixOK)) {
+                // Shift+click root shape: toggle in multi-select (possibly mixed with root frames).
+                if (rootMixOK) {
+                    // Promote single selected frame into gSelectedFrames.
+                    if (gSelectedFrame && gSelectedShape == nullptr &&
+                        std::find(gSelectedFrames.begin(), gSelectedFrames.end(), gSelectedFrame) == gSelectedFrames.end())
+                        gSelectedFrames.push_back(gSelectedFrame);
+                    gSelectedFrame = nullptr; // root context
+                }
                 auto sit = std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s);
                 if (sit != gSelectedShapes.end()) {
                     gSelectedShapes.erase(sit);
                     gSelectedShape = gSelectedShapes.empty() ? nullptr : gSelectedShapes.back();
                 } else {
                     if (gSelectedShape &&
-                        std::find(gSelectedShapes.begin(), gSelectedShapes.end(), gSelectedShape) == gSelectedShapes.end()) {
+                        std::find(gSelectedShapes.begin(), gSelectedShapes.end(), gSelectedShape) == gSelectedShapes.end())
                         gSelectedShapes.push_back(gSelectedShape);
-                    }
                     gSelectedShapes.push_back(s);
                     gSelectedShape = s;
                 }

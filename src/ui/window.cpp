@@ -979,12 +979,24 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
 
     // ---- Shift+click: toggle shape in multi-select ----
     if (found && (modifiers & shiftKey) && hitShape) {
-        // Allow adding when: no current context, same-frame context, or gSelectedShapes
-        // is already populated with shapes (rubber-band result with null gSelectedFrame).
-        bool canAdd = (gSelectedFrame == nullptr)
+        // Allow adding when: no current context, same-frame context, gSelectedShapes already populated,
+        // OR mixing with frame selections that share the same parent as this shape.
+        Frame* selFramesParent = nullptr;
+        if (!gSelectedFrames.empty())
+            selFramesParent = gSelectedFrames[0]->parent;
+        else if (gSelectedFrame && gSelectedShape == nullptr)
+            selFramesParent = gSelectedFrame->parent;
+        bool mixOK = (selFramesParent != nullptr) && (selFramesParent == hitFrame);
+        bool canAdd = mixOK
+                   || (gSelectedFrame == nullptr)
                    || (hitFrame == gSelectedFrame)
                    || (!gSelectedShapes.empty());
         if (canAdd) {
+            if (mixOK) {
+                if (gSelectedFrame && gSelectedShape == nullptr &&
+                    std::find(gSelectedFrames.begin(), gSelectedFrames.end(), gSelectedFrame) == gSelectedFrames.end())
+                    gSelectedFrames.push_back(gSelectedFrame);
+            }
             gSelectedFrame = hitFrame;
             auto it = std::find(gSelectedShapes.begin(), gSelectedShapes.end(), hitShape);
             if (it != gSelectedShapes.end()) {
@@ -1009,17 +1021,27 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
 
     // ---- Shift+click on a frame (no shape hit): toggle frame in gSelectedFrames ----
     if (found && (modifiers & shiftKey) && !hitShape && hitFrame) {
-        gSelectedShapes.clear(); gSelectedShape = nullptr;
+        // Allow mixing with shapes when the clicked frame's parent == gSelectedFrame (shape context).
+        bool shapesPresent = (gSelectedShape != nullptr || !gSelectedShapes.empty());
+        bool mixOK = shapesPresent && (hitFrame->parent == gSelectedFrame);
+        if (!mixOK) {
+            gSelectedShapes.clear(); gSelectedShape = nullptr;
+        } else {
+            if (gSelectedShape &&
+                std::find(gSelectedShapes.begin(), gSelectedShapes.end(), gSelectedShape) == gSelectedShapes.end())
+                gSelectedShapes.push_back(gSelectedShape);
+        }
         auto fit = std::find(gSelectedFrames.begin(), gSelectedFrames.end(), hitFrame);
         if (fit != gSelectedFrames.end()) {
             gSelectedFrames.erase(fit);
-            gSelectedFrame = gSelectedFrames.empty() ? nullptr : gSelectedFrames.back();
+            if (!mixOK) gSelectedFrame = gSelectedFrames.empty() ? nullptr : gSelectedFrames.back();
         } else {
-            if (gSelectedFrame && !gSelectedShape &&
+            if (!mixOK && gSelectedFrame && !gSelectedShape &&
                 std::find(gSelectedFrames.begin(), gSelectedFrames.end(), gSelectedFrame) == gSelectedFrames.end())
                 gSelectedFrames.push_back(gSelectedFrame);
             gSelectedFrames.push_back(hitFrame);
-            gSelectedFrame = hitFrame;
+            if (!mixOK) gSelectedFrame = hitFrame;
+            // In mixed mode, gSelectedFrame stays as the parent context.
         }
         Rect portRect2; GetWindowPortBounds(win, &portRect2); InvalWindowRect(win, &portRect2);
         RefreshLayersPanel();
@@ -1027,12 +1049,19 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         return;
     }
 
-    // If clicking on an object already in the multi-select, preserve selection for drag.
+    // If clicking on an object already in the multi-select (including mixed), preserve selection for drag.
+    bool isMixedSelect = (!gSelectedFrames.empty() && !gSelectedShapes.empty());
     bool hitInSelection =
         (hitShape && gSelectedShapes.size() > 1 &&
          std::find(gSelectedShapes.begin(), gSelectedShapes.end(), hitShape) != gSelectedShapes.end())
         ||
         (!hitShape && hitFrame && gSelectedFrames.size() > 1 &&
+         std::find(gSelectedFrames.begin(), gSelectedFrames.end(), hitFrame) != gSelectedFrames.end())
+        ||
+        (isMixedSelect && hitShape &&
+         std::find(gSelectedShapes.begin(), gSelectedShapes.end(), hitShape) != gSelectedShapes.end())
+        ||
+        (isMixedSelect && !hitShape && hitFrame &&
          std::find(gSelectedFrames.begin(), gSelectedFrames.end(), hitFrame) != gSelectedFrames.end());
 
     if (hitInSelection) {
@@ -1091,7 +1120,8 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
 
         // Exclude dragged shape(s) from layout so they move freely.
         // Single-select: use gLayoutDragShape; multi-select: use gIsLayoutMultiDrag.
-        bool isMultiDrag  = (gSelectedShapes.size() > 1 || gSelectedFrames.size() > 1);
+        bool isMultiDrag  = (gSelectedShapes.size() > 1 || gSelectedFrames.size() > 1)
+                         || (!gSelectedFrames.empty() && !gSelectedShapes.empty()); // mixed
         bool isLayoutDrag = (!isMultiDrag && hitShape && hitFrame &&
                              hitFrame->layoutMode != LayoutMode::None);
         if (isLayoutDrag) gLayoutDragShape = hitShape;
@@ -1106,7 +1136,11 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                 SInt32 dx = SInt32(currPt.h - prevPt.h) * 100 / gCanvasZoom;
                 SInt32 dy = SInt32(currPt.v - prevPt.v) * 100 / gCanvasZoom;
 
-                if (gSelectedShapes.size() > 1) {
+                if (!gSelectedFrames.empty() && !gSelectedShapes.empty()) {
+                    // Mixed selection: move all shapes + all frames together
+                    for (Shape* s : gSelectedShapes) { s->bounds.x += dx; s->bounds.y += dy; }
+                    for (Frame* f : gSelectedFrames) MoveFrameTree(f, dx, dy);
+                } else if (gSelectedShapes.size() > 1) {
                     for (Shape* s : gSelectedShapes) {
                         s->bounds.x += dx;
                         s->bounds.y += dy;
@@ -1711,7 +1745,23 @@ void DeleteSelected() {
     PushUndo();
     bool changed = false;
 
-    if (gSelectedFrames.size() > 1) {
+    if (!gSelectedFrames.empty() && !gSelectedShapes.empty()) {
+        // Mixed selection: delete all selected frames and all selected shapes
+        for (Frame* target : gSelectedFrames) {
+            auto owned = ExtractFrame(target);
+            if (owned) changed = true;
+        }
+        gSelectedFrames.clear();
+        auto& vec = gSelectedFrame ? gSelectedFrame->children : gDocument->rootShapes;
+        for (Shape* target : gSelectedShapes) {
+            for (auto it = vec.begin(); it != vec.end(); ++it) {
+                if (it->get() == target) { vec.erase(it); changed = true; break; }
+            }
+        }
+        gSelectedShapes.clear();
+        gSelectedShape  = nullptr;
+        gSelectedFrame  = nullptr;
+    } else if (gSelectedFrames.size() > 1) {
         for (Frame* target : gSelectedFrames) {
             auto owned = ExtractFrame(target);
             if (owned) changed = true;

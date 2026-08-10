@@ -510,6 +510,19 @@ void DrawInspectorPanel() {
         return;
     }
 
+    // Mixed selection (frames + shapes together): show count, no editable properties
+    if (!gSelectedFrames.empty() && !gSelectedShapes.empty()) {
+        SetOrigin(0, 0);
+        RGBColor gray = { 0x9999, 0x9999, 0x9999 }; RGBForeColor(&gray); TextSize(10);
+        Str255 ps;
+        SInt32 total = static_cast<SInt32>(gSelectedFrames.size() + gSelectedShapes.size());
+        std::string msg = numStr(total) + " objects selected";
+        PStr(msg, ps); MoveTo(8, 28); DrawString(ps);
+        PStrC("(mixed types)", ps); MoveTo(8, 44); DrawString(ps);
+        TextSize(12); PenNormal(); RGBForeColor(&black); RGBBackColor(&white);
+        return;
+    }
+
     // Multi-frame selection: editable properties for all selected frames
     if (gSelectedFrames.size() > 1) {
         RGBColor labelClr2 = { 0x6666, 0x6666, 0x6666 };
