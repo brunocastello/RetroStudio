@@ -752,17 +752,20 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
             : static_cast<int>(dstOwner->children.size());
     } else {
         // Gap drop — owner comes from the reference row
-        int refIdx = (dropPos <= 0) ? 0 : (dropPos >= N ? N-1 : dropPos);
+        if (dropPos >= N) {
+            // Below all rows = root level at the bottom.
+            // Use null owner regardless of the last row's owner (which could be a nested child).
+            dstOwner = nullptr;
+            insertAt = isSrcFrame
+                ? static_cast<int>(gDocument->frames.size())
+                : static_cast<int>(gDocument->rootShapes.size());
+        } else {
+        int refIdx = (dropPos <= 0) ? 0 : dropPos;
         dstOwner = sLayerRows[allIdxs[refIdx]].owner;
 
         if (dropPos <= 0) {
             // Dropped above all rows: top of panel = lowest z → prepend
             insertAt = 0;
-        } else if (dropPos >= N) {
-            // Dropped below all rows: bottom of panel = highest z → append
-            insertAt = isSrcFrame
-                ? static_cast<int>((dstOwner ? dstOwner->childFrames : gDocument->frames).size())
-                : static_cast<int>((dstOwner ? dstOwner->children    : gDocument->rootShapes).size());
         } else {
             const LayerRow& refRow = sLayerRows[allIdxs[dropPos]];
             if (refRow.isFrame == isSrcFrame) {
@@ -777,6 +780,7 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
             }
         }
     }
+    } // closes } else { (gap drop branch)
 
     // Cycle check
     for (const SrcItem& si : srcItems)

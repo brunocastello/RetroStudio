@@ -1255,8 +1255,8 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                                      ? gSelectedFrames[0]->parent
                                      : gSelectedFrame;
 
-            // Reparent all selected shapes (if parent changed)
-            if (!gSelectedShapes.empty() && newShapeParent != origShapeParent) {
+            // Reparent all selected shapes only if an actual drag occurred.
+            if (!gSelectedShapes.empty() && newShapeParent != origShapeParent && pushedUndo) {
                 for (Shape* target : gSelectedShapes) {
                     auto owned = ExtractShape(target, origShapeParent);
                     if (owned) {
