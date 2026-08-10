@@ -1239,47 +1239,46 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         gIsLayoutMultiDrag = false;
 
         // ---- Re-parent on drop ----
-        // Multi-select: move all shapes to the frame under the drag endpoint.
-        if (isMultiDrag && hitShape) {
-            Bounds2 hitB = hitShape->bounds;
-            Point hitCenter;
-            hitCenter.h = static_cast<short>(SInt32(hitB.x + hitB.w/2) * gCanvasZoom / 100 + gCanvasOffsetX);
-            hitCenter.v = static_cast<short>(SInt32(hitB.y + hitB.h/2) * gCanvasZoom / 100 + gCanvasOffsetY);
-            Frame* newParent = DeepestFrameAt(hitCenter);
-            if (newParent != origParent) {
+        // Unified multi-select reparent: move ALL selected shapes AND frames to the drop destination.
+        if (isMultiDrag) {
+            // Reference point: center of whichever item the drag started on.
+            Bounds2 refB = hitShape ? hitShape->bounds : hitFrame->bounds;
+            Point refCenter;
+            refCenter.h = static_cast<short>(SInt32(refB.x + refB.w/2) * gCanvasZoom / 100 + gCanvasOffsetX);
+            refCenter.v = static_cast<short>(SInt32(refB.y + refB.h/2) * gCanvasZoom / 100 + gCanvasOffsetY);
+            Frame* newShapeParent = DeepestFrameAt(refCenter);
+
+            // Reparent all selected shapes (if parent changed)
+            if (!gSelectedShapes.empty() && newShapeParent != gSelectedFrame) {
+                Frame* origShapeParent = gSelectedFrame;
                 for (Shape* target : gSelectedShapes) {
-                    auto owned = ExtractShape(target, origParent);
+                    auto owned = ExtractShape(target, origShapeParent);
                     if (owned) {
-                        if (newParent) {
-                            newParent->childOrder.push_back({ false, (int)newParent->children.size() });
-                            newParent->children.push_back(std::move(owned));
+                        if (newShapeParent) {
+                            newShapeParent->childOrder.push_back({ false, (int)newShapeParent->children.size() });
+                            newShapeParent->children.push_back(std::move(owned));
                         } else {
                             gDocument->rootShapes.push_back(std::move(owned));
                         }
                     }
                 }
-                gSelectedFrame = newParent;
+                gSelectedFrame = newShapeParent;
             }
-            Rect portRect; GetWindowPortBounds(win, &portRect); InvalWindowRect(win, &portRect);
-            RefreshLayersPanel();
-            return;
-        }
-        if (isMultiDrag && gSelectedFrames.size() > 1) {
-            // Re-parent each selected frame to wherever it was dropped,
-            // excluding all selected frames from the candidate parent search.
+
+            // Reparent each selected frame to where its center landed (excluding selected frames)
             for (Frame* f : gSelectedFrames) {
                 Bounds2 fb = f->bounds;
                 Point fc;
                 fc.h = static_cast<short>(SInt32(fb.x + fb.w/2) * gCanvasZoom / 100 + gCanvasOffsetX);
                 fc.v = static_cast<short>(SInt32(fb.y + fb.h/2) * gCanvasZoom / 100 + gCanvasOffsetY);
-                Frame* newParent = DeepestFrameAtExcl(fc, gSelectedFrames);
-                if (newParent != f->parent) {
+                Frame* newFrameParent = DeepestFrameAtExcl(fc, gSelectedFrames);
+                if (newFrameParent != f->parent) {
                     auto owned = ExtractFrame(f);
                     if (owned) {
-                        if (newParent) {
-                            owned->parent = newParent;
-                            newParent->childOrder.push_back({ true, (int)newParent->childFrames.size() });
-                            newParent->childFrames.push_back(std::move(owned));
+                        if (newFrameParent) {
+                            owned->parent = newFrameParent;
+                            newFrameParent->childOrder.push_back({ true, (int)newFrameParent->childFrames.size() });
+                            newFrameParent->childFrames.push_back(std::move(owned));
                         } else {
                             owned->parent = nullptr;
                             gDocument->frames.push_back(std::move(owned));
@@ -1287,13 +1286,9 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                     }
                 }
             }
-            gSelectedFrame = gSelectedFrames.empty() ? nullptr : gSelectedFrames.back();
-            Rect portRect; GetWindowPortBounds(win, &portRect); InvalWindowRect(win, &portRect);
-            RefreshLayersPanel();
-            RefreshInspector();
-            return;
-        }
-        if (isMultiDrag) {
+            if (!gSelectedFrames.empty())
+                gSelectedFrame = gSelectedFrames.back();
+
             Rect portRect; GetWindowPortBounds(win, &portRect); InvalWindowRect(win, &portRect);
             RefreshLayersPanel();
             RefreshInspector();
@@ -1307,30 +1302,39 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         if (hitShape) {
             Frame* newParent = DeepestFrameAt(center);
 
-            if (isLayoutDrag && newParent == hitFrame) {
+            if (isLayoutDrag && newParent == hitFrame && pushedUndo) {
                 // Dropped inside same layout frame — sort childOrder by primary axis center
+                // For wrap layouts, sort cross-axis first (row), then primary axis (column).
                 bool isHoriz = (hitFrame->layoutMode == LayoutMode::Horizontal);
+                bool isWrap  = hitFrame->layoutWrap;
+                auto sortKey = [hitFrame, isHoriz, isWrap](const ChildRef& cr) -> SInt32 {
+                    const Bounds2& bnd = cr.isFrame
+                        ? hitFrame->childFrames[cr.idx]->bounds
+                        : hitFrame->children[cr.idx]->bounds;
+                    SInt32 cx = bnd.x + bnd.w / 2;
+                    SInt32 cy = bnd.y + bnd.h / 2;
+                    if (isWrap) {
+                        SInt32 cross   = isHoriz ? cy : cx;
+                        SInt32 primary = isHoriz ? cx : cy;
+                        return cross * 100000 + primary;
+                    }
+                    return isHoriz ? cx : cy;
+                };
                 if (!hitFrame->childOrder.empty()) {
                     std::stable_sort(hitFrame->childOrder.begin(), hitFrame->childOrder.end(),
-                        [hitFrame, isHoriz](const ChildRef& a, const ChildRef& b) {
-                            auto center = [hitFrame, isHoriz](const ChildRef& cr) -> SInt32 {
-                                if (cr.isFrame) {
-                                    const Bounds2& bnd = hitFrame->childFrames[cr.idx]->bounds;
-                                    return isHoriz ? bnd.x + bnd.w/2 : bnd.y + bnd.h/2;
-                                }
-                                const Bounds2& bnd = hitFrame->children[cr.idx]->bounds;
-                                return isHoriz ? bnd.x + bnd.w/2 : bnd.y + bnd.h/2;
-                            };
-                            return center(a) < center(b);
+                        [&sortKey](const ChildRef& a, const ChildRef& b) {
+                            return sortKey(a) < sortKey(b);
                         });
                 } else {
                     std::stable_sort(hitFrame->children.begin(), hitFrame->children.end(),
-                        [isHoriz](const std::unique_ptr<Shape>& a, const std::unique_ptr<Shape>& b) {
-                            SInt32 aM = isHoriz ? (a->bounds.x + a->bounds.w/2)
-                                                : (a->bounds.y + a->bounds.h/2);
-                            SInt32 bM = isHoriz ? (b->bounds.x + b->bounds.w/2)
-                                                : (b->bounds.y + b->bounds.h/2);
-                            return aM < bM;
+                        [isHoriz, isWrap](const std::unique_ptr<Shape>& a, const std::unique_ptr<Shape>& b) {
+                            auto key = [isHoriz, isWrap](const Shape& s) -> SInt32 {
+                                SInt32 cx = s.bounds.x + s.bounds.w / 2;
+                                SInt32 cy = s.bounds.y + s.bounds.h / 2;
+                                if (isWrap) return (isHoriz ? cy : cx) * 100000 + (isHoriz ? cx : cy);
+                                return isHoriz ? cx : cy;
+                            };
+                            return key(*a) < key(*b);
                         });
                 }
             } else if (newParent != origParent) {
@@ -1347,31 +1351,40 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
             }
         } else {
             Frame* newParent = DeepestFrameAt(center, hitFrame);
-            if (isLayoutFrameDrag && newParent == hitFrame->parent && hitFrame->parent) {
+            if (isLayoutFrameDrag && newParent == hitFrame->parent && hitFrame->parent && pushedUndo) {
                 // Dropped back inside same layout parent — sort childOrder by primary axis
+                // For wrap layouts, sort cross-axis first (row), then primary axis (column).
                 Frame* layoutParent = hitFrame->parent;
                 bool isHoriz = (layoutParent->layoutMode == LayoutMode::Horizontal);
+                bool isWrap  = layoutParent->layoutWrap;
+                auto sortKey = [layoutParent, isHoriz, isWrap](const ChildRef& cr) -> SInt32 {
+                    const Bounds2& bnd = cr.isFrame
+                        ? layoutParent->childFrames[cr.idx]->bounds
+                        : layoutParent->children[cr.idx]->bounds;
+                    SInt32 cx = bnd.x + bnd.w / 2;
+                    SInt32 cy = bnd.y + bnd.h / 2;
+                    if (isWrap) {
+                        SInt32 cross   = isHoriz ? cy : cx;
+                        SInt32 primary = isHoriz ? cx : cy;
+                        return cross * 100000 + primary;
+                    }
+                    return isHoriz ? cx : cy;
+                };
                 if (!layoutParent->childOrder.empty()) {
                     std::stable_sort(layoutParent->childOrder.begin(), layoutParent->childOrder.end(),
-                        [layoutParent, isHoriz](const ChildRef& a, const ChildRef& b) {
-                            auto center = [layoutParent, isHoriz](const ChildRef& cr) -> SInt32 {
-                                if (cr.isFrame) {
-                                    const Bounds2& bnd = layoutParent->childFrames[cr.idx]->bounds;
-                                    return isHoriz ? bnd.x + bnd.w/2 : bnd.y + bnd.h/2;
-                                }
-                                const Bounds2& bnd = layoutParent->children[cr.idx]->bounds;
-                                return isHoriz ? bnd.x + bnd.w/2 : bnd.y + bnd.h/2;
-                            };
-                            return center(a) < center(b);
+                        [&sortKey](const ChildRef& a, const ChildRef& b) {
+                            return sortKey(a) < sortKey(b);
                         });
                 } else {
                     std::stable_sort(layoutParent->childFrames.begin(), layoutParent->childFrames.end(),
-                        [isHoriz](const std::unique_ptr<Frame>& a, const std::unique_ptr<Frame>& b) {
-                            SInt32 aM = isHoriz ? (a->bounds.x + a->bounds.w/2)
-                                                : (a->bounds.y + a->bounds.h/2);
-                            SInt32 bM = isHoriz ? (b->bounds.x + b->bounds.w/2)
-                                                : (b->bounds.y + b->bounds.h/2);
-                            return aM < bM;
+                        [isHoriz, isWrap](const std::unique_ptr<Frame>& a, const std::unique_ptr<Frame>& b) {
+                            auto key = [isHoriz, isWrap](const Frame& f) -> SInt32 {
+                                SInt32 cx = f.bounds.x + f.bounds.w / 2;
+                                SInt32 cy = f.bounds.y + f.bounds.h / 2;
+                                if (isWrap) return (isHoriz ? cy : cx) * 100000 + (isHoriz ? cx : cy);
+                                return isHoriz ? cx : cy;
+                            };
+                            return key(*a) < key(*b);
                         });
                 }
             } else if (newParent != hitFrame->parent) {

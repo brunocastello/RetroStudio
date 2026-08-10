@@ -226,8 +226,8 @@ static short DrawFrameRows(const Frame* frame, short y, short indent,
                 frame->visible, frame->locked, portRect);
 
     if (!frame->childOrder.empty()) {
-        // Iterate childOrder in reverse (highest z = first in panel)
-        for (int ci = (int)frame->childOrder.size() - 1; ci >= 0; --ci) {
+        // Iterate childOrder forward (first-created = lowest z = top of panel)
+        for (int ci = 0; ci < (int)frame->childOrder.size(); ++ci) {
             const ChildRef& cr = frame->childOrder[ci];
             if (cr.isFrame) {
                 const Frame* cf = frame->childFrames[cr.idx].get();
@@ -245,13 +245,13 @@ static short DrawFrameRows(const Frame* frame, short y, short indent,
             }
         }
     } else {
-        // Legacy fallback: childFrames reverse then children reverse
-        int cfIdx = static_cast<int>(frame->childFrames.size()) - 1;
-        for (auto it = frame->childFrames.rbegin(); it != frame->childFrames.rend(); ++it, --cfIdx)
+        // Legacy fallback: childFrames forward then children forward
+        int cfIdx = 0;
+        for (auto it = frame->childFrames.begin(); it != frame->childFrames.end(); ++it, ++cfIdx)
             y = DrawFrameRows(it->get(), y, static_cast<short>(indent + 10), portRect, cfIdx, -1);
 
-        int chIdx = static_cast<int>(frame->children.size()) - 1;
-        for (auto it = frame->children.rbegin(); it != frame->children.rend(); ++it, --chIdx) {
+        int chIdx = 0;
+        for (auto it = frame->children.begin(); it != frame->children.end(); ++it, ++chIdx) {
             const Shape* s = it->get();
             sLayerRows.push_back({ false, nullptr, const_cast<Shape*>(s),
                                    const_cast<Frame*>(frame), y, chIdx, -1 });
@@ -309,8 +309,8 @@ void DrawLayersPanel() {
 
     sLayerRows.clear();
 
-    int rsIdx = static_cast<int>(gDocument->rootShapes.size()) - 1;
-    for (auto it = gDocument->rootShapes.rbegin(); it != gDocument->rootShapes.rend(); ++it, --rsIdx) {
+    int rsIdx = 0;
+    for (auto it = gDocument->rootShapes.begin(); it != gDocument->rootShapes.end(); ++it, ++rsIdx) {
         const Shape* s = it->get();
         sLayerRows.push_back({ false, nullptr, const_cast<Shape*>(s), nullptr, y, rsIdx, -1 });
         bool sel = (gSelectedShape == s && gSelectedFrame == nullptr) ||
@@ -321,8 +321,8 @@ void DrawLayersPanel() {
         y = DrawRow(y, 0, lbl, sel, s->GetType(), false, s->visible, s->locked, contentRect);
     }
 
-    int fIdx = static_cast<int>(gDocument->frames.size()) - 1;
-    for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend(); ++it, --fIdx)
+    int fIdx = 0;
+    for (auto it = gDocument->frames.begin(); it != gDocument->frames.end(); ++it, ++fIdx)
         y = DrawFrameRows(it->get(), y, 0, contentRect, fIdx, -1);
 
     gLayersTotalH = y;
@@ -407,8 +407,8 @@ static short HitTestFrameRows(Frame* frame, short y, short indent,
     y = static_cast<short>(y + kLayerRowH);
 
     if (!frame->childOrder.empty()) {
-        // Iterate childOrder in reverse (high z first = top of panel)
-        for (int ci = (int)frame->childOrder.size() - 1; ci >= 0; --ci) {
+        // Iterate childOrder forward (first-created = top of panel, matches DrawFrameRows)
+        for (int ci = 0; ci < (int)frame->childOrder.size(); ++ci) {
             const ChildRef& cr = frame->childOrder[ci];
             if (cr.isFrame) {
                 Frame* cf = frame->childFrames[cr.idx].get();
@@ -476,12 +476,12 @@ static short HitTestFrameRows(Frame* frame, short y, short indent,
         return y;
     }
 
-    for (auto it = frame->childFrames.rbegin(); it != frame->childFrames.rend(); ++it) {
+    for (auto it = frame->childFrames.begin(); it != frame->childFrames.end(); ++it) {
         y = HitTestFrameRows(it->get(), y, static_cast<short>(indent + 10),
                              pt, portRect, eyeZone, lockZone, modifiers);
         if (y == -1) return -1;
     }
-    for (auto it = frame->children.rbegin(); it != frame->children.rend(); ++it) {
+    for (auto it = frame->children.begin(); it != frame->children.end(); ++it) {
         Shape* s = it->get();
         Rect sr = { y, 2,
                     static_cast<short>(y + kLayerRowH - 1),
@@ -581,47 +581,44 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
     struct SrcItem { bool isFrame; Frame* frame; Shape* shape; Frame* owner; int vecIdx; int orderIdx; };
     std::vector<SrcItem> srcItems;
 
-    auto gatherFrames = [&]() {
-        if (gSelectedFrames.size() > 1) {
-            Frame* commonOwner = srcRow.owner;
-            std::vector<SrcItem> cand;
-            for (Frame* f : gSelectedFrames) {
-                for (int i = 0; i < (int)sLayerRows.size(); ++i) {
-                    if (sLayerRows[i].isFrame && sLayerRows[i].frame == f) {
-                        if (sLayerRows[i].owner != commonOwner) { cand.clear(); return; }
-                        cand.push_back({ true, f, nullptr, sLayerRows[i].owner, sLayerRows[i].vecIdx, sLayerRows[i].orderIdx });
-                        break;
-                    }
+    // Gather ALL selected items (frames + shapes) that share the same owner as srcRow.
+    // This enables mixed-type multi-select drag.
+    auto gatherAll = [&]() {
+        if (gSelectedFrames.size() + gSelectedShapes.size() < 2) return;
+        Frame* commonOwner = srcRow.owner;
+        std::vector<SrcItem> cand;
+        for (Frame* f : gSelectedFrames) {
+            for (int i = 0; i < (int)sLayerRows.size(); ++i) {
+                if (sLayerRows[i].isFrame && sLayerRows[i].frame == f &&
+                    sLayerRows[i].owner == commonOwner) {
+                    cand.push_back({ true, f, nullptr, commonOwner,
+                                     sLayerRows[i].vecIdx, sLayerRows[i].orderIdx });
+                    break;
                 }
             }
-            srcItems = cand;
         }
-    };
-    auto gatherShapes = [&]() {
-        if (gSelectedShapes.size() > 1) {
-            Frame* commonOwner = srcRow.owner;
-            std::vector<SrcItem> cand;
-            for (Shape* s : gSelectedShapes) {
-                for (int i = 0; i < (int)sLayerRows.size(); ++i) {
-                    if (!sLayerRows[i].isFrame && sLayerRows[i].shape == s) {
-                        if (sLayerRows[i].owner != commonOwner) { cand.clear(); return; }
-                        cand.push_back({ false, nullptr, s, sLayerRows[i].owner, sLayerRows[i].vecIdx, sLayerRows[i].orderIdx });
-                        break;
-                    }
+        for (Shape* s : gSelectedShapes) {
+            for (int i = 0; i < (int)sLayerRows.size(); ++i) {
+                if (!sLayerRows[i].isFrame && sLayerRows[i].shape == s &&
+                    sLayerRows[i].owner == commonOwner) {
+                    cand.push_back({ false, nullptr, s, commonOwner,
+                                     sLayerRows[i].vecIdx, sLayerRows[i].orderIdx });
+                    break;
                 }
             }
-            srcItems = cand;
         }
+        if (!cand.empty()) srcItems = cand;
     };
 
-    if (isSrcFrame)  gatherFrames();
-    else             gatherShapes();
+    gatherAll();
 
     if (srcItems.empty())
         srcItems.push_back({ srcRow.isFrame, srcRow.frame, srcRow.shape, srcRow.owner, srcRow.vecIdx, srcRow.orderIdx });
 
-    // Sort ascending vecIdx (stable relative order for insertion)
+    // Sort: frames first (ascending vecIdx), then shapes (ascending vecIdx).
+    // Keeps relative insertion order within each typed vector.
     std::sort(srcItems.begin(), srcItems.end(), [](const SrcItem& a, const SrcItem& b){
+        if (a.isFrame != b.isFrame) return a.isFrame > b.isFrame;
         return a.vecIdx < b.vecIdx;
     });
 
@@ -759,23 +756,23 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
         dstOwner = sLayerRows[allIdxs[refIdx]].owner;
 
         if (dropPos <= 0) {
-            // Dropped above all rows: top of the destination vector (highest z)
+            // Dropped above all rows: top of panel = lowest z → prepend
+            insertAt = 0;
+        } else if (dropPos >= N) {
+            // Dropped below all rows: bottom of panel = highest z → append
             insertAt = isSrcFrame
                 ? static_cast<int>((dstOwner ? dstOwner->childFrames : gDocument->frames).size())
                 : static_cast<int>((dstOwner ? dstOwner->children    : gDocument->rootShapes).size());
-        } else if (dropPos >= N) {
-            // Dropped below all rows: bottom of destination vector (lowest z)
-            insertAt = 0;
         } else {
             const LayerRow& refRow = sLayerRows[allIdxs[dropPos]];
             if (refRow.isFrame == isSrcFrame) {
-                // Same type: use vecIdx directly
-                insertAt = refRow.vecIdx + 1;
+                // Same type: insert BEFORE the reference row (no +1, forward iteration)
+                insertAt = refRow.vecIdx;
             } else if (isSrcFrame && !refRow.isFrame) {
-                // Dragging a frame, hovering near a shape row → bottom of childFrames (lowest z)
+                // Dragging a frame near a shape row → bottom of childFrames (lowest z)
                 insertAt = 0;
             } else {
-                // Dragging a shape, hovering near a frame row → top of children (highest z)
+                // Dragging a shape near a frame row → top of children (highest z)
                 insertAt = static_cast<int>((dstOwner ? dstOwner->children : gDocument->rootShapes).size());
             }
         }
@@ -792,7 +789,7 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
     bool isGapCrossType = (!isInto && dropPos > 0 && dropPos < N &&
                            sLayerRows[allIdxs[dropPos]].isFrame != isSrcFrame);
     if (srcItems.size() == 1 && !isInto && !isGapCrossType && sameOwner &&
-        srcItems[0].vecIdx == insertAt - 1)
+        srcItems[0].vecIdx == insertAt)
         return;
 
     PushUndo();
@@ -807,20 +804,19 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
         !dstOwner->childOrder.empty()) {
 
         // Compute target position in childOrder terms.
-        // Panel rows are shown top=high-z, bottom=low-z, so:
-        //   dropPos=0  → above all rows → highest z (back of childOrder)
-        //   dropPos=N  → below all rows → lowest z (front of childOrder)
+        // Panel rows are shown top=low-z (first-created), bottom=high-z, so:
+        //   dropPos=0  → above all rows → lowest z (front of childOrder, pos 0)
+        //   dropPos=N  → below all rows → highest z (back of childOrder)
         int targetOrderPos;
         if (dropPos <= 0) {
-            targetOrderPos = (int)dstOwner->childOrder.size(); // append at top z
+            targetOrderPos = 0; // prepend at lowest z
         } else if (dropPos >= N) {
-            targetOrderPos = 0; // prepend at bottom z
+            targetOrderPos = (int)dstOwner->childOrder.size(); // append at highest z
         } else {
-            // The reference row's orderIdx is where we insert AFTER in childOrder.
-            // Since the panel shows items in reverse order (high z first),
-            // gap above row i = insert AFTER that row's orderIdx position.
+            // Gap before panel row i → insert AT that row's orderIdx in childOrder.
+            // (Forward iteration: row's orderIdx = its childOrder position)
             int refRowOrderIdx = sLayerRows[allIdxs[dropPos]].orderIdx;
-            targetOrderPos = (refRowOrderIdx >= 0) ? refRowOrderIdx + 1 : 0;
+            targetOrderPos = (refRowOrderIdx >= 0) ? refRowOrderIdx : 0;
         }
 
         // Collect source orderIdxes, sort descending for extraction
@@ -845,106 +841,130 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
             ++targetOrderPos;
         }
 
-        // Refresh selection
-        if (isSrcFrame) {
-            gSelectedFrames.clear();
-            for (const SrcItem& si : srcItems) gSelectedFrames.push_back(si.frame);
-            gSelectedFrame = gSelectedFrames.empty() ? nullptr : gSelectedFrames.back();
-            gSelectedShape = nullptr;
-        } else {
-            gSelectedShapes.clear();
-            for (const SrcItem& si : srcItems) gSelectedShapes.push_back(si.shape);
-            gSelectedShape = gSelectedShapes.empty() ? nullptr : gSelectedShapes.back();
-            gSelectedFrame = dstOwner;
+        // Refresh selection (handles mixed srcItems)
+        gSelectedFrames.clear();
+        gSelectedShapes.clear();
+        for (const SrcItem& si : srcItems) {
+            if (si.isFrame) gSelectedFrames.push_back(si.frame);
+            else            gSelectedShapes.push_back(si.shape);
         }
+        gSelectedFrame = gSelectedFrames.empty() ? dstOwner : gSelectedFrames.back();
+        gSelectedShape = gSelectedShapes.empty() ? nullptr : gSelectedShapes.back();
 
         InvalidateLayers(); InvalidateMain(); RefreshInspector();
         return;
     }
 
     // ── Typed-vector extract + insert (cross-owner, isInto, top-level, or no childOrder) ──
+    // Handles mixed-type srcItems: extracts frames and shapes separately, inserts independently.
 
     std::vector<std::unique_ptr<Frame>> movedFrames;
     std::vector<std::unique_ptr<Shape>> movedShapes;
-    std::vector<Frame*> movedFramePtrs; // raw ptrs before move, ascending vecIdx order
+    std::vector<Frame*> movedFramePtrs;
 
-    // Sort descending for extraction (avoids index shifts during erase)
-    std::vector<SrcItem> extractOrder = srcItems;
-    std::sort(extractOrder.begin(), extractOrder.end(), [](const SrcItem& a, const SrcItem& b){
-        return a.vecIdx > b.vecIdx;
-    });
+    // Determine where frames and shapes go in the destination typed vectors.
+    // Primary type (isSrcFrame) uses insertAt computed above; secondary type always appends.
+    int frameInsertAt = isSrcFrame ? insertAt : static_cast<int>((dstOwner ? dstOwner->childFrames : gDocument->frames).size());
+    int shapeInsertAt = isSrcFrame ? static_cast<int>((dstOwner ? dstOwner->children : gDocument->rootShapes).size()) : insertAt;
 
-    if (isSrcFrame) {
-        for (const SrcItem& si : extractOrder) {
-            auto& srcVec = si.owner ? si.owner->childFrames : gDocument->frames;
-            movedFramePtrs.push_back(srcVec[si.vecIdx].get());
-            movedFrames.insert(movedFrames.begin(), std::move(srcVec[si.vecIdx]));
-            srcVec.erase(srcVec.begin() + si.vecIdx);
-            // Remove + reindex childOrder entry in the source owner
-            if (si.owner) {
-                for (auto it = si.owner->childOrder.begin(); it != si.owner->childOrder.end(); ) {
-                    if (it->isFrame && it->idx == si.vecIdx) { it = si.owner->childOrder.erase(it); continue; }
-                    if (it->isFrame && it->idx > si.vecIdx) --it->idx;
-                    ++it;
-                }
-            }
-            // Adjust insertAt only when extracting from the same typed vector as the destination
-            if (sameOwner && !isGapCrossType && si.vecIdx < insertAt) --insertAt;
-        }
-        for (auto& f : movedFrames) f->parent = dstOwner;
+    // Compute childOrder insert position in destination.
+    // Forward iteration: top of panel = lowest z = front of childOrder (pos 0).
+    int dstOrderPos;
+    if (isInto) {
+        dstOrderPos = dstOwner ? (int)dstOwner->childOrder.size() : 0; // append at highest z
+    } else if (dropPos <= 0) {
+        dstOrderPos = 0;
+    } else if (dropPos >= N) {
+        dstOrderPos = dstOwner ? (int)dstOwner->childOrder.size() : 0;
     } else {
-        for (const SrcItem& si : extractOrder) {
-            auto& srcVec = si.owner ? si.owner->children : gDocument->rootShapes;
-            movedShapes.insert(movedShapes.begin(), std::move(srcVec[si.vecIdx]));
-            srcVec.erase(srcVec.begin() + si.vecIdx);
-            // Remove + reindex childOrder entry in the source owner
-            if (si.owner) {
-                for (auto it = si.owner->childOrder.begin(); it != si.owner->childOrder.end(); ) {
-                    if (!it->isFrame && it->idx == si.vecIdx) { it = si.owner->childOrder.erase(it); continue; }
-                    if (!it->isFrame && it->idx > si.vecIdx) --it->idx;
-                    ++it;
-                }
-            }
-            if (sameOwner && !isGapCrossType && si.vecIdx < insertAt) --insertAt;
-        }
+        const LayerRow& refRow = sLayerRows[allIdxs[dropPos]];
+        dstOrderPos = (refRow.owner == dstOwner && refRow.orderIdx >= 0) ? refRow.orderIdx : (dstOwner ? (int)dstOwner->childOrder.size() : 0);
     }
 
-    // ── Insert into destination ───────────────────────────────────────────────
-    if (isSrcFrame) {
+    // Sort descending by vecIdx within each type for extraction (avoids index shifts during erase).
+    std::vector<SrcItem> extractOrder = srcItems;
+    std::sort(extractOrder.begin(), extractOrder.end(), [](const SrcItem& a, const SrcItem& b){
+        if (a.isFrame != b.isFrame) return a.isFrame > b.isFrame; // frames first
+        return a.vecIdx > b.vecIdx; // descending within type
+    });
+
+    // Extract frames
+    for (const SrcItem& si : extractOrder) {
+        if (!si.isFrame) continue;
+        auto& srcVec = si.owner ? si.owner->childFrames : gDocument->frames;
+        movedFramePtrs.push_back(srcVec[si.vecIdx].get());
+        movedFrames.insert(movedFrames.begin(), std::move(srcVec[si.vecIdx]));
+        srcVec.erase(srcVec.begin() + si.vecIdx);
+        if (si.owner) {
+            for (auto it = si.owner->childOrder.begin(); it != si.owner->childOrder.end(); ) {
+                if (it->isFrame && it->idx == si.vecIdx) { it = si.owner->childOrder.erase(it); continue; }
+                if (it->isFrame && it->idx > si.vecIdx) --it->idx;
+                ++it;
+            }
+        }
+        if (sameOwner && !isGapCrossType && si.vecIdx < frameInsertAt) --frameInsertAt;
+    }
+    for (auto& f : movedFrames) f->parent = dstOwner;
+
+    // Extract shapes
+    for (const SrcItem& si : extractOrder) {
+        if (si.isFrame) continue;
+        auto& srcVec = si.owner ? si.owner->children : gDocument->rootShapes;
+        movedShapes.insert(movedShapes.begin(), std::move(srcVec[si.vecIdx]));
+        srcVec.erase(srcVec.begin() + si.vecIdx);
+        if (si.owner) {
+            for (auto it = si.owner->childOrder.begin(); it != si.owner->childOrder.end(); ) {
+                if (!it->isFrame && it->idx == si.vecIdx) { it = si.owner->childOrder.erase(it); continue; }
+                if (!it->isFrame && it->idx > si.vecIdx) --it->idx;
+                ++it;
+            }
+        }
+        if (sameOwner && !isGapCrossType && si.vecIdx < shapeInsertAt) --shapeInsertAt;
+    }
+
+    // ── Insert frames into destination ────────────────────────────────────────
+    if (!movedFrames.empty()) {
         auto& dstVec = dstOwner ? dstOwner->childFrames : gDocument->frames;
-        if (insertAt < 0) insertAt = 0;
-        if (insertAt > (int)dstVec.size()) insertAt = static_cast<int>(dstVec.size());
-        int firstAt = insertAt;
+        if (frameInsertAt < 0) frameInsertAt = 0;
+        if (frameInsertAt > (int)dstVec.size()) frameInsertAt = (int)dstVec.size();
+        int firstAt = frameInsertAt;
+        int orderPos = dstOrderPos;
         for (auto& f : movedFrames) {
-            // Shift existing frame-type childOrder indices >= insertAt, then append new entry
             if (dstOwner) {
                 for (auto& cr : dstOwner->childOrder)
-                    if (cr.isFrame && cr.idx >= insertAt) ++cr.idx;
-                dstOwner->childOrder.push_back({ true, insertAt });
+                    if (cr.isFrame && cr.idx >= frameInsertAt) ++cr.idx;
+                if (orderPos < 0) orderPos = 0;
+                if (orderPos > (int)dstOwner->childOrder.size()) orderPos = (int)dstOwner->childOrder.size();
+                dstOwner->childOrder.insert(dstOwner->childOrder.begin() + orderPos, { true, frameInsertAt });
+                ++orderPos;
             }
-            dstVec.insert(dstVec.begin() + insertAt, std::move(f));
-            ++insertAt;
+            dstVec.insert(dstVec.begin() + frameInsertAt, std::move(f));
+            ++frameInsertAt;
         }
-        // Update selection
         gSelectedFrames.clear();
         for (int i = firstAt; i < (int)dstVec.size() && i < firstAt + (int)movedFramePtrs.size(); ++i)
             gSelectedFrames.push_back(dstVec[i].get());
         gSelectedFrame = gSelectedFrames.empty() ? nullptr : gSelectedFrames.back();
-        gSelectedShape = nullptr;
-    } else {
+    }
+
+    // ── Insert shapes into destination ────────────────────────────────────────
+    if (!movedShapes.empty()) {
         auto& dstVec = dstOwner ? dstOwner->children : gDocument->rootShapes;
-        if (insertAt < 0) insertAt = 0;
-        if (insertAt > (int)dstVec.size()) insertAt = static_cast<int>(dstVec.size());
-        int firstAt = insertAt;
+        if (shapeInsertAt < 0) shapeInsertAt = 0;
+        if (shapeInsertAt > (int)dstVec.size()) shapeInsertAt = (int)dstVec.size();
+        int firstAt = shapeInsertAt;
+        int orderPos = movedFrames.empty() ? dstOrderPos : (dstOwner ? (int)dstOwner->childOrder.size() : 0);
         for (auto& s : movedShapes) {
-            // Shift existing shape-type childOrder indices >= insertAt, then append new entry
             if (dstOwner) {
                 for (auto& cr : dstOwner->childOrder)
-                    if (!cr.isFrame && cr.idx >= insertAt) ++cr.idx;
-                dstOwner->childOrder.push_back({ false, insertAt });
+                    if (!cr.isFrame && cr.idx >= shapeInsertAt) ++cr.idx;
+                if (orderPos < 0) orderPos = 0;
+                if (orderPos > (int)dstOwner->childOrder.size()) orderPos = (int)dstOwner->childOrder.size();
+                dstOwner->childOrder.insert(dstOwner->childOrder.begin() + orderPos, { false, shapeInsertAt });
+                ++orderPos;
             }
-            dstVec.insert(dstVec.begin() + insertAt, std::move(s));
-            ++insertAt;
+            dstVec.insert(dstVec.begin() + shapeInsertAt, std::move(s));
+            ++shapeInsertAt;
         }
         gSelectedShapes.clear();
         for (int i = firstAt; i < (int)dstVec.size() && i < firstAt + (int)movedShapes.size(); ++i)
@@ -952,6 +972,8 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
         gSelectedShape = gSelectedShapes.empty() ? nullptr : gSelectedShapes.back();
         gSelectedFrame = dstOwner;
     }
+
+    if (movedFrames.empty() && movedShapes.empty()) return; // nothing moved
 
     InvalidateLayers(); InvalidateMain();
     RefreshInspector();
@@ -993,8 +1015,8 @@ void HandleLayersPanelClick(Point localPt, UInt16 modifiers) {
 
     short y = 2;
 
-    // Root shapes
-    for (auto it = gDocument->rootShapes.rbegin(); it != gDocument->rootShapes.rend(); ++it) {
+    // Root shapes (forward order: first-created at top of panel)
+    for (auto it = gDocument->rootShapes.begin(); it != gDocument->rootShapes.end(); ++it) {
         Shape* s = it->get();
         Rect row = { y, 2, static_cast<short>(y + kLayerRowH - 1),
                      static_cast<short>(contentRect.right - 2) };
@@ -1048,8 +1070,8 @@ void HandleLayersPanelClick(Point localPt, UInt16 modifiers) {
         y = static_cast<short>(y + kLayerRowH);
     }
 
-    // Top-level frames
-    for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend(); ++it) {
+    // Top-level frames (forward order)
+    for (auto it = gDocument->frames.begin(); it != gDocument->frames.end(); ++it) {
         y = HitTestFrameRows(it->get(), y, 0, localPt, contentRect, eyeZone, lockZone, modifiers);
         if (y == -1) {
             if (eyeZone) return;
