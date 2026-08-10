@@ -15,6 +15,7 @@ extern Shape*            gSelectedShape;
 extern std::vector<Shape*> gSelectedShapes;  // multi-select shapes
 extern std::vector<Frame*> gSelectedFrames;  // multi-select frames
 extern Shape*              gLayoutDragShape;    // single-shape drag: excluded from auto layout
+extern Frame*              gLayoutDragFrame;    // single child-frame drag: excluded from auto layout
 extern bool                gIsLayoutMultiDrag;  // multi-select drag: all gSelectedShapes excluded
 extern int        gNextFrameNum;
 extern bool       gIsDoubleClick;

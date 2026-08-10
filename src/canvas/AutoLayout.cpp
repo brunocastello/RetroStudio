@@ -3,6 +3,8 @@
 
 // Shape being drag-sorted (single-select) — excluded from layout.
 extern Shape* gLayoutDragShape;
+// Child frame being drag-sorted (single-select) — excluded from layout.
+extern Frame* gLayoutDragFrame;
 // During multi-select drag, all shapes in gSelectedShapes are excluded.
 extern bool                gIsLayoutMultiDrag;
 extern std::vector<Shape*> gSelectedShapes;
@@ -59,7 +61,8 @@ static void RunFrameLayout(Frame* f) {
         items.push_back(it);
     }
     for (auto& cf : f->childFrames) {
-        if (!cf->visible) continue;  // invisible frames take no space in layout
+        if (!cf->visible) continue;
+        if (cf.get() == gLayoutDragFrame) continue;  // drag-sorted child frame: free-floating
         LayoutItem it;
         it.x = &cf->bounds.x; it.y = &cf->bounds.y;
         it.w = &cf->bounds.w; it.h = &cf->bounds.h;

@@ -544,13 +544,12 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
     Rect portRect; GetWindowPortBounds(gLayersWindow, &portRect);
     short panelW = static_cast<short>(portRect.right - kLayersSBW);
 
-    // All rows of same type for hit-testing
+    // All rows (any type) for hit-testing; allows cross-type and cross-parent drag
     std::vector<int> allIdxs;
     for (int i = 0; i < (int)sLayerRows.size(); ++i)
-        if (sLayerRows[i].isFrame == isSrcFrame)
-            allIdxs.push_back(i);
+        allIdxs.push_back(i);
     int N = static_cast<int>(allIdxs.size());
-    if (N < 2) return;
+    if (N < 1) return;
 
     // ── Tracking loop ─────────────────────────────────────────────────────────
     bool  isDragging   = false;
@@ -580,8 +579,8 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
                     curPos = i;             // top zone → gap before
                 } else if (docV >= z2) {
                     curPos = i + 1;         // bottom zone → gap after
-                } else if (isSrcFrame && !isForbidden(sLayerRows[allIdxs[i]].frame)) {
-                    curIsInto = true;       // middle zone of a safe frame → drop into
+                } else if (sLayerRows[allIdxs[i]].isFrame && !isForbidden(sLayerRows[allIdxs[i]].frame)) {
+                    curIsInto = true;       // middle zone of a frame → drop into it
                     curPos    = i;
                 } else {
                     curPos = i;             // middle of non-droppable row → gap before
@@ -667,13 +666,25 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
         dstOwner = sLayerRows[allIdxs[refIdx]].owner;
 
         if (dropPos <= 0) {
+            // Dropped above all rows: top of the destination vector (highest z)
             insertAt = isSrcFrame
                 ? static_cast<int>((dstOwner ? dstOwner->childFrames : gDocument->frames).size())
                 : static_cast<int>((dstOwner ? dstOwner->children    : gDocument->rootShapes).size());
         } else if (dropPos >= N) {
+            // Dropped below all rows: bottom of destination vector (lowest z)
             insertAt = 0;
         } else {
-            insertAt = sLayerRows[allIdxs[dropPos]].vecIdx + 1;
+            const LayerRow& refRow = sLayerRows[allIdxs[dropPos]];
+            if (refRow.isFrame == isSrcFrame) {
+                // Same type: use vecIdx directly
+                insertAt = refRow.vecIdx + 1;
+            } else if (isSrcFrame && !refRow.isFrame) {
+                // Dragging a frame, hovering near a shape row → bottom of childFrames (lowest z)
+                insertAt = 0;
+            } else {
+                // Dragging a shape, hovering near a frame row → top of children (highest z)
+                insertAt = static_cast<int>((dstOwner ? dstOwner->children : gDocument->rootShapes).size());
+            }
         }
     }
 
@@ -684,7 +695,11 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
 
     // Check something actually changes (single-item, same owner, same position)
     bool sameOwner = (srcItems[0].owner == dstOwner);
-    if (srcItems.size() == 1 && !isInto && sameOwner && srcItems[0].vecIdx == insertAt - 1)
+    // Cross-type drops always use a different vector → always a change if owner changes
+    bool isGapCrossType = (!isInto && dropPos > 0 && dropPos < N &&
+                           sLayerRows[allIdxs[dropPos]].isFrame != isSrcFrame);
+    if (srcItems.size() == 1 && !isInto && !isGapCrossType && sameOwner &&
+        srcItems[0].vecIdx == insertAt - 1)
         return;
 
     PushUndo();
@@ -706,8 +721,8 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
             movedFramePtrs.push_back(srcVec[si.vecIdx].get());
             movedFrames.insert(movedFrames.begin(), std::move(srcVec[si.vecIdx]));
             srcVec.erase(srcVec.begin() + si.vecIdx);
-            // Adjust insertAt for same-vector extraction
-            if (sameOwner && si.vecIdx < insertAt) --insertAt;
+            // Adjust insertAt only when extracting from the same vector as the destination
+            if (sameOwner && !isGapCrossType && si.vecIdx < insertAt) --insertAt;
         }
         for (auto& f : movedFrames) f->parent = dstOwner;
     } else {
@@ -715,7 +730,7 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
             auto& srcVec = si.owner ? si.owner->children : gDocument->rootShapes;
             movedShapes.insert(movedShapes.begin(), std::move(srcVec[si.vecIdx]));
             srcVec.erase(srcVec.begin() + si.vecIdx);
-            if (sameOwner && si.vecIdx < insertAt) --insertAt;
+            if (sameOwner && !isGapCrossType && si.vecIdx < insertAt) --insertAt;
         }
     }
 

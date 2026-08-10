@@ -17,6 +17,7 @@ Shape*     gSelectedShape = nullptr;
 std::vector<Shape*> gSelectedShapes;
 std::vector<Frame*> gSelectedFrames;
 Shape*              gLayoutDragShape   = nullptr;
+Frame*              gLayoutDragFrame   = nullptr;
 bool                gIsLayoutMultiDrag = false;
 int        gNextFrameNum  = 2;
 bool       gIsDoubleClick = false;
@@ -1118,13 +1119,17 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         Point prevPt = pt, currPt = pt;
         bool pushedUndo = false;
 
-        // Exclude dragged shape(s) from layout so they move freely.
-        // Single-select: use gLayoutDragShape; multi-select: use gIsLayoutMultiDrag.
+        // Exclude dragged shape(s)/frame from layout so they move freely.
+        // Single-select: use gLayoutDragShape / gLayoutDragFrame; multi-select: gIsLayoutMultiDrag.
         bool isMultiDrag  = (gSelectedShapes.size() > 1 || gSelectedFrames.size() > 1)
                          || (!gSelectedFrames.empty() && !gSelectedShapes.empty()); // mixed
         bool isLayoutDrag = (!isMultiDrag && hitShape && hitFrame &&
                              hitFrame->layoutMode != LayoutMode::None);
-        if (isLayoutDrag) gLayoutDragShape = hitShape;
+        // Child frame being dragged within a layout parent
+        bool isLayoutFrameDrag = (!isMultiDrag && !hitShape && hitFrame && hitFrame->parent &&
+                                  hitFrame->parent->layoutMode != LayoutMode::None);
+        if (isLayoutDrag)      gLayoutDragShape = hitShape;
+        if (isLayoutFrameDrag) gLayoutDragFrame = hitFrame;
         if (isMultiDrag && hitFrame && hitFrame->layoutMode != LayoutMode::None)
             gIsLayoutMultiDrag = true;
 
@@ -1136,17 +1141,32 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                 SInt32 dx = SInt32(currPt.h - prevPt.h) * 100 / gCanvasZoom;
                 SInt32 dy = SInt32(currPt.v - prevPt.v) * 100 / gCanvasZoom;
 
+                // Helper: skip a frame if any of its ancestors is also in gSelectedFrames
+                auto hasSelectedAncestor = [&](Frame* f) -> bool {
+                    for (Frame* cur = f->parent; cur; cur = cur->parent)
+                        if (std::find(gSelectedFrames.begin(), gSelectedFrames.end(), cur) != gSelectedFrames.end())
+                            return true;
+                    return false;
+                };
+
                 if (!gSelectedFrames.empty() && !gSelectedShapes.empty()) {
-                    // Mixed selection: move all shapes + all frames together
-                    for (Shape* s : gSelectedShapes) { s->bounds.x += dx; s->bounds.y += dy; }
-                    for (Frame* f : gSelectedFrames) MoveFrameTree(f, dx, dy);
+                    // Mixed mode: gSelectedFrame is the parent context (not itself being moved).
+                    // Only move shapes if their parent frame is NOT in gSelectedFrames.
+                    bool parentMoved = std::find(gSelectedFrames.begin(), gSelectedFrames.end(),
+                                                 gSelectedFrame) != gSelectedFrames.end();
+                    if (!parentMoved)
+                        for (Shape* s : gSelectedShapes) { s->bounds.x += dx; s->bounds.y += dy; }
+                    // Only move top-level selected frames (skip descendants already moved by parent)
+                    for (Frame* f : gSelectedFrames)
+                        if (!hasSelectedAncestor(f)) MoveFrameTree(f, dx, dy);
                 } else if (gSelectedShapes.size() > 1) {
                     for (Shape* s : gSelectedShapes) {
                         s->bounds.x += dx;
                         s->bounds.y += dy;
                     }
                 } else if (gSelectedFrames.size() > 1) {
-                    for (Frame* f : gSelectedFrames) MoveFrameTree(f, dx, dy);
+                    for (Frame* f : gSelectedFrames)
+                        if (!hasSelectedAncestor(f)) MoveFrameTree(f, dx, dy);
                 } else if (hitShape) {
                     hitShape->bounds.x += dx;
                     hitShape->bounds.y += dy;
@@ -1160,6 +1180,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         }
 
         gLayoutDragShape   = nullptr;
+        gLayoutDragFrame   = nullptr;
         gIsLayoutMultiDrag = false;
 
         // ---- Re-parent on drop ----
@@ -1251,7 +1272,19 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
             }
         } else {
             Frame* newParent = DeepestFrameAt(center, hitFrame);
-            if (newParent != hitFrame->parent) {
+            if (isLayoutFrameDrag && newParent == hitFrame->parent && hitFrame->parent) {
+                // Dropped back inside same layout parent — sort childFrames by primary axis
+                Frame* layoutParent = hitFrame->parent;
+                bool isHoriz = (layoutParent->layoutMode == LayoutMode::Horizontal);
+                std::stable_sort(layoutParent->childFrames.begin(), layoutParent->childFrames.end(),
+                    [isHoriz](const std::unique_ptr<Frame>& a, const std::unique_ptr<Frame>& b) {
+                        SInt32 aM = isHoriz ? (a->bounds.x + a->bounds.w/2)
+                                            : (a->bounds.y + a->bounds.h/2);
+                        SInt32 bM = isHoriz ? (b->bounds.x + b->bounds.w/2)
+                                            : (b->bounds.y + b->bounds.h/2);
+                        return aM < bM;
+                    });
+            } else if (newParent != hitFrame->parent) {
                 auto owned = ExtractFrame(hitFrame);
                 if (owned) {
                     Frame* raw = owned.get();
@@ -1345,7 +1378,24 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
             for (auto& frm : gDocument->frames)
                 CollectAllBandFrames(frm.get(), selL, selT, selR, selB, bandFrames);
 
-            if (band.size() == 1) {
+            // Remove shapes whose parent frame is already captured as a whole frame.
+            {
+                std::vector<BandShape> filtered;
+                for (auto& bs : band) {
+                    bool parentInBand = bs.parent &&
+                        std::find(bandFrames.begin(), bandFrames.end(), bs.parent) != bandFrames.end();
+                    if (!parentInBand) filtered.push_back(bs);
+                }
+                band = std::move(filtered);
+            }
+
+            if (!band.empty() && !bandFrames.empty()) {
+                // Mixed: loose shapes + whole frames both selected
+                for (auto& bs : band) gSelectedShapes.push_back(bs.shape);
+                gSelectedShape  = gSelectedShapes.back();
+                gSelectedFrames = bandFrames;
+                gSelectedFrame  = gSelectedFrames.back();
+            } else if (band.size() == 1) {
                 gSelectedShape = band[0].shape;
                 gSelectedFrame = band[0].parent;
             } else if (band.size() > 1) {
