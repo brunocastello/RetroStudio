@@ -1205,13 +1205,17 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                 };
 
                 if (!gSelectedFrames.empty() && !gSelectedShapes.empty()) {
-                    // Mixed mode: gSelectedFrame is the parent context (not itself being moved).
-                    // Only move shapes if their parent frame is NOT in gSelectedFrames.
-                    bool parentMoved = std::find(gSelectedFrames.begin(), gSelectedFrames.end(),
-                                                 gSelectedFrame) != gSelectedFrames.end();
+                    // gSelectedFrame may be one of the selected child frames (e.g. rubber-band mixed
+                    // drag started by clicking a child frame). Resolve the shapes' actual context:
+                    // if gSelectedFrame is itself selected, the shapes live in its parent.
+                    Frame* shapesCtx = (std::find(gSelectedFrames.begin(), gSelectedFrames.end(),
+                                                  gSelectedFrame) != gSelectedFrames.end())
+                                       ? gSelectedFrames[0]->parent
+                                       : gSelectedFrame;
+                    bool parentMoved = shapesCtx &&
+                        std::find(gSelectedFrames.begin(), gSelectedFrames.end(), shapesCtx) != gSelectedFrames.end();
                     if (!parentMoved)
                         for (Shape* s : gSelectedShapes) { s->bounds.x += dx; s->bounds.y += dy; }
-                    // Only move top-level selected frames (skip descendants already moved by parent)
                     for (Frame* f : gSelectedFrames)
                         if (!hasSelectedAncestor(f)) MoveFrameTree(f, dx, dy);
                 } else if (gSelectedShapes.size() > 1) {
@@ -1242,12 +1246,17 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         // Unified multi-select reparent: move ALL selected shapes AND frames to the drop destination.
         if (isMultiDrag) {
             // Use mouse-up position to determine reparent destination.
-            // The shape's center may still overlap the original parent after dragging out.
             Frame* newShapeParent = DeepestFrameAt(currPt);
 
+            // Resolve shapes' actual parent: in a rubber-band mixed drag gSelectedFrame is set
+            // to one of the selected child frames, not the containing parent frame.
+            Frame* origShapeParent = (std::find(gSelectedFrames.begin(), gSelectedFrames.end(),
+                                                 gSelectedFrame) != gSelectedFrames.end())
+                                     ? gSelectedFrames[0]->parent
+                                     : gSelectedFrame;
+
             // Reparent all selected shapes (if parent changed)
-            if (!gSelectedShapes.empty() && newShapeParent != gSelectedFrame) {
-                Frame* origShapeParent = gSelectedFrame;
+            if (!gSelectedShapes.empty() && newShapeParent != origShapeParent) {
                 for (Shape* target : gSelectedShapes) {
                     auto owned = ExtractShape(target, origShapeParent);
                     if (owned) {
