@@ -1285,7 +1285,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                         shapeCtx->childOrder.push_back({ false, (int)shapeCtx->children.size() });
                         shapeCtx->children.push_back(std::move(clone));
                     } else {
-                        gDocument->rootChildOrder.push_back({ false, (int)gDocument->rootShapes.size() });
+                        RootOrderInsert(0, false, (int)gDocument->rootShapes.size());
                         gDocument->rootShapes.push_back(std::move(clone));
                     }
                 }
@@ -1308,7 +1308,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                         par->childOrder.push_back({ true, (int)par->childFrames.size() });
                         par->childFrames.push_back(std::move(clone));
                     } else {
-                        gDocument->rootChildOrder.push_back({ true, (int)gDocument->frames.size() });
+                        RootOrderInsert(0, true, (int)gDocument->frames.size());
                         gDocument->frames.push_back(std::move(clone));
                     }
                 }
@@ -1326,7 +1326,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                     origParent->childOrder.push_back({ false, (int)origParent->children.size() });
                     origParent->children.push_back(std::move(clone));
                 } else {
-                    gDocument->rootChildOrder.push_back({ false, (int)gDocument->rootShapes.size() });
+                    RootOrderInsert(0, false, (int)gDocument->rootShapes.size());
                     gDocument->rootShapes.push_back(std::move(clone));
                 }
                 gSelectedShape = cp;
@@ -1340,7 +1340,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                     par->childOrder.push_back({ true, (int)par->childFrames.size() });
                     par->childFrames.push_back(std::move(clone));
                 } else {
-                    gDocument->rootChildOrder.push_back({ true, (int)gDocument->frames.size() });
+                    RootOrderInsert(0, true, (int)gDocument->frames.size());
                     gDocument->frames.push_back(std::move(clone));
                 }
                 gSelectedFrame = cp;
@@ -1568,7 +1568,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                         newParent->childOrder.push_back({ false, (int)newParent->children.size() });
                         newParent->children.push_back(std::move(owned));
                     } else {
-                        gDocument->rootChildOrder.push_back({ false, (int)gDocument->rootShapes.size() });
+                        RootOrderInsert(0, false, (int)gDocument->rootShapes.size());
                         gDocument->rootShapes.push_back(std::move(owned));
                     }
                     gSelectedFrame = newParent;
@@ -1627,7 +1627,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                         newParent->childFrames.push_back(std::move(owned));
                     } else {
                         owned->parent = nullptr;
-                        gDocument->rootChildOrder.push_back({ true, (int)gDocument->frames.size() });
+                        RootOrderInsert(0, true, (int)gDocument->frames.size());
                         gDocument->frames.push_back(std::move(owned));
                     }
                     gSelectedFrame = raw;
@@ -1783,7 +1783,7 @@ static void HandleTextPlace(WindowRef win, Point localPt, Point globalPt) {
         target->childOrder.push_back({ false, (int)target->children.size() });
         target->children.push_back(std::move(t));
     } else {
-        gDocument->rootChildOrder.push_back({ false, (int)gDocument->rootShapes.size() });
+        RootOrderInsert(0, false, (int)gDocument->rootShapes.size());
         gDocument->rootShapes.push_back(std::move(t));
     }
 
@@ -1864,7 +1864,7 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
                 parent->childFrames.push_back(std::move(f));
             } else {
                 f->parent = nullptr;
-                gDocument->rootChildOrder.push_back({ true, (int)gDocument->frames.size() });
+                RootOrderInsert(0, true, (int)gDocument->frames.size());
                 gDocument->frames.push_back(std::move(f));
             }
             gSelectedFrame = raw;
@@ -1900,7 +1900,7 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
                 target->childOrder.push_back({ false, (int)target->children.size() });
                 target->children.push_back(std::move(shape));
             } else {
-                gDocument->rootChildOrder.push_back({ false, (int)gDocument->rootShapes.size() });
+                RootOrderInsert(0, false, (int)gDocument->rootShapes.size());
                 gDocument->rootShapes.push_back(std::move(shape));
             }
         }
@@ -2170,7 +2170,7 @@ void PasteClipboard() {
             pasteParent->childOrder.push_back({ false, (int)pasteParent->children.size() });
             pasteParent->children.push_back(std::move(copy));
         } else {
-            gDocument->rootChildOrder.push_back({ false, (int)gDocument->rootShapes.size() });
+            RootOrderInsert(0, false, (int)gDocument->rootShapes.size());
             gDocument->rootShapes.push_back(std::move(copy));
         }
         gSelectedShapes.push_back(raw);
@@ -2186,7 +2186,7 @@ void PasteClipboard() {
             pasteParent->childOrder.push_back({ true, (int)pasteParent->childFrames.size() });
             pasteParent->childFrames.push_back(std::move(copy));
         } else {
-            gDocument->rootChildOrder.push_back({ true, (int)gDocument->frames.size() });
+            RootOrderInsert(0, true, (int)gDocument->frames.size());
             gDocument->frames.push_back(std::move(copy));
         }
         gSelectedFrames.push_back(raw);
