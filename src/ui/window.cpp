@@ -1271,14 +1271,17 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                 gSelectedFrame = newShapeParent;
             }
 
-            // Reparent each selected frame to where its center landed (excluding selected frames)
+            // Reparent each selected frame to where its center landed (excluding selected frames).
+            // When dropping to root level, insert BEFORE the original parent so the extracted
+            // frames appear above the parent in the layers panel.
             for (Frame* f : gSelectedFrames) {
                 Bounds2 fb = f->bounds;
                 Point fc;
                 fc.h = static_cast<short>(SInt32(fb.x + fb.w/2) * gCanvasZoom / 100 + gCanvasOffsetX);
                 fc.v = static_cast<short>(SInt32(fb.y + fb.h/2) * gCanvasZoom / 100 + gCanvasOffsetY);
+                Frame* origFrameParent = f->parent;
                 Frame* newFrameParent = DeepestFrameAtExcl(fc, gSelectedFrames);
-                if (newFrameParent != f->parent) {
+                if (newFrameParent != origFrameParent) {
                     auto owned = ExtractFrame(f);
                     if (owned) {
                         if (newFrameParent) {
@@ -1287,7 +1290,18 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                             newFrameParent->childFrames.push_back(std::move(owned));
                         } else {
                             owned->parent = nullptr;
-                            gDocument->frames.push_back(std::move(owned));
+                            // Find where the original parent sits in gDocument->frames and
+                            // insert before it, so extracted frames appear above the parent.
+                            int insertPos = (int)gDocument->frames.size();
+                            if (origFrameParent) {
+                                for (int i = 0; i < (int)gDocument->frames.size(); ++i) {
+                                    if (gDocument->frames[i].get() == origFrameParent) {
+                                        insertPos = i; break;
+                                    }
+                                }
+                            }
+                            gDocument->frames.insert(gDocument->frames.begin() + insertPos,
+                                                     std::move(owned));
                         }
                     }
                 }
