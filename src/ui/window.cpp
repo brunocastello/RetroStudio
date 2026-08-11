@@ -735,6 +735,9 @@ static void CollectAllBandFrames(Frame* frm, SInt32 l, SInt32 t, SInt32 r, SInt3
     }
 }
 
+// Forward declaration — defined later in this file (after undo infrastructure)
+static std::unique_ptr<Frame> CloneFrame(const Frame* src, Frame* newParent);
+
 // --------------------------------------------------------------------------
 // rootChildOrder helpers
 // --------------------------------------------------------------------------
