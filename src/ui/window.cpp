@@ -29,9 +29,9 @@ int        gNextEllipseNum = 1;
 int        gNextTextNum    = 1;
 
 // In-memory clipboard (one item — either a frame or a shape, never both)
-static std::unique_ptr<Frame> sClipFrame;
-static std::unique_ptr<Shape> sClipShape;
-static int                    sPasteOffset = 0;  // increments per paste, resets on copy
+static std::vector<std::unique_ptr<Frame>> sClipFrames;
+static std::vector<std::unique_ptr<Shape>> sClipShapes;
+static int                                 sPasteOffset = 0;  // increments per paste, resets on copy
 
 // Undo / redo stacks — each entry is a full document snapshot
 static const int kMaxUndo = 50;
@@ -2056,51 +2056,78 @@ void PerformRedo() {
 }
 
 void CopySelected() {
-    sClipFrame.reset();
-    sClipShape.reset();
+    sClipFrames.clear();
+    sClipShapes.clear();
     sPasteOffset = 0;
-    if (gSelectedShape)
-        sClipShape = gSelectedShape->Clone();
-    else if (gSelectedFrame)
-        sClipFrame = CloneFrame(gSelectedFrame, nullptr);
+    // Multi-select: copy all
+    for (Shape* s : gSelectedShapes) sClipShapes.push_back(s->Clone());
+    for (Frame* f : gSelectedFrames) sClipFrames.push_back(CloneFrame(f, nullptr));
+    // Single select fallback
+    if (sClipShapes.empty() && sClipFrames.empty()) {
+        if (gSelectedShape) sClipShapes.push_back(gSelectedShape->Clone());
+        else if (gSelectedFrame) sClipFrames.push_back(CloneFrame(gSelectedFrame, nullptr));
+    }
 }
 
 void PasteClipboard() {
     if (!gDocument) return;
-    if (!sClipShape && !sClipFrame) return;
+    if (sClipShapes.empty() && sClipFrames.empty()) return;
 
     PushUndo();
     ++sPasteOffset;
     SInt32 off = SInt32(sPasteOffset) * 10;
 
-    if (sClipShape) {
-        auto copy = sClipShape->Clone();
+    gSelectedShapes.clear();
+    gSelectedFrames.clear();
+    gSelectedShape = nullptr;
+    gSelectedFrame = nullptr;
+
+    for (const auto& src : sClipShapes) {
+        auto copy = src->Clone();
         copy->name     = NextAvailableName(copy->name);
-        copy->bounds.x = sClipShape->bounds.x + off;
-        copy->bounds.y = sClipShape->bounds.y + off;
+        copy->bounds.x = src->bounds.x + off;
+        copy->bounds.y = src->bounds.y + off;
         Shape* raw = copy.get();
-        if (gSelectedFrame) {
-            gSelectedFrame->childOrder.push_back({ false, (int)gSelectedFrame->children.size() });
-            gSelectedFrame->children.push_back(std::move(copy));
-        } else {
-            gDocument->rootChildOrder.push_back({ false, (int)gDocument->rootShapes.size() });
-            gDocument->rootShapes.push_back(std::move(copy));
-        }
+        // Paste into clipboard's original parent context — shapes copied from inside a
+        // frame paste back there; shapes copied from root paste at root.
+        // For simplicity we always paste at root (same as Figma's default behavior).
+        gDocument->rootChildOrder.push_back({ false, (int)gDocument->rootShapes.size() });
+        gDocument->rootShapes.push_back(std::move(copy));
+        gSelectedShapes.push_back(raw);
         gSelectedShape = raw;
-    } else {
-        auto copy = CloneFrame(sClipFrame.get(), nullptr);
+    }
+
+    for (const auto& src : sClipFrames) {
+        auto copy = CloneFrame(src.get(), nullptr);
         copy->name = NextAvailableName(copy->name);
-        MoveFrameTree(copy.get(), off, off);  // shifts frame + all children
+        MoveFrameTree(copy.get(), off, off);
         Frame* raw = copy.get();
         gDocument->rootChildOrder.push_back({ true, (int)gDocument->frames.size() });
         gDocument->frames.push_back(std::move(copy));
+        gSelectedFrames.push_back(raw);
         gSelectedFrame = raw;
-        gSelectedShape = nullptr;
     }
 
     Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
     RefreshLayersPanel();
     RefreshInspector();
+}
+
+// Find the direct parent Frame of a shape by searching the whole document.
+// Returns nullptr if the shape lives in gDocument->rootShapes.
+static Frame* LocateShapeParent(Shape* s) {
+    for (const auto& sp : gDocument->rootShapes)
+        if (sp.get() == s) return nullptr;
+    std::vector<Frame*> stack;
+    for (auto& f : gDocument->frames) stack.push_back(f.get());
+    while (!stack.empty()) {
+        Frame* f = stack.back(); stack.pop_back();
+        for (const auto& ch : f->children)
+            if (ch.get() == s) return f;
+        for (const auto& cf : f->childFrames)
+            stack.push_back(cf.get());
+    }
+    return nullptr;
 }
 
 void DeleteSelected() {
@@ -2110,14 +2137,15 @@ void DeleteSelected() {
     bool changed = false;
 
     if (!gSelectedFrames.empty() && !gSelectedShapes.empty()) {
-        // Mixed selection: delete all selected frames and all selected shapes
+        // Mixed selection: delete frames first, then shapes (shapes may be in extracted frames,
+        // in which case LocateShapeParent returns nullptr and ExtractShape is a no-op — that's fine).
         for (Frame* target : gSelectedFrames) {
             auto owned = ExtractFrame(target);
             if (owned) changed = true;
         }
         gSelectedFrames.clear();
         for (Shape* target : gSelectedShapes) {
-            auto owned = ExtractShape(target, gSelectedFrame);
+            auto owned = ExtractShape(target, LocateShapeParent(target));
             if (owned) changed = true;
         }
         gSelectedShapes.clear();
@@ -2132,9 +2160,8 @@ void DeleteSelected() {
         gSelectedFrame  = nullptr;
         gSelectedShape  = nullptr;
     } else if (gSelectedShapes.size() > 1) {
-        // Delete all shapes in the multi-select set via ExtractShape (maintains childOrder)
         for (Shape* target : gSelectedShapes) {
-            auto owned = ExtractShape(target, gSelectedFrame);
+            auto owned = ExtractShape(target, LocateShapeParent(target));
             if (owned) changed = true;
         }
         gSelectedShapes.clear();
