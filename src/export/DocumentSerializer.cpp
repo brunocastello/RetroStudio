@@ -6,7 +6,7 @@
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
 static const UInt32 kMagic   = 0x52535444;  // 'RSTD'
-static const UInt16 kVersion = 12;
+static const UInt16 kVersion = 13;
 
 // Folder Manager constants — defined here because Retro68 Carbon headers
 // don't always expose <Folders.h> constants via <Carbon.h>.
@@ -326,6 +326,12 @@ bool SaveDocument(Document* doc) {
     w.w16(static_cast<UInt16>(doc->frames.size()));
     for (const auto& f : doc->frames) WriteFrame(w, *f);
 
+    w.w16(static_cast<UInt16>(doc->rootChildOrder.size()));
+    for (const auto& ref : doc->rootChildOrder) {
+        w.w8(ref.isFrame ? 1 : 0);
+        w.w16(static_cast<UInt16>(ref.idx));
+    }
+
     FSClose(refNum);
 
     if (w.ok) doc->name = filename;
@@ -353,7 +359,7 @@ bool LoadDocument(Document*& doc) {
 
     UInt32 magic = 0; r.read(&magic, 4);
     UInt16 ver   = r.r16();
-    if (!r.ok || magic != kMagic || ver != kVersion) { FSClose(refNum); return false; }
+    if (!r.ok || magic != kMagic || (ver != 12 && ver != 13)) { FSClose(refNum); return false; }
 
     auto newDoc  = std::make_unique<Document>();
     newDoc->name = r.rStr();
@@ -368,6 +374,21 @@ bool LoadDocument(Document*& doc) {
     for (UInt16 i = 0; i < nFrames && r.ok; ++i) {
         auto f = ReadFrame(r, nullptr);
         if (f) newDoc->frames.push_back(std::move(f));
+    }
+
+    if (ver >= 13) {
+        UInt16 nOrder = r.r16();
+        for (UInt16 i = 0; i < nOrder && r.ok; ++i) {
+            UInt8  isf = r.r8();
+            UInt16 idx = r.r16();
+            newDoc->rootChildOrder.push_back({ isf != 0, static_cast<int>(idx) });
+        }
+    } else {
+        // v12: build legacy order — rootShapes section first, then frames section
+        for (int i = 0; i < (int)newDoc->rootShapes.size(); ++i)
+            newDoc->rootChildOrder.push_back({ false, i });
+        for (int i = 0; i < (int)newDoc->frames.size(); ++i)
+            newDoc->rootChildOrder.push_back({ true, i });
     }
 
     FSClose(refNum);

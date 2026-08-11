@@ -242,6 +242,7 @@ void SetupWindow() {
     frame->bounds        = { 40, 40, 390, 480 };
     frame->backgroundColor = { 0xFFFF, 0xFFFF, 0xFFFF };
     gDocument->frames.push_back(std::move(frame));
+    gDocument->rootChildOrder.push_back({ true, 0 });
 
     UpdateWindowTitle();
 }
@@ -734,8 +735,42 @@ static void CollectAllBandFrames(Frame* frm, SInt32 l, SInt32 t, SInt32 r, SInt3
     }
 }
 
+// --------------------------------------------------------------------------
+// rootChildOrder helpers
+// --------------------------------------------------------------------------
+
+// Remove the rootChildOrder entry for (isFrame, typedIdx) and fix up higher indices.
+static void RootOrderErase(bool isFrame, int typedIdx) {
+    auto& ord = gDocument->rootChildOrder;
+    for (auto it = ord.begin(); it != ord.end(); ) {
+        if (it->isFrame == isFrame && it->idx == typedIdx) { it = ord.erase(it); continue; }
+        if (it->isFrame == isFrame && it->idx > typedIdx) --it->idx;
+        ++it;
+    }
+}
+
+// Insert a new rootChildOrder entry at orderPos, incrementing higher typed indices.
+static void RootOrderInsert(int orderPos, bool isFrame, int typedIdx) {
+    auto& ord = gDocument->rootChildOrder;
+    for (auto& ref : ord)
+        if (ref.isFrame == isFrame && ref.idx >= typedIdx) ++ref.idx;
+    if (orderPos < 0) orderPos = 0;
+    if (orderPos > (int)ord.size()) orderPos = (int)ord.size();
+    ord.insert(ord.begin() + orderPos, { isFrame, typedIdx });
+}
+
+// Build rootChildOrder from current frames+rootShapes (legacy panel order).
+static void InitRootChildOrder(Document* doc) {
+    doc->rootChildOrder.clear();
+    for (int i = 0; i < (int)doc->rootShapes.size(); ++i)
+        doc->rootChildOrder.push_back({ false, i });
+    for (int i = 0; i < (int)doc->frames.size(); ++i)
+        doc->rootChildOrder.push_back({ true, i });
+}
+
+// --------------------------------------------------------------------------
 // Extract a Shape unique_ptr from its current owner (Frame or rootShapes).
-// Also removes and reindexes the entry in parent->childOrder.
+// Also removes and reindexes the entry in parent->childOrder or rootChildOrder.
 static std::unique_ptr<Shape> ExtractShape(Shape* s, Frame* parent) {
     auto& vec = parent ? parent->children : gDocument->rootShapes;
     for (int i = 0; i < (int)vec.size(); ++i) {
@@ -743,12 +778,13 @@ static std::unique_ptr<Shape> ExtractShape(Shape* s, Frame* parent) {
             auto o = std::move(vec[i]);
             vec.erase(vec.begin() + i);
             if (parent) {
-                // Remove the childOrder entry for this shape and fix up higher indices
                 for (auto it = parent->childOrder.begin(); it != parent->childOrder.end(); ) {
                     if (!it->isFrame && it->idx == i) { it = parent->childOrder.erase(it); continue; }
                     if (!it->isFrame && it->idx > i) --it->idx;
                     ++it;
                 }
+            } else {
+                RootOrderErase(false, i);
             }
             return o;
         }
@@ -757,7 +793,7 @@ static std::unique_ptr<Shape> ExtractShape(Shape* s, Frame* parent) {
 }
 
 // Extract a Frame unique_ptr from its current owner.
-// Also removes and reindexes the entry in parent->childOrder.
+// Also removes and reindexes the entry in parent->childOrder or rootChildOrder.
 static std::unique_ptr<Frame> ExtractFrame(Frame* f) {
     Frame* par = f->parent;
     auto& vec = par ? par->childFrames : gDocument->frames;
@@ -766,12 +802,13 @@ static std::unique_ptr<Frame> ExtractFrame(Frame* f) {
             auto o = std::move(vec[i]);
             vec.erase(vec.begin() + i);
             if (par) {
-                // Remove the childOrder entry for this frame and fix up higher indices
                 for (auto it = par->childOrder.begin(); it != par->childOrder.end(); ) {
                     if (it->isFrame && it->idx == i) { it = par->childOrder.erase(it); continue; }
                     if (it->isFrame && it->idx > i) --it->idx;
                     ++it;
                 }
+            } else {
+                RootOrderErase(true, i);
             }
             return o;
         }
@@ -1265,6 +1302,18 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                             newShapeParent->childOrder.push_back({ false, (int)newShapeParent->children.size() });
                             newShapeParent->children.push_back(std::move(owned));
                         } else {
+                            // Insert in rootChildOrder before the original parent's entry
+                            int newIdx = (int)gDocument->rootShapes.size();
+                            int parentTypedIdx = -1;
+                            for (int pi = 0; pi < (int)gDocument->frames.size(); ++pi)
+                                if (gDocument->frames[pi].get() == origShapeParent) { parentTypedIdx = pi; break; }
+                            int orderPos = (int)gDocument->rootChildOrder.size();
+                            if (parentTypedIdx >= 0) {
+                                for (int oi = 0; oi < (int)gDocument->rootChildOrder.size(); ++oi)
+                                    if (gDocument->rootChildOrder[oi].isFrame && gDocument->rootChildOrder[oi].idx == parentTypedIdx)
+                                        { orderPos = oi; break; }
+                            }
+                            gDocument->rootChildOrder.insert(gDocument->rootChildOrder.begin() + orderPos, { false, newIdx });
                             gDocument->rootShapes.push_back(std::move(owned));
                         }
                     }
@@ -1301,6 +1350,12 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                                     }
                                 }
                             }
+                            // Update rootChildOrder: insert before the parent's entry.
+                            int rootOrderPos = (int)gDocument->rootChildOrder.size();
+                            for (int oi = 0; oi < (int)gDocument->rootChildOrder.size(); ++oi)
+                                if (gDocument->rootChildOrder[oi].isFrame && gDocument->rootChildOrder[oi].idx == insertPos)
+                                    { rootOrderPos = oi; break; }
+                            RootOrderInsert(rootOrderPos, true, insertPos);
                             gDocument->frames.insert(gDocument->frames.begin() + insertPos,
                                                      std::move(owned));
                         }
@@ -1745,6 +1800,7 @@ static void NewDocument() {
     frame->bounds        = { 40, 40, 390, 480 };
     frame->backgroundColor = { 0xFFFF, 0xFFFF, 0xFFFF };
     gDocument->frames.push_back(std::move(frame));
+    gDocument->rootChildOrder.push_back({ true, 0 });
 
     gSelectedFrame  = nullptr;
     gSelectedShape  = nullptr;
@@ -1856,6 +1912,7 @@ static std::unique_ptr<Document> CloneDocument(const Document* src) {
         d->rootShapes.push_back(s->Clone());
     for (const auto& f : src->frames)
         d->frames.push_back(CloneFrame(f.get(), nullptr));
+    d->rootChildOrder = src->rootChildOrder;
     return d;
 }
 
@@ -2011,6 +2068,7 @@ void HandleMenuCommand(long menuResult) {
                 break;
             case kFileOpen:
                 if (LoadDocument(gDocument)) {
+                    if (gDocument->rootChildOrder.empty()) InitRootChildOrder(gDocument);
                     gSelectedFrame  = nullptr;
                     gSelectedShape  = nullptr;
                     gSelectedShapes.clear();

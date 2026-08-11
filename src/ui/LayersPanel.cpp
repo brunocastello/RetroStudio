@@ -309,20 +309,38 @@ void DrawLayersPanel() {
 
     sLayerRows.clear();
 
-    int rsIdx = 0;
-    for (auto it = gDocument->rootShapes.begin(); it != gDocument->rootShapes.end(); ++it, ++rsIdx) {
-        const Shape* s = it->get();
-        sLayerRows.push_back({ false, nullptr, const_cast<Shape*>(s), nullptr, y, rsIdx, -1 });
-        bool sel = (gSelectedShape == s && gSelectedFrame == nullptr) ||
-                   std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s) != gSelectedShapes.end();
-        std::string lbl = s->name;
-        if (lbl.empty()) lbl = (s->GetType() == Shape::kEllipse) ? "Ellipse" : "Rectangle";
-        y = DrawRow(y, 0, lbl, sel, s->GetType(), false, s->visible, s->locked, contentRect);
+    if (!gDocument->rootChildOrder.empty()) {
+        for (int ci = 0; ci < (int)gDocument->rootChildOrder.size(); ++ci) {
+            const ChildRef& ref = gDocument->rootChildOrder[ci];
+            if (ref.isFrame) {
+                Frame* f = gDocument->frames[ref.idx].get();
+                y = DrawFrameRows(f, y, 0, contentRect, ref.idx, ci);
+            } else {
+                const Shape* s = gDocument->rootShapes[ref.idx].get();
+                sLayerRows.push_back({ false, nullptr, const_cast<Shape*>(s), nullptr, y, ref.idx, ci });
+                bool sel = (gSelectedShape == s && gSelectedFrame == nullptr) ||
+                           std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s) != gSelectedShapes.end();
+                std::string lbl = s->name;
+                if (lbl.empty()) lbl = (s->GetType() == Shape::kEllipse) ? "Ellipse" : "Rectangle";
+                y = DrawRow(y, 0, lbl, sel, s->GetType(), false, s->visible, s->locked, contentRect);
+            }
+        }
+    } else {
+        // Legacy fallback: shapes first, then frames
+        int rsIdx = 0;
+        for (auto it = gDocument->rootShapes.begin(); it != gDocument->rootShapes.end(); ++it, ++rsIdx) {
+            const Shape* s = it->get();
+            sLayerRows.push_back({ false, nullptr, const_cast<Shape*>(s), nullptr, y, rsIdx, -1 });
+            bool sel = (gSelectedShape == s && gSelectedFrame == nullptr) ||
+                       std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s) != gSelectedShapes.end();
+            std::string lbl = s->name;
+            if (lbl.empty()) lbl = (s->GetType() == Shape::kEllipse) ? "Ellipse" : "Rectangle";
+            y = DrawRow(y, 0, lbl, sel, s->GetType(), false, s->visible, s->locked, contentRect);
+        }
+        int fIdx = 0;
+        for (auto it = gDocument->frames.begin(); it != gDocument->frames.end(); ++it, ++fIdx)
+            y = DrawFrameRows(it->get(), y, 0, contentRect, fIdx, -1);
     }
-
-    int fIdx = 0;
-    for (auto it = gDocument->frames.begin(); it != gDocument->frames.end(); ++it, ++fIdx)
-        y = DrawFrameRows(it->get(), y, 0, contentRect, fIdx, -1);
 
     gLayersTotalH = y;
 
@@ -858,6 +876,51 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
         return;
     }
 
+    // Same-owner root-level rootChildOrder reorder (parallel to the childOrder path above)
+    if (sameOwner && !isInto && dstOwner == nullptr && allHaveOrderIdx &&
+        !gDocument->rootChildOrder.empty()) {
+
+        int targetOrderPos;
+        if (dropPos <= 0)      targetOrderPos = 0;
+        else if (dropPos >= N) targetOrderPos = (int)gDocument->rootChildOrder.size();
+        else {
+            int refOi = sLayerRows[allIdxs[dropPos]].orderIdx;
+            targetOrderPos = (refOi >= 0) ? refOi : 0;
+        }
+
+        std::vector<int> srcOrderIdxes;
+        for (const SrcItem& si : srcItems) srcOrderIdxes.push_back(si.orderIdx);
+        std::sort(srcOrderIdxes.rbegin(), srcOrderIdxes.rend());
+
+        std::vector<ChildRef> movedRefs;
+        for (int oi : srcOrderIdxes) {
+            movedRefs.push_back(gDocument->rootChildOrder[oi]);
+            gDocument->rootChildOrder.erase(gDocument->rootChildOrder.begin() + oi);
+            if (oi < targetOrderPos) --targetOrderPos;
+        }
+        std::reverse(movedRefs.begin(), movedRefs.end());
+
+        if (targetOrderPos < 0) targetOrderPos = 0;
+        if (targetOrderPos > (int)gDocument->rootChildOrder.size())
+            targetOrderPos = (int)gDocument->rootChildOrder.size();
+
+        for (const auto& ref : movedRefs) {
+            gDocument->rootChildOrder.insert(gDocument->rootChildOrder.begin() + targetOrderPos, ref);
+            ++targetOrderPos;
+        }
+
+        gSelectedFrames.clear(); gSelectedShapes.clear();
+        for (const SrcItem& si : srcItems) {
+            if (si.isFrame) gSelectedFrames.push_back(si.frame);
+            else            gSelectedShapes.push_back(si.shape);
+        }
+        gSelectedFrame = gSelectedFrames.empty() ? nullptr : gSelectedFrames.back();
+        gSelectedShape = gSelectedShapes.empty() ? nullptr : gSelectedShapes.back();
+
+        InvalidateLayers(); InvalidateMain(); RefreshInspector();
+        return;
+    }
+
     // ── Typed-vector extract + insert (cross-owner, isInto, top-level, or no childOrder) ──
     // Handles mixed-type srcItems: extracts frames and shapes separately, inserts independently.
 
@@ -911,6 +974,18 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
         dstOrderPos = (refRow.owner == dstOwner && refRow.orderIdx >= 0) ? refRow.orderIdx : (dstOwner ? (int)dstOwner->childOrder.size() : 0);
     }
 
+    // For root-level destination (!dstOwner), compute insert position in rootChildOrder.
+    int rootOrderInsertAt = (int)gDocument->rootChildOrder.size();
+    if (!dstOwner && !isInto) {
+        if (dropPos <= 0) {
+            rootOrderInsertAt = 0;
+        } else if (dropPos < N) {
+            const LayerRow& refRow = sLayerRows[allIdxs[dropPos]];
+            if (refRow.owner == nullptr && refRow.orderIdx >= 0)
+                rootOrderInsertAt = refRow.orderIdx;
+        }
+    }
+
     // Sort descending by vecIdx within each type for extraction (avoids index shifts during erase).
     std::vector<SrcItem> extractOrder = srcItems;
     std::sort(extractOrder.begin(), extractOrder.end(), [](const SrcItem& a, const SrcItem& b){
@@ -931,6 +1006,16 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
                 if (it->isFrame && it->idx > si.vecIdx) --it->idx;
                 ++it;
             }
+        } else {
+            // Root level: remove entry from rootChildOrder and adjust target
+            for (auto it = gDocument->rootChildOrder.begin(); it != gDocument->rootChildOrder.end(); ) {
+                if (it->isFrame && it->idx == si.vecIdx) {
+                    if ((it - gDocument->rootChildOrder.begin()) < rootOrderInsertAt) --rootOrderInsertAt;
+                    it = gDocument->rootChildOrder.erase(it); continue;
+                }
+                if (it->isFrame && it->idx > si.vecIdx) --it->idx;
+                ++it;
+            }
         }
         if (sameOwner && !isGapCrossType && si.vecIdx < frameInsertAt) --frameInsertAt;
     }
@@ -945,6 +1030,16 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
         if (si.owner) {
             for (auto it = si.owner->childOrder.begin(); it != si.owner->childOrder.end(); ) {
                 if (!it->isFrame && it->idx == si.vecIdx) { it = si.owner->childOrder.erase(it); continue; }
+                if (!it->isFrame && it->idx > si.vecIdx) --it->idx;
+                ++it;
+            }
+        } else {
+            // Root level: remove entry from rootChildOrder and adjust target
+            for (auto it = gDocument->rootChildOrder.begin(); it != gDocument->rootChildOrder.end(); ) {
+                if (!it->isFrame && it->idx == si.vecIdx) {
+                    if ((it - gDocument->rootChildOrder.begin()) < rootOrderInsertAt) --rootOrderInsertAt;
+                    it = gDocument->rootChildOrder.erase(it); continue;
+                }
                 if (!it->isFrame && it->idx > si.vecIdx) --it->idx;
                 ++it;
             }
@@ -967,6 +1062,15 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
                 if (orderPos > (int)dstOwner->childOrder.size()) orderPos = (int)dstOwner->childOrder.size();
                 dstOwner->childOrder.insert(dstOwner->childOrder.begin() + orderPos, { true, frameInsertAt });
                 ++orderPos;
+            } else {
+                // Root level: update rootChildOrder
+                for (auto& cr : gDocument->rootChildOrder)
+                    if (cr.isFrame && cr.idx >= frameInsertAt) ++cr.idx;
+                int rPos = rootOrderInsertAt;
+                if (rPos < 0) rPos = 0;
+                if (rPos > (int)gDocument->rootChildOrder.size()) rPos = (int)gDocument->rootChildOrder.size();
+                gDocument->rootChildOrder.insert(gDocument->rootChildOrder.begin() + rPos, { true, frameInsertAt });
+                ++rootOrderInsertAt;
             }
             dstVec.insert(dstVec.begin() + frameInsertAt, std::move(f));
             ++frameInsertAt;
@@ -992,6 +1096,15 @@ static void TrackLayerDrag(int srcIdx, Point startDocPt) {
                 if (orderPos > (int)dstOwner->childOrder.size()) orderPos = (int)dstOwner->childOrder.size();
                 dstOwner->childOrder.insert(dstOwner->childOrder.begin() + orderPos, { false, shapeInsertAt });
                 ++orderPos;
+            } else {
+                // Root level: update rootChildOrder
+                for (auto& cr : gDocument->rootChildOrder)
+                    if (!cr.isFrame && cr.idx >= shapeInsertAt) ++cr.idx;
+                int rPos = rootOrderInsertAt;
+                if (rPos < 0) rPos = 0;
+                if (rPos > (int)gDocument->rootChildOrder.size()) rPos = (int)gDocument->rootChildOrder.size();
+                gDocument->rootChildOrder.insert(gDocument->rootChildOrder.begin() + rPos, { false, shapeInsertAt });
+                ++rootOrderInsertAt;
             }
             dstVec.insert(dstVec.begin() + shapeInsertAt, std::move(s));
             ++shapeInsertAt;
@@ -1045,67 +1158,87 @@ void HandleLayersPanelClick(Point localPt, UInt16 modifiers) {
 
     short y = 2;
 
-    // Root shapes (forward order: first-created at top of panel)
-    for (auto it = gDocument->rootShapes.begin(); it != gDocument->rootShapes.end(); ++it) {
-        Shape* s = it->get();
+    // Hit-test a root-level shape row.
+    // Returns: 0 = miss, 1 = hit + goto check_dbl, 2 = hit + return immediately
+    auto hitTestRootShape = [&](Shape* s) -> int {
         Rect row = { y, 2, static_cast<short>(y + kLayerRowH - 1),
                      static_cast<short>(contentRect.right - 2) };
-        if (PtInRect(localPt, &row)) {
-            if (eyeZone) {
-                PushUndo(); s->visible = !s->visible;
-                InvalidateLayers(); InvalidateMain(); return;
-            } else if (lockZone) {
-                PushUndo(); s->locked = !s->locked;
-                InvalidateLayers(); InvalidateMain(); return;
-            }
-            // Allow mixing root shapes with root-level frames (parent == nullptr).
-            bool rootMixOK = !gSelectedFrames.empty() &&
-                             (!gSelectedFrames.empty() && gSelectedFrames[0]->parent == nullptr);
-            // Also allow single root-frame: gSelectedFrame && gSelectedShape==null && gSelectedFrame->parent==null
-            if (!rootMixOK && gSelectedFrame && gSelectedShape == nullptr && gSelectedFrame->parent == nullptr)
-                rootMixOK = true;
-            if ((modifiers & shiftKey) && (gSelectedFrame == nullptr || !gSelectedShapes.empty() || rootMixOK)) {
-                // Shift+click root shape: toggle in multi-select (possibly mixed with root frames).
-                if (rootMixOK) {
-                    // Promote single selected frame into gSelectedFrames.
-                    if (gSelectedFrame && gSelectedShape == nullptr &&
-                        std::find(gSelectedFrames.begin(), gSelectedFrames.end(), gSelectedFrame) == gSelectedFrames.end())
-                        gSelectedFrames.push_back(gSelectedFrame);
-                    gSelectedFrame = nullptr; // root context
-                }
-                auto sit = std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s);
-                if (sit != gSelectedShapes.end()) {
-                    gSelectedShapes.erase(sit);
-                    gSelectedShape = gSelectedShapes.empty() ? nullptr : gSelectedShapes.back();
-                } else {
-                    if (gSelectedShape &&
-                        std::find(gSelectedShapes.begin(), gSelectedShapes.end(), gSelectedShape) == gSelectedShapes.end())
-                        gSelectedShapes.push_back(gSelectedShape);
-                    gSelectedShapes.push_back(s);
-                    gSelectedShape = s;
-                }
-                InvalidateLayers(); InvalidateMain();
-                return;
-            }
-            bool alreadyInMulti = !gSelectedShapes.empty() &&
-                std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s) != gSelectedShapes.end();
-            if (!alreadyInMulti) {
-                gSelectedShapes.clear();
+        if (!PtInRect(localPt, &row)) return 0;
+        if (eyeZone) {
+            PushUndo(); s->visible = !s->visible;
+            InvalidateLayers(); InvalidateMain(); return 2;
+        } else if (lockZone) {
+            PushUndo(); s->locked = !s->locked;
+            InvalidateLayers(); InvalidateMain(); return 2;
+        }
+        bool rootMixOK = !gSelectedFrames.empty() && gSelectedFrames[0]->parent == nullptr;
+        if (!rootMixOK && gSelectedFrame && gSelectedShape == nullptr && gSelectedFrame->parent == nullptr)
+            rootMixOK = true;
+        if ((modifiers & shiftKey) && (gSelectedFrame == nullptr || !gSelectedShapes.empty() || rootMixOK)) {
+            if (rootMixOK) {
+                if (gSelectedFrame && gSelectedShape == nullptr &&
+                    std::find(gSelectedFrames.begin(), gSelectedFrames.end(), gSelectedFrame) == gSelectedFrames.end())
+                    gSelectedFrames.push_back(gSelectedFrame);
                 gSelectedFrame = nullptr;
             }
-            gSelectedShape = s;
+            auto sit = std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s);
+            if (sit != gSelectedShapes.end()) {
+                gSelectedShapes.erase(sit);
+                gSelectedShape = gSelectedShapes.empty() ? nullptr : gSelectedShapes.back();
+            } else {
+                if (gSelectedShape &&
+                    std::find(gSelectedShapes.begin(), gSelectedShapes.end(), gSelectedShape) == gSelectedShapes.end())
+                    gSelectedShapes.push_back(gSelectedShape);
+                gSelectedShapes.push_back(s);
+                gSelectedShape = s;
+            }
             InvalidateLayers(); InvalidateMain();
-            goto check_dbl;
+            return 2;
         }
-        y = static_cast<short>(y + kLayerRowH);
-    }
+        bool alreadyInMulti = !gSelectedShapes.empty() &&
+            std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s) != gSelectedShapes.end();
+        if (!alreadyInMulti) {
+            gSelectedShapes.clear();
+            gSelectedFrame = nullptr;
+        }
+        gSelectedShape = s;
+        InvalidateLayers(); InvalidateMain();
+        return 1;  // normal click → check_dbl
+    };
 
-    // Top-level frames (forward order)
-    for (auto it = gDocument->frames.begin(); it != gDocument->frames.end(); ++it) {
-        y = HitTestFrameRows(it->get(), y, 0, localPt, contentRect, eyeZone, lockZone, modifiers);
-        if (y == -1) {
-            if (eyeZone) return;
-            goto check_dbl;
+    if (!gDocument->rootChildOrder.empty()) {
+        for (int ci = 0; ci < (int)gDocument->rootChildOrder.size(); ++ci) {
+            const ChildRef& ref = gDocument->rootChildOrder[ci];
+            if (ref.isFrame) {
+                Frame* f = gDocument->frames[ref.idx].get();
+                y = HitTestFrameRows(f, y, 0, localPt, contentRect, eyeZone, lockZone, modifiers);
+                if (y == -1) {
+                    if (eyeZone) return;
+                    goto check_dbl;
+                }
+            } else {
+                Shape* s = gDocument->rootShapes[ref.idx].get();
+                int r = hitTestRootShape(s);
+                if (r == 2) return;
+                if (r == 1) goto check_dbl;
+                y = static_cast<short>(y + kLayerRowH);
+            }
+        }
+    } else {
+        // Legacy fallback: shapes first, then frames
+        for (auto it = gDocument->rootShapes.begin(); it != gDocument->rootShapes.end(); ++it) {
+            Shape* s = it->get();
+            int r = hitTestRootShape(s);
+            if (r == 2) return;
+            if (r == 1) goto check_dbl;
+            y = static_cast<short>(y + kLayerRowH);
+        }
+        for (auto it = gDocument->frames.begin(); it != gDocument->frames.end(); ++it) {
+            y = HitTestFrameRows(it->get(), y, 0, localPt, contentRect, eyeZone, lockZone, modifiers);
+            if (y == -1) {
+                if (eyeZone) return;
+                goto check_dbl;
+            }
         }
     }
 
