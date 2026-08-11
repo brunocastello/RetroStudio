@@ -238,7 +238,7 @@ void SetupWindow() {
     gDocument->name = "Untitled";
 
     auto frame           = std::make_unique<Frame>();
-    frame->name          = "Screen 1";
+    frame->name          = "Frame 1";
     frame->bounds        = { 40, 40, 390, 480 };
     frame->backgroundColor = { 0xFFFF, 0xFFFF, 0xFFFF };
     gDocument->frames.push_back(std::move(frame));
@@ -467,54 +467,47 @@ static void DrawFrame(const Frame& frame) {
 
 static void DrawSelectionHighlight() {
     RGBColor selBlue = { 0x1177, 0x55AA, 0xFFFF };
-
-    // Draw secondary multi-select borders (blue outline, no handles)
-    if (gSelectedShapes.size() > 1) {
-        RGBForeColor(&selBlue);
-        PenSize(2, 2);
-        for (Shape* s : gSelectedShapes) {
-            if (s == gSelectedShape) continue;
-            Rect r2 = CanvasRect(s->bounds);
-            FrameRect(&r2);
-        }
-        PenSize(1, 1);
-    }
-    if (gSelectedFrames.size() > 1) {
-        RGBForeColor(&selBlue);
-        PenSize(2, 2);
-        for (Frame* f : gSelectedFrames) {
-            if (f == gSelectedFrame) continue;
-            Rect r2 = CanvasRect(f->bounds);
-            FrameRect(&r2);
-        }
-        PenSize(1, 1);
-    }
-
-    if (!gSelectedFrame && !gSelectedShape) return;
-
-    Rect r = gSelectedShape
-        ? CanvasRect(gSelectedShape->bounds)
-        : CanvasRect(gSelectedFrame->bounds);
-
-    RGBForeColor(&selBlue);
-    PenSize(2, 2);
-    FrameRect(&r);
-    PenSize(1, 1);
-
+    RGBColor white   = { 0xFFFF, 0xFFFF, 0xFFFF };
     static const short kHW = 4;
-    short cx = static_cast<short>((r.left + r.right)  / 2);
-    short cy = static_cast<short>((r.top  + r.bottom) / 2);
-    const short hx[8] = { r.left, cx, r.right, r.right,  r.right,  cx,     r.left,  r.left };
-    const short hy[8] = { r.top,  r.top, r.top, cy,      r.bottom, r.bottom, r.bottom, cy   };
-    RGBColor white = { 0xFFFF, 0xFFFF, 0xFFFF };
-    for (int i = 0; i < 8; ++i) {
-        Rect h = {
-            static_cast<short>(hy[i]-kHW), static_cast<short>(hx[i]-kHW),
-            static_cast<short>(hy[i]+kHW), static_cast<short>(hx[i]+kHW)
-        };
-        RGBForeColor(&white); PaintRect(&h);
-        RGBForeColor(&selBlue); FrameRect(&h);
+
+    auto drawHandles = [&](const Rect& r) {
+        short cx = static_cast<short>((r.left + r.right)  / 2);
+        short cy = static_cast<short>((r.top  + r.bottom) / 2);
+        const short hx[8] = { r.left, cx, r.right, r.right,  r.right,  cx,     r.left,  r.left  };
+        const short hy[8] = { r.top,  r.top, r.top, cy,      r.bottom, r.bottom, r.bottom, cy    };
+        for (int i = 0; i < 8; ++i) {
+            Rect h = {
+                static_cast<short>(hy[i]-kHW), static_cast<short>(hx[i]-kHW),
+                static_cast<short>(hy[i]+kHW), static_cast<short>(hx[i]+kHW)
+            };
+            RGBForeColor(&white); PaintRect(&h);
+            RGBForeColor(&selBlue); FrameRect(&h);
+        }
+    };
+
+    // Draw border + handles for every item in each multi-select pool
+    auto drawItem = [&](const Rect& r) {
+        RGBForeColor(&selBlue);
+        PenSize(2, 2); FrameRect(&r); PenSize(1, 1);
+        drawHandles(r);
+    };
+
+    for (Shape* s : gSelectedShapes)   drawItem(CanvasRect(s->bounds));
+    for (Frame* f : gSelectedFrames)   drawItem(CanvasRect(f->bounds));
+
+    // Primary single-select item (skip if already drawn as part of multi-select)
+    bool drawnAsShape = gSelectedShape &&
+        std::find(gSelectedShapes.begin(), gSelectedShapes.end(), gSelectedShape) != gSelectedShapes.end();
+    bool drawnAsFrame = gSelectedFrame &&
+        std::find(gSelectedFrames.begin(), gSelectedFrames.end(), gSelectedFrame) != gSelectedFrames.end();
+
+    if (!drawnAsShape && !drawnAsFrame) {
+        if (!gSelectedShape && !gSelectedFrame) { PenNormal(); return; }
+        Rect r = gSelectedShape ? CanvasRect(gSelectedShape->bounds)
+                                : CanvasRect(gSelectedFrame->bounds);
+        drawItem(r);
     }
+
     PenNormal();
 }
 
@@ -1897,7 +1890,7 @@ static void NewDocument() {
     gDocument->name = "Untitled";
 
     auto frame           = std::make_unique<Frame>();
-    frame->name          = "Screen 1";
+    frame->name          = "Frame 1";
     frame->bounds        = { 40, 40, 390, 480 };
     frame->backgroundColor = { 0xFFFF, 0xFFFF, 0xFFFF };
     gDocument->frames.push_back(std::move(frame));
