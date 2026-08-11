@@ -604,14 +604,29 @@ void DrawWindowContent(WindowRef win) {
     EraseRect(&portRect);
 
     if (gDocument) {
-        // Render frames back-to-front so frames[0] (top of panel) is drawn last = frontmost.
-        for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend(); ++it)
-            DrawFrame(**it);
-
-        // Shapes floating at canvas root (outside every frame) — labels shown here only
-        for (const auto& shape : gDocument->rootShapes) {
-            DrawShape(*shape);
-            if (shape->visible) DrawShapeNameLabel(*shape);
+        // Render root-level items in rootChildOrder z-order.
+        // rootChildOrder[0] = top of layers panel = frontmost; iterate rbegin so it is drawn last.
+        if (!gDocument->rootChildOrder.empty()) {
+            for (auto it = gDocument->rootChildOrder.rbegin(); it != gDocument->rootChildOrder.rend(); ++it) {
+                if (it->isFrame) {
+                    if (it->idx < (int)gDocument->frames.size())
+                        DrawFrame(*gDocument->frames[it->idx]);
+                } else {
+                    if (it->idx < (int)gDocument->rootShapes.size()) {
+                        const auto& shape = gDocument->rootShapes[it->idx];
+                        DrawShape(*shape);
+                        if (shape->visible) DrawShapeNameLabel(*shape);
+                    }
+                }
+            }
+        } else {
+            // Legacy fallback (document predates rootChildOrder)
+            for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend(); ++it)
+                DrawFrame(**it);
+            for (const auto& shape : gDocument->rootShapes) {
+                DrawShape(*shape);
+                if (shape->visible) DrawShapeNameLabel(*shape);
+            }
         }
     }
 
@@ -1056,17 +1071,37 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         }
     }
 
-    // ---- 3. Regular body hit-test ----
+    // ---- 3. Regular body hit-test (respects rootChildOrder z-order) ----
     if (!found) {
-        for (auto it = gDocument->frames.begin(); it != gDocument->frames.end() && !found; ++it) {
-            HitResult res = HitTestFrame(it->get(), pt);
-            if (res.found) { hitFrame = res.frame; hitShape = res.shape; found = true; }
-        }
-    }
-    if (!found) {
-        for (auto it = gDocument->rootShapes.rbegin(); it != gDocument->rootShapes.rend(); ++it) {
-            Rect r = CanvasRect((*it)->bounds);
-            if (PtInRect(pt, &r)) { hitShape = it->get(); hitFrame = nullptr; found = true; break; }
+        if (!gDocument->rootChildOrder.empty()) {
+            // rootChildOrder[0] = frontmost; iterate forward so topmost item wins.
+            for (const auto& ref : gDocument->rootChildOrder) {
+                if (found) break;
+                if (ref.isFrame) {
+                    if (ref.idx < (int)gDocument->frames.size()) {
+                        HitResult res = HitTestFrame(gDocument->frames[ref.idx].get(), pt);
+                        if (res.found) { hitFrame = res.frame; hitShape = res.shape; found = true; }
+                    }
+                } else {
+                    if (ref.idx < (int)gDocument->rootShapes.size()) {
+                        Shape* s = gDocument->rootShapes[ref.idx].get();
+                        Rect r = CanvasRect(s->bounds);
+                        if (PtInRect(pt, &r)) { hitShape = s; hitFrame = nullptr; found = true; }
+                    }
+                }
+            }
+        } else {
+            // Legacy fallback
+            for (auto it = gDocument->frames.begin(); it != gDocument->frames.end() && !found; ++it) {
+                HitResult res = HitTestFrame(it->get(), pt);
+                if (res.found) { hitFrame = res.frame; hitShape = res.shape; found = true; }
+            }
+            if (!found) {
+                for (auto it = gDocument->rootShapes.rbegin(); it != gDocument->rootShapes.rend(); ++it) {
+                    Rect r = CanvasRect((*it)->bounds);
+                    if (PtInRect(pt, &r)) { hitShape = it->get(); hitFrame = nullptr; found = true; break; }
+                }
+            }
         }
     }
 
@@ -1925,6 +1960,7 @@ static void NewDocument() {
     gCanvasZoom     = 100;
     sUndoStack.clear();
     sRedoStack.clear();
+    sPasteParent = nullptr;
 
     Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
     UpdateWindowTitle();
@@ -2264,6 +2300,7 @@ void HandleMenuCommand(long menuResult) {
                     gCanvasZoom     = 100;
                     sUndoStack.clear();
                     sRedoStack.clear();
+                    sPasteParent = nullptr;
                     Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
                     UpdateWindowTitle();
                     RefreshLayersPanel();
