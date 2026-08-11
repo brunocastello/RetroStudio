@@ -609,8 +609,9 @@ void DrawWindowContent(WindowRef win) {
     EraseRect(&portRect);
 
     if (gDocument) {
-        for (const auto& frame : gDocument->frames)
-            DrawFrame(*frame);
+        // Render frames back-to-front so frames[0] (top of panel) is drawn last = frontmost.
+        for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend(); ++it)
+            DrawFrame(**it);
 
         // Shapes floating at canvas root (outside every frame) — labels shown here only
         for (const auto& shape : gDocument->rootShapes) {
@@ -989,7 +990,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
 
     // ---- 2. Name label: shapes first (enables drag-from-label), then frames ----
     if (!found) {
-        for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend() && !found; ++it) {
+        for (auto it = gDocument->frames.begin(); it != gDocument->frames.end() && !found; ++it) {
             auto res = HitTestShapeLabelInFrame(it->get(), pt);
             if (res.shape) { hitShape = res.shape; hitFrame = res.parent; found = true; }
         }
@@ -1013,7 +1014,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         }
     }
     if (!found) {
-        for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend() && !found; ++it) {
+        for (auto it = gDocument->frames.begin(); it != gDocument->frames.end() && !found; ++it) {
             Frame* lf = HitTestFrameLabel(it->get(), pt);
             if (lf) { hitFrame = lf; found = true; }
         }
@@ -1021,7 +1022,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
 
     // ---- 3. Regular body hit-test ----
     if (!found) {
-        for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend() && !found; ++it) {
+        for (auto it = gDocument->frames.begin(); it != gDocument->frames.end() && !found; ++it) {
             HitResult res = HitTestFrame(it->get(), pt);
             if (res.found) { hitFrame = res.frame; hitShape = res.shape; found = true; }
         }
@@ -1138,13 +1139,13 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         std::string* targetName = nullptr;
 
         // Check shape labels across all frames first
-        for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend() && !targetName; ++it) {
+        for (auto it = gDocument->frames.begin(); it != gDocument->frames.end() && !targetName; ++it) {
             Shape* sl = HitTestShapeLabel(it->get(), pt);
             if (sl) { targetName = &sl->name; }
         }
         // Check frame labels
         if (!targetName) {
-            for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend() && !targetName; ++it) {
+            for (auto it = gDocument->frames.begin(); it != gDocument->frames.end() && !targetName; ++it) {
                 Frame* fl = HitTestFrameLabel(it->get(), pt);
                 if (fl) { targetName = &fl->name; }
             }

@@ -314,8 +314,7 @@ void DrawLayersPanel() {
         const Shape* s = it->get();
         sLayerRows.push_back({ false, nullptr, const_cast<Shape*>(s), nullptr, y, rsIdx, -1 });
         bool sel = (gSelectedShape == s && gSelectedFrame == nullptr) ||
-                   (gSelectedFrame == nullptr &&
-                    std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s) != gSelectedShapes.end());
+                   std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s) != gSelectedShapes.end();
         std::string lbl = s->name;
         if (lbl.empty()) lbl = (s->GetType() == Shape::kEllipse) ? "Ellipse" : "Rectangle";
         y = DrawRow(y, 0, lbl, sel, s->GetType(), false, s->visible, s->locked, contentRect);
