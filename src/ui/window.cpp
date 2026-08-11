@@ -1524,6 +1524,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                         newParent->childOrder.push_back({ false, (int)newParent->children.size() });
                         newParent->children.push_back(std::move(owned));
                     } else {
+                        gDocument->rootChildOrder.push_back({ false, (int)gDocument->rootShapes.size() });
                         gDocument->rootShapes.push_back(std::move(owned));
                     }
                     gSelectedFrame = newParent;
@@ -1582,6 +1583,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                         newParent->childFrames.push_back(std::move(owned));
                     } else {
                         owned->parent = nullptr;
+                        gDocument->rootChildOrder.push_back({ true, (int)gDocument->frames.size() });
                         gDocument->frames.push_back(std::move(owned));
                     }
                     gSelectedFrame = raw;
@@ -1737,6 +1739,7 @@ static void HandleTextPlace(WindowRef win, Point localPt, Point globalPt) {
         target->childOrder.push_back({ false, (int)target->children.size() });
         target->children.push_back(std::move(t));
     } else {
+        gDocument->rootChildOrder.push_back({ false, (int)gDocument->rootShapes.size() });
         gDocument->rootShapes.push_back(std::move(t));
     }
 
@@ -1817,6 +1820,7 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
                 parent->childFrames.push_back(std::move(f));
             } else {
                 f->parent = nullptr;
+                gDocument->rootChildOrder.push_back({ true, (int)gDocument->frames.size() });
                 gDocument->frames.push_back(std::move(f));
             }
             gSelectedFrame = raw;
@@ -1852,6 +1856,7 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
                 target->childOrder.push_back({ false, (int)target->children.size() });
                 target->children.push_back(std::move(shape));
             } else {
+                gDocument->rootChildOrder.push_back({ false, (int)gDocument->rootShapes.size() });
                 gDocument->rootShapes.push_back(std::move(shape));
             }
         }
@@ -2078,6 +2083,7 @@ void PasteClipboard() {
             gSelectedFrame->childOrder.push_back({ false, (int)gSelectedFrame->children.size() });
             gSelectedFrame->children.push_back(std::move(copy));
         } else {
+            gDocument->rootChildOrder.push_back({ false, (int)gDocument->rootShapes.size() });
             gDocument->rootShapes.push_back(std::move(copy));
         }
         gSelectedShape = raw;
@@ -2086,6 +2092,7 @@ void PasteClipboard() {
         copy->name = NextAvailableName(copy->name);
         MoveFrameTree(copy.get(), off, off);  // shifts frame + all children
         Frame* raw = copy.get();
+        gDocument->rootChildOrder.push_back({ true, (int)gDocument->frames.size() });
         gDocument->frames.push_back(std::move(copy));
         gSelectedFrame = raw;
         gSelectedShape = nullptr;
