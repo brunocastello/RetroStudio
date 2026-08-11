@@ -163,8 +163,6 @@ static short DrawRow(short y, short indent,
 
     if (selected) {
         RGBColor b = { 0x3399, 0x6666, 0xCCCC }; RGBForeColor(&b); PaintRect(&row);
-    } else if (isFrame) {
-        RGBColor b = { 0xE6E6, 0xE6E6, 0xE6E6 }; RGBForeColor(&b); PaintRect(&row);
     }
 
     RGBColor sep = { 0xD0D0, 0xD0D0, 0xD0D0 };
