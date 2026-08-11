@@ -735,8 +735,9 @@ static void CollectAllBandFrames(Frame* frm, SInt32 l, SInt32 t, SInt32 r, SInt3
     }
 }
 
-// Forward declaration — defined later in this file (after undo infrastructure)
+// Forward declarations — defined later in this file (after undo infrastructure)
 static std::unique_ptr<Frame> CloneFrame(const Frame* src, Frame* newParent);
+static std::string NextAvailableName(const std::string& name);
 
 // --------------------------------------------------------------------------
 // rootChildOrder helpers
@@ -1233,6 +1234,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                 std::vector<Shape*> newShapes;
                 for (Shape* s : gSelectedShapes) {
                     auto clone = s->Clone();
+                    clone->name = NextAvailableName(clone->name);
                     Shape* cp = clone.get();
                     newShapes.push_back(cp);
                     if (shapeCtx) {
@@ -1255,6 +1257,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                     if (hasSelAncestor(f)) continue;
                     Frame* par = f->parent;
                     auto clone = CloneFrame(f, par);
+                    clone->name = NextAvailableName(clone->name);
                     Frame* cp = clone.get();
                     newFrames.push_back(cp);
                     if (par) {
@@ -1273,6 +1276,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                 if (!hitShape && !newFrames.empty()) hitFrame = newFrames[0];
             } else if (gSelectedShape) {
                 auto clone = gSelectedShape->Clone();
+                clone->name = NextAvailableName(clone->name);
                 Shape* cp = clone.get();
                 if (origParent) {
                     origParent->childOrder.push_back({ false, (int)origParent->children.size() });
@@ -1286,6 +1290,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
             } else if (gSelectedFrame) {
                 Frame* par = gSelectedFrame->parent;
                 auto clone = CloneFrame(gSelectedFrame, par);
+                clone->name = NextAvailableName(clone->name);
                 Frame* cp = clone.get();
                 if (par) {
                     par->childOrder.push_back({ true, (int)par->childFrames.size() });
