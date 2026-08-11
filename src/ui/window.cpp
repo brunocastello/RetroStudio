@@ -28,10 +28,11 @@ int        gNextRectNum    = 1;
 int        gNextEllipseNum = 1;
 int        gNextTextNum    = 1;
 
-// In-memory clipboard (one item — either a frame or a shape, never both)
+// In-memory clipboard
 static std::vector<std::unique_ptr<Frame>> sClipFrames;
 static std::vector<std::unique_ptr<Shape>> sClipShapes;
 static int                                 sPasteOffset = 0;  // increments per paste, resets on copy
+static Frame*                              sPasteParent = nullptr; // nullptr = root level
 
 // Undo / redo stacks — each entry is a full document snapshot
 static const int kMaxUndo = 50;
@@ -731,6 +732,7 @@ static void CollectAllBandFrames(Frame* frm, SInt32 l, SInt32 t, SInt32 r, SInt3
 // Forward declarations — defined later in this file (after undo infrastructure)
 static std::unique_ptr<Frame> CloneFrame(const Frame* src, Frame* newParent);
 static std::string NextAvailableName(const std::string& name);
+static Frame* LocateShapeParent(Shape* s);
 
 // --------------------------------------------------------------------------
 // rootChildOrder helpers
@@ -1142,6 +1144,16 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
 
     // If clicking on an object already in the multi-select (including mixed), preserve selection for drag.
     bool isMixedSelect = (!gSelectedFrames.empty() && !gSelectedShapes.empty());
+
+    // True if hitFrame, or any ancestor of hitFrame, is in gSelectedFrames.
+    // Needed so clicking a shape (or sub-frame) *inside* a multi-selected frame still drags the group.
+    auto frameOrAncestorSelected = [&]() -> bool {
+        for (Frame* cur = hitFrame; cur; cur = cur->parent)
+            if (std::find(gSelectedFrames.begin(), gSelectedFrames.end(), cur) != gSelectedFrames.end())
+                return true;
+        return false;
+    };
+
     bool hitInSelection =
         (hitShape && gSelectedShapes.size() > 1 &&
          std::find(gSelectedShapes.begin(), gSelectedShapes.end(), hitShape) != gSelectedShapes.end())
@@ -1153,7 +1165,11 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
          std::find(gSelectedShapes.begin(), gSelectedShapes.end(), hitShape) != gSelectedShapes.end())
         ||
         (isMixedSelect && !hitShape && hitFrame &&
-         std::find(gSelectedFrames.begin(), gSelectedFrames.end(), hitFrame) != gSelectedFrames.end());
+         std::find(gSelectedFrames.begin(), gSelectedFrames.end(), hitFrame) != gSelectedFrames.end())
+        ||
+        // Clicking a child shape or sub-frame inside one of the multi-selected frames.
+        // Only applies when 2+ frames are selected so single-frame clicks still enter the frame normally.
+        (gSelectedFrames.size() > 1 && hitFrame && frameOrAncestorSelected());
 
     if (hitInSelection) {
         if (hitShape) gSelectedShape = hitShape;
@@ -2051,14 +2067,33 @@ void PerformRedo() {
 void CopySelected() {
     sClipFrames.clear();
     sClipShapes.clear();
-    sPasteOffset = 0;
-    // Multi-select: copy all
-    for (Shape* s : gSelectedShapes) sClipShapes.push_back(s->Clone());
-    for (Frame* f : gSelectedFrames) sClipFrames.push_back(CloneFrame(f, nullptr));
+    sPasteOffset  = 0;
+    sPasteParent  = nullptr;
+    bool parentSet = false;
+
+    // Track common parent of everything being copied; nullptr if items span multiple parents.
+    auto mergeParent = [&](Frame* p) {
+        if (!parentSet) { sPasteParent = p; parentSet = true; }
+        else if (sPasteParent != p) sPasteParent = nullptr;
+    };
+
+    for (Shape* s : gSelectedShapes) {
+        mergeParent(LocateShapeParent(s));
+        sClipShapes.push_back(s->Clone());
+    }
+    for (Frame* f : gSelectedFrames) {
+        mergeParent(f->parent);
+        sClipFrames.push_back(CloneFrame(f, nullptr));
+    }
     // Single select fallback
     if (sClipShapes.empty() && sClipFrames.empty()) {
-        if (gSelectedShape) sClipShapes.push_back(gSelectedShape->Clone());
-        else if (gSelectedFrame) sClipFrames.push_back(CloneFrame(gSelectedFrame, nullptr));
+        if (gSelectedShape) {
+            mergeParent(LocateShapeParent(gSelectedShape));
+            sClipShapes.push_back(gSelectedShape->Clone());
+        } else if (gSelectedFrame) {
+            mergeParent(gSelectedFrame->parent);
+            sClipFrames.push_back(CloneFrame(gSelectedFrame, nullptr));
+        }
     }
 }
 
@@ -2069,6 +2104,20 @@ void PasteClipboard() {
     PushUndo();
     ++sPasteOffset;
     SInt32 off = SInt32(sPasteOffset) * 10;
+
+    // Validate sPasteParent still lives in the document (may have been deleted since copy).
+    Frame* pasteParent = sPasteParent;
+    if (pasteParent) {
+        bool found = false;
+        std::vector<Frame*> stk;
+        for (auto& f : gDocument->frames) stk.push_back(f.get());
+        while (!stk.empty()) {
+            Frame* f = stk.back(); stk.pop_back();
+            if (f == pasteParent) { found = true; break; }
+            for (auto& cf : f->childFrames) stk.push_back(cf.get());
+        }
+        if (!found) pasteParent = nullptr;
+    }
 
     gSelectedShapes.clear();
     gSelectedFrames.clear();
@@ -2081,25 +2130,36 @@ void PasteClipboard() {
         copy->bounds.x = src->bounds.x + off;
         copy->bounds.y = src->bounds.y + off;
         Shape* raw = copy.get();
-        // Paste into clipboard's original parent context — shapes copied from inside a
-        // frame paste back there; shapes copied from root paste at root.
-        // For simplicity we always paste at root (same as Figma's default behavior).
-        gDocument->rootChildOrder.push_back({ false, (int)gDocument->rootShapes.size() });
-        gDocument->rootShapes.push_back(std::move(copy));
+        if (pasteParent) {
+            pasteParent->childOrder.push_back({ false, (int)pasteParent->children.size() });
+            pasteParent->children.push_back(std::move(copy));
+        } else {
+            gDocument->rootChildOrder.push_back({ false, (int)gDocument->rootShapes.size() });
+            gDocument->rootShapes.push_back(std::move(copy));
+        }
         gSelectedShapes.push_back(raw);
         gSelectedShape = raw;
     }
 
     for (const auto& src : sClipFrames) {
-        auto copy = CloneFrame(src.get(), nullptr);
+        auto copy = CloneFrame(src.get(), pasteParent);
         copy->name = NextAvailableName(copy->name);
         MoveFrameTree(copy.get(), off, off);
         Frame* raw = copy.get();
-        gDocument->rootChildOrder.push_back({ true, (int)gDocument->frames.size() });
-        gDocument->frames.push_back(std::move(copy));
+        if (pasteParent) {
+            pasteParent->childOrder.push_back({ true, (int)pasteParent->childFrames.size() });
+            pasteParent->childFrames.push_back(std::move(copy));
+        } else {
+            gDocument->rootChildOrder.push_back({ true, (int)gDocument->frames.size() });
+            gDocument->frames.push_back(std::move(copy));
+        }
         gSelectedFrames.push_back(raw);
         gSelectedFrame = raw;
     }
+
+    // If only shapes pasted, set gSelectedFrame to the parent for context.
+    if (!gSelectedShapes.empty() && gSelectedFrames.empty())
+        gSelectedFrame = pasteParent;
 
     Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
     RefreshLayersPanel();
