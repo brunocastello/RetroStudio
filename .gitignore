@@ -4,3 +4,4 @@ output/
 *.a
 *.dSYM
 .DS_Store
+FEATURE_STATUS.md
