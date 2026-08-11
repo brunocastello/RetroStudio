@@ -1212,6 +1212,94 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         Point prevPt = pt, currPt = pt;
         bool pushedUndo = false;
 
+        // ── Option+drag: duplicate selection in-place, then drag the copy ────────
+        if (modifiers & optionKey) {
+            PushUndo();
+            pushedUndo = true;
+
+            bool isMultiSel = (gSelectedShapes.size() > 1 || gSelectedFrames.size() > 1)
+                           || (!gSelectedFrames.empty() && !gSelectedShapes.empty());
+
+            if (isMultiSel) {
+                // Resolve the shapes' parent context (same logic as the multi-drag reparent path)
+                Frame* shapeCtx = (std::find(gSelectedFrames.begin(), gSelectedFrames.end(),
+                                             gSelectedFrame) != gSelectedFrames.end())
+                                  ? (gSelectedFrames.empty() ? nullptr : gSelectedFrames[0]->parent)
+                                  : gSelectedFrame;
+                // Clone shapes
+                std::vector<Shape*> newShapes;
+                for (Shape* s : gSelectedShapes) {
+                    auto clone = s->Clone();
+                    Shape* cp = clone.get();
+                    newShapes.push_back(cp);
+                    if (shapeCtx) {
+                        shapeCtx->childOrder.push_back({ false, (int)shapeCtx->children.size() });
+                        shapeCtx->children.push_back(std::move(clone));
+                    } else {
+                        gDocument->rootChildOrder.push_back({ false, (int)gDocument->rootShapes.size() });
+                        gDocument->rootShapes.push_back(std::move(clone));
+                    }
+                }
+                // Clone frames — skip frames whose ancestor is also selected (already cloned inside parent)
+                auto hasSelAncestor = [&](Frame* f) -> bool {
+                    for (Frame* cur = f->parent; cur; cur = cur->parent)
+                        if (std::find(gSelectedFrames.begin(), gSelectedFrames.end(), cur) != gSelectedFrames.end())
+                            return true;
+                    return false;
+                };
+                std::vector<Frame*> newFrames;
+                for (Frame* f : gSelectedFrames) {
+                    if (hasSelAncestor(f)) continue;
+                    Frame* par = f->parent;
+                    auto clone = CloneFrame(f, par);
+                    Frame* cp = clone.get();
+                    newFrames.push_back(cp);
+                    if (par) {
+                        par->childOrder.push_back({ true, (int)par->childFrames.size() });
+                        par->childFrames.push_back(std::move(clone));
+                    } else {
+                        gDocument->rootChildOrder.push_back({ true, (int)gDocument->frames.size() });
+                        gDocument->frames.push_back(std::move(clone));
+                    }
+                }
+                gSelectedShapes  = newShapes;
+                gSelectedShape   = newShapes.empty() ? nullptr : newShapes.back();
+                gSelectedFrames  = newFrames;
+                gSelectedFrame   = newFrames.empty() ? shapeCtx : newFrames.back();
+                if (hitShape && !newShapes.empty()) hitShape = newShapes[0];
+                if (!hitShape && !newFrames.empty()) hitFrame = newFrames[0];
+            } else if (gSelectedShape) {
+                auto clone = gSelectedShape->Clone();
+                Shape* cp = clone.get();
+                if (origParent) {
+                    origParent->childOrder.push_back({ false, (int)origParent->children.size() });
+                    origParent->children.push_back(std::move(clone));
+                } else {
+                    gDocument->rootChildOrder.push_back({ false, (int)gDocument->rootShapes.size() });
+                    gDocument->rootShapes.push_back(std::move(clone));
+                }
+                gSelectedShape = cp;
+                hitShape = cp;
+            } else if (gSelectedFrame) {
+                Frame* par = gSelectedFrame->parent;
+                auto clone = CloneFrame(gSelectedFrame, par);
+                Frame* cp = clone.get();
+                if (par) {
+                    par->childOrder.push_back({ true, (int)par->childFrames.size() });
+                    par->childFrames.push_back(std::move(clone));
+                } else {
+                    gDocument->rootChildOrder.push_back({ true, (int)gDocument->frames.size() });
+                    gDocument->frames.push_back(std::move(clone));
+                }
+                gSelectedFrame = cp;
+                hitFrame = cp;
+            }
+
+            DrawWindowContent(win);
+            RefreshLayersPanel();
+            RefreshInspector();
+        }
+
         // Exclude dragged shape(s)/frame from layout so they move freely.
         // Single-select: use gLayoutDragShape / gLayoutDragFrame; multi-select: gIsLayoutMultiDrag.
         bool isMultiDrag  = (gSelectedShapes.size() > 1 || gSelectedFrames.size() > 1)
