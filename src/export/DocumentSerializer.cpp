@@ -1,6 +1,11 @@
 #include "DocumentSerializer.h"
+#include <Navigation.h>
 #include <Carbon.h>
 #include <cstring>
+
+// NavGetDefaultDialogOptions is in libNavigationLib.a but absent from the
+// Multiversal Navigation.h — forward-declare it directly.
+extern "C" OSErr NavGetDefaultDialogOptions(NavDialogOptions* outOptions);
 
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
@@ -288,45 +293,16 @@ static void GetDesktopSpec(short& outVRefNum, long& outDirID) {
 // Public API
 // --------------------------------------------------------------------------
 
-// Show DLOG 130 (Save As) — fills outFname, returns true if user clicked Save
-static bool RunSaveAsDialog(ConstStr255Param defaultName, Str255 outFname) {
-    outFname[0] = 0;
-    DialogPtr dlg = GetNewDialog(130, nullptr, (WindowPtr)-1L);
-    if (!dlg) return false;
-
-    Handle h; short itype; Rect ir;
-    GetDialogItem(dlg, 4, &itype, &h, &ir);
-    SetDialogItemText(h, defaultName);
-
-    short item = 0;
-    while (item != 1 && item != 2)
-        ModalDialog(nullptr, &item);
-
-    if (item == 1) {
-        GetDialogItem(dlg, 4, &itype, &h, &ir);
-        GetDialogItemText(h, outFname);
-    }
-    DisposeDialog(dlg);
-    return (item == 1 && outFname[0] > 0);
-}
-
-// Show DLOG 131 (Open) — fills outFname, returns true if user clicked Open
-static bool RunOpenDialog(Str255 outFname) {
-    outFname[0] = 0;
-    DialogPtr dlg = GetNewDialog(131, nullptr, (WindowPtr)-1L);
-    if (!dlg) return false;
-
-    short item = 0;
-    while (item != 1 && item != 2)
-        ModalDialog(nullptr, &item);
-
-    if (item == 1) {
-        Handle h; short itype; Rect ir;
-        GetDialogItem(dlg, 4, &itype, &h, &ir);
-        GetDialogItemText(h, outFname);
-    }
-    DisposeDialog(dlg);
-    return (item == 1 && outFname[0] > 0);
+// Extract FSSpec from a NavReplyRecord selection using AEGetNthPtr (available
+// in the Multiversal headers, unlike AEGetDescData which is not).
+static OSErr NavReplyToFSSpec(NavReplyRecord& reply, FSSpec& outSpec) {
+    AEKeyword keyword;
+    DescType  typeCode;
+    SInt32    actualSize = 0;
+    return AEGetNthPtr(&reply.selection, 1, typeFSS,
+                       &keyword, &typeCode,
+                       &outSpec, static_cast<SInt32>(sizeof(FSSpec)),
+                       &actualSize);
 }
 
 bool SaveDocument(Document* doc) {
@@ -336,15 +312,18 @@ bool SaveDocument(Document* doc) {
     Str255 origName;
     ToPStr31(suggested, origName);
 
-    Str255 fname;
-    if (!RunSaveAsDialog(origName, fname)) return false;
+    NavDialogOptions options;
+    NavGetDefaultDialogOptions(&options);
+    ToPStr31(suggested, options.savedFileName);
 
-    short vRefNum; long dirID;
-    GetDesktopSpec(vRefNum, dirID);
+    NavReplyRecord reply;
+    OSErr err = NavPutFile(nullptr, &reply, &options, nullptr, kDocType, kCreator, nullptr);
+    if (err != noErr || !reply.validRecord) { NavDisposeReply(&reply); return false; }
 
     FSSpec spec;
-    OSErr fsErr = FSMakeFSSpec(vRefNum, dirID, fname, &spec);
-    if (fsErr != noErr && fsErr != fnfErr) return false;
+    err = NavReplyToFSSpec(reply, spec);
+    NavDisposeReply(&reply);
+    if (err != noErr) return false;
 
     FSpDelete(&spec);
     if (FSpCreate(&spec, kCreator, kDocType, smSystemScript) != noErr) return false;
@@ -353,8 +332,8 @@ bool SaveDocument(Document* doc) {
     if (FSpOpenDF(&spec, fsRdWrPerm, &refNum) != noErr) return false;
 
     std::string filename;
-    for (int i = 1; i <= fname[0]; ++i)
-        filename += static_cast<char>(fname[i]);
+    for (int i = 1; i <= spec.name[0]; ++i)
+        filename += static_cast<char>(spec.name[i]);
 
     Writer w; w.ref = refNum;
 
@@ -381,14 +360,17 @@ bool SaveDocument(Document* doc) {
 }
 
 bool LoadDocument(Document*& doc) {
-    Str255 fname;
-    if (!RunOpenDialog(fname)) return false;
+    NavDialogOptions options;
+    NavGetDefaultDialogOptions(&options);
 
-    short vRefNum; long dirID;
-    GetDesktopSpec(vRefNum, dirID);
+    NavReplyRecord reply;
+    OSErr err = NavGetFile(nullptr, &reply, &options, nullptr, nullptr, nullptr, nullptr, nullptr);
+    if (err != noErr || !reply.validRecord) { NavDisposeReply(&reply); return false; }
 
     FSSpec spec;
-    if (FSMakeFSSpec(vRefNum, dirID, fname, &spec) != noErr) return false;
+    err = NavReplyToFSSpec(reply, spec);
+    NavDisposeReply(&reply);
+    if (err != noErr) return false;
 
     short refNum;
     if (FSpOpenDF(&spec, fsRdPerm, &refNum) != noErr) return false;

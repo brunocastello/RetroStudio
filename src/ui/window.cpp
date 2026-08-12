@@ -64,8 +64,9 @@ static const short kEditMenuID  = 130;
 static const short kViewMenuID  = 131;
 static const short kFileNew     = 1;
 static const short kFileOpen    = 2;
-static const short kFileSave    = 4;
-static const short kFileQuit    = 6;
+static const short kFileClose   = 3;
+static const short kFileSave    = 5;
+static const short kFileQuit    = 7;
 static const short kViewZoomIn  = 1;
 static const short kViewZoomOut = 2;
 // item 3 = separator
@@ -250,67 +251,14 @@ static WindowRef CreateDocumentWindow(Document* doc) {
     return NewCWindow(nullptr, &bounds, title, true, kZoomDocProc, (WindowRef)-1L, true, 0);
 }
 
+// DLOG 128 = About dialog defined in RetroStudio.r
 static void ShowAboutDialog() {
-    const short kW = 280, kH = 150;
-    short wx = static_cast<short>((640 - kW) / 2);
-    short wy = static_cast<short>((480 - kH) / 2);
-    Rect wr = { wy, wx, static_cast<short>(wy + kH), static_cast<short>(wx + kW) };
-    Str255 noTitle = { 0 };
-    WindowRef dlg = NewCWindow(nullptr, &wr, noTitle, true, 1 /*dBoxProc*/,
-                               (WindowRef)-1L, false, 0);
+    DialogPtr dlg = GetNewDialog(128, nullptr, (WindowPtr)-1L);
     if (!dlg) return;
-    SetPortWindowPort(dlg);
-
-    Rect btnR = { static_cast<short>(kH - 36), static_cast<short>(kW - 82),
-                  static_cast<short>(kH - 16), static_cast<short>(kW - 14) };
-
-    auto draw = [&]() {
-        Rect portR; GetWindowPortBounds(dlg, &portR);
-        RGBColor white = { 0xFFFF, 0xFFFF, 0xFFFF };
-        RGBColor black = { 0, 0, 0 };
-        RGBBackColor(&white); RGBForeColor(&black);
-        EraseRect(&portR);
-        TextFont(0); TextSize(14); TextFace(bold);
-        MoveTo(14, 28); DrawString("\pRetroStudio 1.0");
-        TextSize(12); TextFace(normal);
-        MoveTo(14, 52); DrawString("\pA vector design & prototyping");
-        MoveTo(14, 68); DrawString("\ptool for Mac OS 9.");
-        MoveTo(14, 92); DrawString("\p\251 2026 Bruno Castello.");
-        FrameRect(&btnR);
-        Rect inner = { static_cast<short>(btnR.top + 2), static_cast<short>(btnR.left + 2),
-                       static_cast<short>(btnR.bottom - 2), static_cast<short>(btnR.right - 2) };
-        FrameRect(&inner);
-        MoveTo(static_cast<short>(btnR.left + 18), static_cast<short>(btnR.bottom - 6));
-        DrawString("\pOK");
-    };
-    draw();
-
-    while (Button()) {}
-    bool done = false;
-    EventRecord evt;
-    while (!done) {
-        if (WaitNextEvent(everyEvent, &evt, 10, nullptr)) {
-            switch (evt.what) {
-                case keyDown: case autoKey: {
-                    char c = static_cast<char>(evt.message & charCodeMask);
-                    if (c == 0x0D || c == 0x03 || c == 0x1B) done = true;
-                    break;
-                }
-                case mouseDown: {
-                    Point lp = evt.where;
-                    SetPortWindowPort(dlg); GlobalToLocal(&lp);
-                    if (PtInRect(lp, &btnR)) done = true;
-                    break;
-                }
-                case updateEvt: {
-                    WindowRef uw = reinterpret_cast<WindowRef>(evt.message);
-                    if (uw == dlg) { BeginUpdate(dlg); SetPortWindowPort(dlg); draw(); EndUpdate(dlg); }
-                    break;
-                }
-            }
-        }
-    }
-    DisposeWindow(dlg);
+    short item = 0;
+    while (item != 1)
+        ModalDialog(nullptr, &item);
+    DisposeDialog(dlg);
 }
 
 // DLOG 129 = Save-confirmation dialog defined in RetroStudio.r
@@ -416,6 +364,8 @@ void SetupMenus() {
     SetItemCmd(fileMenu, kFileNew, 'N');
     AppendMenu(fileMenu, "\pOpen...");
     SetItemCmd(fileMenu, kFileOpen, 'O');
+    AppendMenu(fileMenu, "\pClose");
+    SetItemCmd(fileMenu, kFileClose, 'W');
     AppendMenu(fileMenu, "\p-");
     AppendMenu(fileMenu, "\pSave...");
     SetItemCmd(fileMenu, kFileSave, 'S');
@@ -2534,6 +2484,9 @@ void HandleMenuCommand(long menuResult) {
                 }
                 break;
             }
+            case kFileClose:
+                CloseDocumentWindow(gMainWindow);
+                break;
             case kFileSave:
                 SaveDocument(gDocument);
                 break;
