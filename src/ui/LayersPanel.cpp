@@ -265,7 +265,17 @@ static short DrawFrameRows(const Frame* frame, short y, short indent,
 }
 
 void DrawLayersPanel() {
-    if (!gLayersWindow || !gDocument) return;
+    if (!gLayersWindow) return;
+    if (!gDocument) {
+        SetPortWindowPort(gLayersWindow);
+        Rect r; GetWindowPortBounds(gLayersWindow, &r);
+        RGBColor disabledBg = { 0xDDDD, 0xDDDD, 0xDDDD };
+        RGBBackColor(&disabledBg);
+        EraseRect(&r);
+        RGBColor white = { 0xFFFF, 0xFFFF, 0xFFFF };
+        RGBBackColor(&white);
+        return;
+    }
     SetPortWindowPort(gLayersWindow);
 
     Rect portRect;

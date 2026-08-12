@@ -449,7 +449,17 @@ void SetupInspectorPanel() {
 // --------------------------------------------------------------------------
 
 void DrawInspectorPanel() {
-    if (!gInspectorWindow || !gDocument) return;
+    if (!gInspectorWindow) return;
+    if (!gDocument) {
+        SetPortWindowPort(gInspectorWindow);
+        Rect r; GetWindowPortBounds(gInspectorWindow, &r);
+        RGBColor disabledBg = { 0xDDDD, 0xDDDD, 0xDDDD };
+        RGBBackColor(&disabledBg);
+        EraseRect(&r);
+        RGBColor white = { 0xFFFF, 0xFFFF, 0xFFFF };
+        RGBBackColor(&white);
+        return;
+    }
     RunDocumentLayout(gDocument);
     SetPortWindowPort(gInspectorWindow);
 

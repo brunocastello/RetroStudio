@@ -274,13 +274,15 @@ void DrawAboutWindow() {
 
     short cx = static_cast<short>((portRect.left + portRect.right) / 2);
 
-    // Helper: center a C string at vertical position y, with given size/face
+    // Helper: center a C string at vertical position y, with given size/face.
+    // TextWidth/DrawText take non-const Ptr; the strings are read-only in practice.
     auto drawC = [&](short y, short sz, short face, const char* s) {
         short len = 0; while (s[len]) ++len;
+        char* p = const_cast<char*>(s);
         TextFont(0); TextSize(sz); TextFace(face);
-        short w = TextWidth(s, 0, len);
+        short w = TextWidth(p, 0, len);
         MoveTo(static_cast<short>(cx - w / 2), y);
-        DrawText(s, 0, len);
+        DrawText(p, 0, len);
     };
 
     drawC(48,  24, bold,   "RetroStudio");
@@ -289,6 +291,22 @@ void DrawAboutWindow() {
     drawC(124, 12, normal, "for Classic Mac OS 9");
     drawC(158, 12, normal, "Bruno Castello");
     drawC(190, 10, normal, "\xA9 2026 Bruno Castello. All rights reserved.");
+}
+
+// Enable/disable menu items based on whether any document is open.
+// Call after any transition that changes gDocument.
+static void UpdateMenuState() {
+    bool has = (gDocument != nullptr);
+    MenuRef fm = GetMenuHandle(kFileMenuID);
+    if (fm) {
+        if (has) { EnableItem(fm, kFileClose); EnableItem(fm, kFileSave); }
+        else     { DisableItem(fm, kFileClose); DisableItem(fm, kFileSave); }
+    }
+    MenuRef em = GetMenuHandle(kEditMenuID);
+    if (em) { if (has) EnableItem(em, 0); else DisableItem(em, 0); }
+    MenuRef vm = GetMenuHandle(kViewMenuID);
+    if (vm) { if (has) EnableItem(vm, 0); else DisableItem(vm, 0); }
+    DrawMenuBar();
 }
 
 // DLOG 129 = Save-confirmation dialog defined in RetroStudio.r
@@ -367,12 +385,15 @@ void CloseDocumentWindow(WindowRef win) {
     DisposeWindow(winToDispose);
 
     if (sDocWindows.empty()) {
-        // Last document closed — open a fresh Untitled window instead of quitting.
+        // Last document closed — keep running, show panels in disabled state.
         // File > Quit (or Apple Event) is the only path that sets gQuitFlag.
         gDocument = nullptr; gMainWindow = nullptr;
-        NewDocument();
+        gSelectedFrame = nullptr; gSelectedShape = nullptr;
+        gSelectedShapes.clear(); gSelectedFrames.clear();
+        sUndoStack.clear(); sRedoStack.clear();
         RefreshLayersPanel();
         RefreshInspector();
+        UpdateMenuState();
     } else {
         DocCtx* nextCtx = (!wasActive && prevCtx) ? prevCtx : sDocWindows.front().get();
         LoadGlobalsFromCtx(*nextCtx);
@@ -2553,5 +2574,6 @@ void HandleMenuCommand(long menuResult) {
             case kViewZoom100: ZoomTo(100);  break;
         }
     }
+    UpdateMenuState();
     HiliteMenu(0);
 }
