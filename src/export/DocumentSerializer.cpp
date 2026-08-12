@@ -291,26 +291,17 @@ static void GetDesktopSpec(short& outVRefNum, long& outDirID) {
 bool SaveDocument(Document* doc) {
     if (!doc) return false;
 
-    NavDialogOptions options;
-    if (NavGetDefaultDialogOptions(&options) != noErr) return false;
     std::string suggested = EnsureRsdExtension(doc->name);
-    ToPStr31(suggested, options.savedFileName);
+    Str255 origName;
+    ToPStr31(suggested, origName);
 
-    NavReply reply;
-    OSErr err = NavPutFile(nullptr, &reply, &options, nullptr, kDocType, kCreator, nullptr);
-    if (err != noErr || !reply.validRecord) {
-        if (err == noErr) NavDisposeReply(&reply);
-        return false;
-    }
+    Point where = { 100, 100 };
+    SFReply reply;
+    SFPutFile(where, "\pSave document as:", origName, nullptr, &reply);
+    if (!reply.good) return false;
 
-    AEKeyword keyword;
-    DescType  actualType;
-    Size      actualSize;
-    FSSpec    spec;
-    err = AEGetNthPtr(&reply.selection, 1, typeFSS, &keyword,
-                      &actualType, &spec, sizeof(spec), &actualSize);
-    NavDisposeReply(&reply);
-    if (err != noErr) return false;
+    FSSpec spec;
+    if (FSMakeFSSpec(reply.vRefNum, 0, reply.fName, &spec) != noErr) return false;
 
     FSpDelete(&spec);
     if (FSpCreate(&spec, kCreator, kDocType, smSystemScript) != noErr) return false;
@@ -318,10 +309,9 @@ bool SaveDocument(Document* doc) {
     short refNum;
     if (FSpOpenDF(&spec, fsRdWrPerm, &refNum) != noErr) return false;
 
-    // Extract filename from FSSpec Pascal string
     std::string filename;
-    for (int i = 1; i <= spec.name[0]; ++i)
-        filename += static_cast<char>(spec.name[i]);
+    for (int i = 1; i <= reply.fName[0]; ++i)
+        filename += static_cast<char>(reply.fName[i]);
 
     Writer w; w.ref = refNum;
 
@@ -348,25 +338,14 @@ bool SaveDocument(Document* doc) {
 }
 
 bool LoadDocument(Document*& doc) {
-    NavDialogOptions options;
-    if (NavGetDefaultDialogOptions(&options) != noErr) return false;
+    Point where = { 100, 100 };
+    SFTypeList types = { kDocType, 0, 0, 0 };
+    SFReply reply;
+    SFGetFile(where, "\p", nullptr, 1, types, nullptr, &reply);
+    if (!reply.good) return false;
 
-    NavReply reply;
-    OSErr err = NavGetFile(nullptr, &reply, &options,
-                           nullptr, nullptr, nullptr, nullptr, nullptr);
-    if (err != noErr || !reply.validRecord) {
-        if (err == noErr) NavDisposeReply(&reply);
-        return false;
-    }
-
-    AEKeyword keyword;
-    DescType  actualType;
-    Size      actualSize;
-    FSSpec    spec;
-    err = AEGetNthPtr(&reply.selection, 1, typeFSS, &keyword,
-                      &actualType, &spec, sizeof(spec), &actualSize);
-    NavDisposeReply(&reply);
-    if (err != noErr) return false;
+    FSSpec spec;
+    if (FSMakeFSSpec(reply.vRefNum, 0, reply.fName, &spec) != noErr) return false;
 
     short refNum;
     if (FSpOpenDF(&spec, fsRdPerm, &refNum) != noErr) return false;
