@@ -288,6 +288,48 @@ static void GetDesktopSpec(short& outVRefNum, long& outDirID) {
 // Public API
 // --------------------------------------------------------------------------
 
+// Show DLOG 130 (Save As) — returns filename typed by user, empty if cancelled
+static Str255 RunSaveAsDialog(ConstStr255Param defaultName) {
+    Str255 result = { 0 };
+    DialogPtr dlg = GetNewDialog(130, nullptr, (WindowPtr)-1L);
+    if (!dlg) return result;
+
+    // Pre-fill edit field (item 4) with current document name
+    Handle h; short itype; Rect ir;
+    GetDialogItem(dlg, 4, &itype, &h, &ir);
+    SetDialogItemText(h, defaultName);
+
+    short item = 0;
+    while (item != 1 && item != 2)
+        ModalDialog(nullptr, &item);
+
+    if (item == 1) {
+        GetDialogItem(dlg, 4, &itype, &h, &ir);
+        GetDialogItemText(h, result);
+    }
+    DisposeDialog(dlg);
+    return result;
+}
+
+// Show DLOG 131 (Open) — returns filename typed by user, empty if cancelled
+static Str255 RunOpenDialog() {
+    Str255 result = { 0 };
+    DialogPtr dlg = GetNewDialog(131, nullptr, (WindowPtr)-1L);
+    if (!dlg) return result;
+
+    short item = 0;
+    while (item != 1 && item != 2)
+        ModalDialog(nullptr, &item);
+
+    if (item == 1) {
+        Handle h; short itype; Rect ir;
+        GetDialogItem(dlg, 4, &itype, &h, &ir);
+        GetDialogItemText(h, result);
+    }
+    DisposeDialog(dlg);
+    return result;
+}
+
 bool SaveDocument(Document* doc) {
     if (!doc) return false;
 
@@ -295,11 +337,15 @@ bool SaveDocument(Document* doc) {
     Str255 origName;
     ToPStr31(suggested, origName);
 
-    StandardFileReply reply;
-    StandardPutFile("\pSave document as:", origName, &reply);
-    if (!reply.sfGood) return false;
+    Str255 fname = RunSaveAsDialog(origName);
+    if (fname[0] == 0) return false;
 
-    FSSpec spec = reply.sfFile;
+    short vRefNum; long dirID;
+    GetDesktopSpec(vRefNum, dirID);
+
+    FSSpec spec;
+    OSErr fsErr = FSMakeFSSpec(vRefNum, dirID, fname, &spec);
+    if (fsErr != noErr && fsErr != fnfErr) return false;
 
     FSpDelete(&spec);
     if (FSpCreate(&spec, kCreator, kDocType, smSystemScript) != noErr) return false;
@@ -308,8 +354,8 @@ bool SaveDocument(Document* doc) {
     if (FSpOpenDF(&spec, fsRdWrPerm, &refNum) != noErr) return false;
 
     std::string filename;
-    for (int i = 1; i <= spec.name[0]; ++i)
-        filename += static_cast<char>(spec.name[i]);
+    for (int i = 1; i <= fname[0]; ++i)
+        filename += static_cast<char>(fname[i]);
 
     Writer w; w.ref = refNum;
 
@@ -336,12 +382,14 @@ bool SaveDocument(Document* doc) {
 }
 
 bool LoadDocument(Document*& doc) {
-    SFTypeList types = { kDocType, 0, 0, 0 };
-    StandardFileReply reply;
-    StandardGetFile(nullptr, 1, types, &reply);
-    if (!reply.sfGood) return false;
+    Str255 fname = RunOpenDialog();
+    if (fname[0] == 0) return false;
 
-    FSSpec spec = reply.sfFile;
+    short vRefNum; long dirID;
+    GetDesktopSpec(vRefNum, dirID);
+
+    FSSpec spec;
+    if (FSMakeFSSpec(vRefNum, dirID, fname, &spec) != noErr) return false;
 
     short refNum;
     if (FSpOpenDF(&spec, fsRdPerm, &refNum) != noErr) return false;

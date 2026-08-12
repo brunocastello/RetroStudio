@@ -21,5 +21,3 @@ target_include_directories(RetroStudio PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-# StandardPutFile/StandardGetFile are in the separate DialogsLib stub
-target_link_libraries(RetroStudio DialogsLib)

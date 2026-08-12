@@ -73,6 +73,70 @@ resource 'DITL' (128) {
     }
 };
 
+/* ---- Save As dialog (DLOG 130 + DITL 130) ---- */
+resource 'DLOG' (130) {
+    { 185, 80, 315, 460 },    /* 130h x 380w */
+    dBoxProc,
+    visible,
+    noGoAway,
+    0,
+    130,
+    "",
+    centerMainScreen
+};
+
+resource 'DITL' (130) {
+    {
+        /* [1] Save button (default) */
+        { 90, 278, 110, 366 },
+        Button { enabled, "Save" };,
+
+        /* [2] Cancel button */
+        { 90, 168, 110, 266 },
+        Button { enabled, "Cancel" };,
+
+        /* [3] Prompt label */
+        { 12, 12, 30, 366 },
+        StaticText { disabled, "Save document as:" };,
+
+        /* [4] Filename edit field */
+        { 38, 12, 62, 366 },
+        EditText { enabled, "" }
+    }
+};
+
+/* ---- Open dialog (DLOG 131 + DITL 131) ---- */
+resource 'DLOG' (131) {
+    { 185, 80, 315, 460 },    /* 130h x 380w */
+    dBoxProc,
+    visible,
+    noGoAway,
+    0,
+    131,
+    "",
+    centerMainScreen
+};
+
+resource 'DITL' (131) {
+    {
+        /* [1] Open button (default) */
+        { 90, 278, 110, 366 },
+        Button { enabled, "Open" };,
+
+        /* [2] Cancel button */
+        { 90, 168, 110, 266 },
+        Button { enabled, "Cancel" };,
+
+        /* [3] Prompt label */
+        { 12, 12, 30, 366 },
+        StaticText { disabled, "File name on Desktop:" };,
+
+        /* [4] Filename edit field */
+        { 38, 12, 62, 366 },
+        EditText { enabled, "" }
+    }
+};
+
 /* ---- Save-before-close confirmation dialog (DLOG 129 + DITL 129) ---- */
 resource 'DLOG' (129) {
     { 175, 110, 300, 450 },   /* 125h × 340w */
