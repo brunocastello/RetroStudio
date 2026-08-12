@@ -314,8 +314,8 @@ bool SaveDocument(Document* doc) {
 
     NavDialogOptions options;
     NavGetDefaultDialogOptions(&options);
-    ToPStr31(suggested, options.savedFileName);
-    ToPStr31("Save:",  options.windowTitle);
+    ToPStr31(suggested,      options.savedFileName);
+    ToPStr31("RetroStudio",  options.clientName);
 
     NavReplyRecord reply;
     OSErr err = NavPutFile(nullptr, &reply, &options, nullptr, kDocType, kCreator, nullptr);
@@ -363,7 +363,7 @@ bool SaveDocument(Document* doc) {
 bool LoadDocument(Document*& doc) {
     NavDialogOptions options;
     NavGetDefaultDialogOptions(&options);
-    ToPStr31("Open:", options.windowTitle);
+    ToPStr31("RetroStudio", options.clientName);
 
     NavReplyRecord reply;
     OSErr err = NavGetFile(nullptr, &reply, &options, nullptr, nullptr, nullptr, nullptr, nullptr);
