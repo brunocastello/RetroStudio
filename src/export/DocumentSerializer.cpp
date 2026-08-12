@@ -1,5 +1,4 @@
 #include "DocumentSerializer.h"
-#include "../ui/RenameDialog.h"
 #include <Carbon.h>
 #include <cstring>
 
@@ -292,33 +291,43 @@ static void GetDesktopSpec(short& outVRefNum, long& outDirID) {
 bool SaveDocument(Document* doc) {
     if (!doc) return false;
 
-    // Ask user for a filename via the shared rename-style popup
-    Point anchor = { 300, 350 };  // roughly screen center
+    NavDialogOptions options;
+    if (NavGetDefaultDialogOptions(&options) != noErr) return false;
     std::string suggested = EnsureRsdExtension(doc->name);
-    std::string filename  = ShowRenameDialog(suggested, anchor);
-    if (filename.empty()) return false;  // user cancelled
-    filename = EnsureRsdExtension(filename);
+    ToPStr31(suggested, options.savedFileName);
 
-    short vRefNum; long dirID;
-    GetDesktopSpec(vRefNum, dirID);
-
-    Str255 pname; ToPStr31(filename, pname);
-    FSSpec spec;
-    FSMakeFSSpec(vRefNum, dirID, pname, &spec);
-
-    // Replace existing file if present
-    FSpDelete(&spec);
-    if (FSpCreate(&spec, kCreator, kDocType, smSystemScript) != noErr)
+    NavReply reply;
+    OSErr err = NavPutFile(nullptr, &reply, &options, nullptr, kDocType, kCreator, nullptr);
+    if (err != noErr || !reply.validRecord) {
+        if (err == noErr) NavDisposeReply(&reply);
         return false;
+    }
+
+    AEKeyword keyword;
+    DescType  actualType;
+    Size      actualSize;
+    FSSpec    spec;
+    err = AEGetNthPtr(&reply.selection, 1, typeFSS, &keyword,
+                      &actualType, &spec, sizeof(spec), &actualSize);
+    NavDisposeReply(&reply);
+    if (err != noErr) return false;
+
+    FSpDelete(&spec);
+    if (FSpCreate(&spec, kCreator, kDocType, smSystemScript) != noErr) return false;
 
     short refNum;
     if (FSpOpenDF(&spec, fsRdWrPerm, &refNum) != noErr) return false;
+
+    // Extract filename from FSSpec Pascal string
+    std::string filename;
+    for (int i = 1; i <= spec.name[0]; ++i)
+        filename += static_cast<char>(spec.name[i]);
 
     Writer w; w.ref = refNum;
 
     w.write(&kMagic, 4);
     w.w16(kVersion);
-    w.wStr(doc->name);
+    w.wStr(filename);
 
     w.w16(static_cast<UInt16>(doc->rootShapes.size()));
     for (const auto& s : doc->rootShapes) WriteShape(w, *s);
@@ -339,18 +348,25 @@ bool SaveDocument(Document* doc) {
 }
 
 bool LoadDocument(Document*& doc) {
-    // Ask user for the filename
-    Point anchor = { 300, 350 };
-    std::string filename = ShowRenameDialog("", anchor);
-    if (filename.empty()) return false;
-    filename = EnsureRsdExtension(filename);
+    NavDialogOptions options;
+    if (NavGetDefaultDialogOptions(&options) != noErr) return false;
 
-    short vRefNum; long dirID;
-    GetDesktopSpec(vRefNum, dirID);
+    NavReply reply;
+    OSErr err = NavGetFile(nullptr, &reply, &options,
+                           nullptr, nullptr, nullptr, nullptr, nullptr);
+    if (err != noErr || !reply.validRecord) {
+        if (err == noErr) NavDisposeReply(&reply);
+        return false;
+    }
 
-    Str255 pname; ToPStr31(filename, pname);
-    FSSpec spec;
-    if (FSMakeFSSpec(vRefNum, dirID, pname, &spec) != noErr) return false;
+    AEKeyword keyword;
+    DescType  actualType;
+    Size      actualSize;
+    FSSpec    spec;
+    err = AEGetNthPtr(&reply.selection, 1, typeFSS, &keyword,
+                      &actualType, &spec, sizeof(spec), &actualSize);
+    NavDisposeReply(&reply);
+    if (err != noErr) return false;
 
     short refNum;
     if (FSpOpenDF(&spec, fsRdPerm, &refNum) != noErr) return false;

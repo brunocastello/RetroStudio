@@ -39,6 +39,25 @@ static const int kMaxUndo = 50;
 static std::vector<std::unique_ptr<Document>> sUndoStack;
 static std::vector<std::unique_ptr<Document>> sRedoStack;
 
+// Per-window document context — stores state for inactive windows
+struct DocCtx {
+    Document*    doc          = nullptr;
+    WindowRef    win          = nullptr;
+    Frame*       selFrame     = nullptr;
+    Shape*       selShape     = nullptr;
+    std::vector<Shape*> selShapes;
+    std::vector<Frame*> selFrames;
+    int nextFrameNum   = 2;
+    int nextRectNum    = 1;
+    int nextEllipseNum = 1;
+    int nextTextNum    = 1;
+    SInt32 offsetX = 0, offsetY = 0;
+    int zoom = 100;
+    std::vector<std::unique_ptr<Document>> undoStack;
+    std::vector<std::unique_ptr<Document>> redoStack;
+};
+static std::vector<std::unique_ptr<DocCtx>> sDocWindows;
+
 static const short kZoomDocProc = 8;
 static const short kFileMenuID  = 129;
 static const short kEditMenuID  = 130;
@@ -59,6 +78,8 @@ static const short kEditRedo    = 2;
 // item 4 = Cut
 static const short kEditCopy    = 5;
 static const short kEditPaste   = 6;
+static const short kAppleMenuID = 1;   // System Apple menu (must be ID=1)
+static const short kAppleAbout  = 1;   // "About RetroStudio" item
 
 // --------------------------------------------------------------------------
 // Small helpers
@@ -98,7 +119,8 @@ Point ScreenToCanvas(Point screenPt) {
 }
 
 static void UpdateWindowTitle() {
-    std::string title = "RetroStudio " + istr(gCanvasZoom) + "%";
+    if (!gMainWindow || !gDocument) return;
+    std::string title = gDocument->name + " " + istr(gCanvasZoom) + "%";
     Str255 pt; ToPStr(title, pt);
     SetWTitle(gMainWindow, pt);
 }
@@ -180,10 +202,172 @@ void HandleCanvasPan(WindowRef win, Point startGlobal) {
 }
 
 // --------------------------------------------------------------------------
+// Multi-document helpers
+// --------------------------------------------------------------------------
+
+static void SaveGlobalsToCtx(DocCtx& ctx) {
+    ctx.doc           = gDocument;
+    ctx.selFrame      = gSelectedFrame;
+    ctx.selShape      = gSelectedShape;
+    ctx.selShapes     = gSelectedShapes;
+    ctx.selFrames     = gSelectedFrames;
+    ctx.nextFrameNum   = gNextFrameNum;
+    ctx.nextRectNum    = gNextRectNum;
+    ctx.nextEllipseNum = gNextEllipseNum;
+    ctx.nextTextNum    = gNextTextNum;
+    ctx.offsetX        = gCanvasOffsetX;
+    ctx.offsetY        = gCanvasOffsetY;
+    ctx.zoom           = gCanvasZoom;
+    ctx.undoStack      = std::move(sUndoStack);
+    ctx.redoStack      = std::move(sRedoStack);
+}
+
+static void LoadGlobalsFromCtx(DocCtx& ctx) {
+    gDocument        = ctx.doc;
+    gMainWindow      = ctx.win;
+    gSelectedFrame   = ctx.selFrame;
+    gSelectedShape   = ctx.selShape;
+    gSelectedShapes  = ctx.selShapes;
+    gSelectedFrames  = ctx.selFrames;
+    gNextFrameNum    = ctx.nextFrameNum;
+    gNextRectNum     = ctx.nextRectNum;
+    gNextEllipseNum  = ctx.nextEllipseNum;
+    gNextTextNum     = ctx.nextTextNum;
+    gCanvasOffsetX   = ctx.offsetX;
+    gCanvasOffsetY   = ctx.offsetY;
+    gCanvasZoom      = ctx.zoom;
+    sUndoStack       = std::move(ctx.undoStack);
+    sRedoStack       = std::move(ctx.redoStack);
+}
+
+static WindowRef CreateDocumentWindow(Document* doc) {
+    static short sWinOff = 0;
+    short off = static_cast<short>((sWinOff % 8) * 22);
+    sWinOff++;
+    Rect bounds = { static_cast<short>(50 + off), static_cast<short>(80 + off),
+                    static_cast<short>(580 + off), static_cast<short>(720 + off) };
+    Str255 title; ToPStr(doc->name, title);
+    return NewCWindow(nullptr, &bounds, title, true, kZoomDocProc, (WindowRef)-1L, true, 0);
+}
+
+static void ShowAboutDialog() {
+    AlertStdAlertParamRec params;
+    memset(&params, 0, sizeof(params));
+    params.movable       = true;
+    params.helpButton    = false;
+    params.filterProc    = nullptr;
+    params.defaultText   = "\pOK";
+    params.cancelText    = nullptr;
+    params.otherText     = nullptr;
+    params.defaultButton = kAlertStdAlertOKButton;
+    params.cancelButton  = 0;
+    params.position      = kWindowDefaultPosition;
+    short itemHit;
+    StandardAlert(
+        kAlertNoteAlert,
+        "\pRetroStudio 1.0",
+        "\pA vector design and prototyping\rtool for Mac OS 9.\r\r"
+        "\251 2026 Bruno Castello.",
+        &params, &itemHit);
+}
+
+void SwitchActiveDocument(WindowRef win) {
+    if (win == gMainWindow) return;
+    for (auto& ctx : sDocWindows)
+        if (ctx->win == gMainWindow) { SaveGlobalsToCtx(*ctx); break; }
+    for (auto& ctx : sDocWindows)
+        if (ctx->win == win) { LoadGlobalsFromCtx(*ctx); break; }
+    SelectWindow(gMainWindow);
+    UpdateWindowTitle();
+    RefreshLayersPanel();
+    RefreshInspector();
+    Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
+}
+
+bool IsDocumentCanvas(WindowRef win) {
+    for (const auto& ctx : sDocWindows)
+        if (ctx->win == win) return true;
+    return false;
+}
+
+void CloseDocumentWindow(WindowRef win) {
+    DocCtx* closingCtx = nullptr;
+    for (auto& ctx : sDocWindows)
+        if (ctx->win == win) { closingCtx = ctx.get(); break; }
+    if (!closingCtx) return;
+
+    bool wasActive = (win == gMainWindow);
+    DocCtx* prevCtx = nullptr;
+    if (!wasActive) {
+        for (auto& ctx : sDocWindows)
+            if (ctx->win == gMainWindow) { prevCtx = ctx.get(); SaveGlobalsToCtx(*prevCtx); break; }
+        LoadGlobalsFromCtx(*closingCtx);
+    }
+
+    if (!sUndoStack.empty()) {
+        AlertStdAlertParamRec p;
+        memset(&p, 0, sizeof(p));
+        p.movable = true; p.filterProc = nullptr;
+        p.defaultText   = "\pSave";
+        p.cancelText    = "\pCancel";
+        p.otherText     = "\pDon't Save";
+        p.defaultButton = kAlertStdAlertOKButton;
+        p.cancelButton  = kAlertStdAlertCancelButton;
+        p.position      = kWindowDefaultPosition;
+        short hit;
+        StandardAlert(kAlertNoteAlert,
+                      "\pSave changes before closing?",
+                      "\pUnsaved changes will be lost.",
+                      &p, &hit);
+        if (hit == kAlertStdAlertCancelButton) {
+            if (!wasActive && prevCtx) {
+                SaveGlobalsToCtx(*closingCtx);
+                LoadGlobalsFromCtx(*prevCtx);
+                SelectWindow(gMainWindow);
+                UpdateWindowTitle();
+                Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
+            }
+            return;
+        }
+        if (hit == kAlertStdAlertOKButton)
+            SaveDocument(gDocument);
+    }
+
+    Document* docToDelete = nullptr;
+    WindowRef winToDispose = win;
+    for (auto it = sDocWindows.begin(); it != sDocWindows.end(); ++it) {
+        if ((*it)->win == win) {
+            docToDelete = (*it)->doc;
+            sDocWindows.erase(it);
+            break;
+        }
+    }
+    delete docToDelete;
+    DisposeWindow(winToDispose);
+
+    if (sDocWindows.empty()) {
+        gDocument = nullptr; gMainWindow = nullptr;
+        gQuitFlag = true;
+    } else {
+        DocCtx* nextCtx = (!wasActive && prevCtx) ? prevCtx : sDocWindows.front().get();
+        LoadGlobalsFromCtx(*nextCtx);
+        SelectWindow(gMainWindow);
+        UpdateWindowTitle();
+        RefreshLayersPanel();
+        RefreshInspector();
+        Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
+    }
+}
+
+// --------------------------------------------------------------------------
 // Menus
 // --------------------------------------------------------------------------
 
 void SetupMenus() {
+    MenuRef appleMenu = NewMenu(kAppleMenuID, "\p\024"); // 0x14 = Apple logo in MacRoman
+    AppendMenu(appleMenu, "\pAbout RetroStudio\311");    // \311 = ellipsis (…)
+    InsertMenu(appleMenu, 0);
+
     MenuRef fileMenu = NewMenu(kFileMenuID, "\pFile");
     AppendMenu(fileMenu, "\pNew");
     SetItemCmd(fileMenu, kFileNew, 'N');
@@ -230,21 +414,21 @@ void SetupMenus() {
 // --------------------------------------------------------------------------
 
 void SetupWindow() {
-    Rect bounds = { 50, 80, 580, 720 };
-    gMainWindow = NewCWindow(
-        nullptr, &bounds, "\pRetroStudio",
-        true, kZoomDocProc, (WindowRef)-1L, true, 0);
-
-    gDocument = new Document();
-    gDocument->name = "Untitled";
-
-    auto frame           = std::make_unique<Frame>();
-    frame->name          = "Frame 1";
-    frame->bounds        = { 40, 40, 390, 480 };
+    auto* doc = new Document();
+    doc->name = "Untitled";
+    auto frame = std::make_unique<Frame>();
+    frame->name = "Frame 1";
+    frame->bounds = { 40, 40, 390, 480 };
     frame->backgroundColor = { 0xFFFF, 0xFFFF, 0xFFFF };
-    gDocument->frames.push_back(std::move(frame));
-    gDocument->rootChildOrder.push_back({ true, 0 });
+    doc->frames.push_back(std::move(frame));
+    doc->rootChildOrder.push_back({ true, 0 });
 
+    WindowRef win = CreateDocumentWindow(doc);
+    auto ctx = std::make_unique<DocCtx>();
+    ctx->doc = doc;
+    ctx->win = win;
+    sDocWindows.push_back(std::move(ctx));
+    LoadGlobalsFromCtx(*sDocWindows.back());
     UpdateWindowTitle();
 }
 
@@ -1936,34 +2120,28 @@ void HandleWindowGrow(WindowRef win, Point where) {
 // --------------------------------------------------------------------------
 
 static void NewDocument() {
-    delete gDocument;
-    gDocument     = new Document();
-    gDocument->name = "Untitled";
+    // Save current window context before creating new window
+    for (auto& ctx : sDocWindows)
+        if (ctx->win == gMainWindow) { SaveGlobalsToCtx(*ctx); break; }
 
-    auto frame           = std::make_unique<Frame>();
-    frame->name          = "Frame 1";
-    frame->bounds        = { 40, 40, 390, 480 };
+    auto* doc = new Document();
+    doc->name = "Untitled";
+    auto frame = std::make_unique<Frame>();
+    frame->name = "Frame 1";
+    frame->bounds = { 40, 40, 390, 480 };
     frame->backgroundColor = { 0xFFFF, 0xFFFF, 0xFFFF };
-    gDocument->frames.push_back(std::move(frame));
-    gDocument->rootChildOrder.push_back({ true, 0 });
+    doc->frames.push_back(std::move(frame));
+    doc->rootChildOrder.push_back({ true, 0 });
 
-    gSelectedFrame  = nullptr;
-    gSelectedShape  = nullptr;
-    gSelectedShapes.clear();
-    gSelectedFrames.clear();
-    gNextFrameNum   = 2;
-    gNextRectNum    = 1;
-    gNextEllipseNum = 1;
-    gNextTextNum    = 1;
-    gCanvasOffsetX  = 0;
-    gCanvasOffsetY  = 0;
-    gCanvasZoom     = 100;
-    sUndoStack.clear();
-    sRedoStack.clear();
+    WindowRef win = CreateDocumentWindow(doc);
+    auto ctx = std::make_unique<DocCtx>();
+    ctx->doc = doc;
+    ctx->win = win;
+    sDocWindows.push_back(std::move(ctx));
+    LoadGlobalsFromCtx(*sDocWindows.back());
     sPasteParent = nullptr;
-
-    Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
     UpdateWindowTitle();
+    Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
 }
 
 // Collect every name currently used in the document (all frames + shapes, recursive)
@@ -2278,35 +2456,41 @@ void HandleMenuCommand(long menuResult) {
     short menuID   = static_cast<short>(menuResult >> 16);
     short menuItem = static_cast<short>(menuResult & 0xFFFF);
 
-    if (menuID == kFileMenuID) {
+    if (menuID == kAppleMenuID) {
+        if (menuItem == kAppleAbout) ShowAboutDialog();
+    } else if (menuID == kFileMenuID) {
         switch (menuItem) {
             case kFileNew:
                 NewDocument();
                 RefreshLayersPanel();
                 RefreshInspector();
                 break;
-            case kFileOpen:
-                if (LoadDocument(gDocument)) {
-                    if (gDocument->rootChildOrder.empty()) InitRootChildOrder(gDocument);
-                    gSelectedFrame  = nullptr;
-                    gSelectedShape  = nullptr;
-                    gSelectedShapes.clear();
-                    gSelectedFrames.clear();
-                    gNextFrameNum   = static_cast<int>(gDocument->frames.size()) + 2;
-                    gNextRectNum    = 1;
-                    gNextEllipseNum = 1;
-                    gCanvasOffsetX  = 0;
-                    gCanvasOffsetY  = 0;
-                    gCanvasZoom     = 100;
-                    sUndoStack.clear();
-                    sRedoStack.clear();
+            case kFileOpen: {
+                // Save current context before showing open dialog
+                for (auto& ctx : sDocWindows)
+                    if (ctx->win == gMainWindow) { SaveGlobalsToCtx(*ctx); break; }
+                Document* newDoc = nullptr;
+                if (LoadDocument(newDoc)) {
+                    if (newDoc->rootChildOrder.empty()) InitRootChildOrder(newDoc);
+                    WindowRef win = CreateDocumentWindow(newDoc);
+                    auto ctx = std::make_unique<DocCtx>();
+                    ctx->doc = newDoc;
+                    ctx->win = win;
+                    ctx->nextFrameNum = static_cast<int>(newDoc->frames.size()) + 2;
+                    sDocWindows.push_back(std::move(ctx));
+                    LoadGlobalsFromCtx(*sDocWindows.back());
                     sPasteParent = nullptr;
-                    Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
                     UpdateWindowTitle();
+                    Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
                     RefreshLayersPanel();
                     RefreshInspector();
+                } else {
+                    // User cancelled — restore previous context
+                    for (auto& c : sDocWindows)
+                        if (c->win == gMainWindow) { LoadGlobalsFromCtx(*c); break; }
                 }
                 break;
+            }
             case kFileSave:
                 SaveDocument(gDocument);
                 break;

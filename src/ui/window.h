@@ -32,6 +32,9 @@ Point ScreenToCanvas(Point screenPt); // screen local pt → canvas pt
 
 void SetupMenus();
 void SetupWindow();
+bool IsDocumentCanvas(WindowRef win);
+void SwitchActiveDocument(WindowRef win);
+void CloseDocumentWindow(WindowRef win);
 void DrawWindowContent(WindowRef win);
 void HandleCanvasCreate(WindowRef win, Point startGlobal);
 void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers = 0);

@@ -54,6 +54,11 @@ int main(int argc, char* argv[]) {
                             HandleWindowGrow(win, event.where);
                             break;
                         case inContent: {
+                            // Clicking a non-active canvas window switches the active document
+                            if (IsDocumentCanvas(win) && win != gMainWindow) {
+                                SwitchActiveDocument(win);
+                                break;
+                            }
                             if (win == gPaletteWindow) {
                                 if (win != FrontWindow()) SelectWindow(win);
                                 Point localPt = event.where;
@@ -116,8 +121,8 @@ int main(int argc, char* argv[]) {
                         }
                         case inGoAway:
                             if (TrackGoAway(win, event.where)) {
-                                if (win == gMainWindow)
-                                    gQuitFlag = true;
+                                if (IsDocumentCanvas(win))
+                                    CloseDocumentWindow(win);
                                 else if (win == gPaletteWindow)
                                     HideWindow(gPaletteWindow);
                                 else if (win == gLayersWindow)
