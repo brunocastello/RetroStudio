@@ -299,13 +299,15 @@ static void UpdateMenuState() {
     bool has = (gDocument != nullptr);
     MenuRef fm = GetMenuHandle(kFileMenuID);
     if (fm) {
-        if (has) { EnableItem(fm, kFileClose); EnableItem(fm, kFileSave); }
-        else     { DisableItem(fm, kFileClose); DisableItem(fm, kFileSave); }
+        if (has) { EnableMenuItem(fm, static_cast<MenuItemIndex>(kFileClose));
+                   EnableMenuItem(fm, static_cast<MenuItemIndex>(kFileSave)); }
+        else     { DisableMenuItem(fm, static_cast<MenuItemIndex>(kFileClose));
+                   DisableMenuItem(fm, static_cast<MenuItemIndex>(kFileSave)); }
     }
     MenuRef em = GetMenuHandle(kEditMenuID);
-    if (em) { if (has) EnableItem(em, 0); else DisableItem(em, 0); }
+    if (em) { if (has) EnableMenuItem(em, 0); else DisableMenuItem(em, 0); }
     MenuRef vm = GetMenuHandle(kViewMenuID);
-    if (vm) { if (has) EnableItem(vm, 0); else DisableItem(vm, 0); }
+    if (vm) { if (has) EnableMenuItem(vm, 0); else DisableMenuItem(vm, 0); }
     DrawMenuBar();
 }
 
