@@ -461,6 +461,9 @@ void SetupMenus() {
 // Window + document bootstrap
 // --------------------------------------------------------------------------
 
+// NavLoad/NavUnload are in CarbonLib but may be absent from Multiversal Navigation.h
+extern "C" OSErr NavLoad();
+
 // Apple Event handlers — installed during init so tools like A-Dock can quit us
 static pascal OSErr AEHandleOpenApp(const AppleEvent*, AppleEvent*, long) { return noErr; }
 static pascal OSErr AEHandleQuit   (const AppleEvent*, AppleEvent*, long) { gQuitFlag = true; return noErr; }
@@ -482,6 +485,9 @@ void SetupWindow() {
     sDocWindows.push_back(std::move(ctx));
     LoadGlobalsFromCtx(*sDocWindows.back());
     UpdateWindowTitle();
+
+    // Load Navigation Services before first dialog call (required on some Mac OS 9 configs)
+    NavLoad();
 
     // Register Apple Event handlers so the Finder, A-Dock, etc. can quit us
     AEInstallEventHandler(kCoreEventClass, kAEOpenApplication,
