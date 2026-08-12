@@ -8,29 +8,32 @@
 
 /* ---- About dialog (DLOG 128 + DITL 128) ---- */
 resource 'DLOG' (128) {
-    { 160, 110, 320, 500 },
-    dBoxProc,
+    { 155, 90, 305, 510 },
+    movableDBoxProc,
     visible,
     noGoAway,
     0,
     128,
-    "",
+    "About RetroStudio...",
     centerMainScreen
 };
 
 resource 'DITL' (128) {
     {
-        { 130, 290, 150, 376 },
+        { 118, 316, 138, 406 },
         Button { enabled, "OK" };
 
-        { 10, 10, 28, 376 },
+        { 14, 14, 36, 406 },
         StaticText { disabled, "RetroStudio 1.0" };
 
-        { 44, 10, 62, 376 },
+        { 46, 14, 66, 406 },
         StaticText { disabled, "A vector design & prototyping tool for Mac OS 9." };
 
-        { 78, 10, 96, 376 },
-        StaticText { disabled, "Copyright 2026 Bruno Castello." }
+        { 76, 14, 96, 406 },
+        StaticText { disabled, "Bruno Castello, 2026." };
+
+        { 108, 14, 128, 250 },
+        StaticText { disabled, "\251 2026 Bruno Castello." }
     }
 };
 
