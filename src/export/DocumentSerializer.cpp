@@ -1,5 +1,4 @@
 #include "DocumentSerializer.h"
-#include <Navigation.h>
 #include <Carbon.h>
 #include <cstring>
 
@@ -293,26 +292,14 @@ bool SaveDocument(Document* doc) {
     if (!doc) return false;
 
     std::string suggested = EnsureRsdExtension(doc->name);
+    Str255 origName;
+    ToPStr31(suggested, origName);
 
-    NavDialogOptions options;
-    NavGetDefaultDialogOptions(&options);
-    ToPStr31(suggested, options.savedFileName);
+    StandardFileReply reply;
+    StandardPutFile("\pSave document as:", origName, &reply);
+    if (!reply.sfGood) return false;
 
-    NavReplyRecord reply;
-    OSErr err = NavPutFile(nullptr, &reply, &options,
-                           nullptr, kDocType, kCreator, nullptr);
-    if (err != noErr || !reply.validRecord) {
-        NavDisposeReply(&reply);
-        return false;
-    }
-
-    AEKeyword keyword;
-    AEDesc    resultDesc;
-    FSSpec    spec;
-    AEGetNthDesc(&reply.selection, 1, typeFSS, &keyword, &resultDesc);
-    AEGetDescData(&resultDesc, &spec, sizeof(FSSpec));
-    AEDisposeDesc(&resultDesc);
-    NavDisposeReply(&reply);
+    FSSpec spec = reply.sfFile;
 
     FSpDelete(&spec);
     if (FSpCreate(&spec, kCreator, kDocType, smSystemScript) != noErr) return false;
@@ -349,25 +336,12 @@ bool SaveDocument(Document* doc) {
 }
 
 bool LoadDocument(Document*& doc) {
-    NavDialogOptions options;
-    NavGetDefaultDialogOptions(&options);
+    SFTypeList types = { kDocType, 0, 0, 0 };
+    StandardFileReply reply;
+    StandardGetFile(nullptr, 1, types, &reply);
+    if (!reply.sfGood) return false;
 
-    NavTypeListHandle typeList = nullptr;
-    NavReplyRecord    reply;
-    OSErr err = NavGetFile(nullptr, &reply, &options,
-                           nullptr, nullptr, nullptr, typeList, nullptr);
-    if (err != noErr || !reply.validRecord) {
-        NavDisposeReply(&reply);
-        return false;
-    }
-
-    AEKeyword keyword;
-    AEDesc    resultDesc;
-    FSSpec    spec;
-    AEGetNthDesc(&reply.selection, 1, typeFSS, &keyword, &resultDesc);
-    AEGetDescData(&resultDesc, &spec, sizeof(FSSpec));
-    AEDisposeDesc(&resultDesc);
-    NavDisposeReply(&reply);
+    FSSpec spec = reply.sfFile;
 
     short refNum;
     if (FSpOpenDF(&spec, fsRdPerm, &refNum) != noErr) return false;

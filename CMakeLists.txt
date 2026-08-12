@@ -21,5 +21,5 @@ target_include_directories(RetroStudio PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-# Navigation Services is in a separate stub library in the Retro68 toolchain
-target_link_libraries(RetroStudio NavigationLib)
+# StandardPutFile/StandardGetFile are in the separate DialogsLib stub
+target_link_libraries(RetroStudio DialogsLib)
