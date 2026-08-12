@@ -21,6 +21,7 @@ target_include_directories(RetroStudio PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-# Navigation Services stubs (NavGetFile, NavPutFile, etc.)
-target_link_libraries(RetroStudio NavigationLib)
+# CarbonLib exports Navigation Services (NavGetFile, NavPutFile, etc.)
+# NavigationLib is a separate optional extension; CarbonLib is always present.
+target_link_libraries(RetroStudio CarbonLib)
 
