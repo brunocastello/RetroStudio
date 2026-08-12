@@ -288,13 +288,12 @@ static void GetDesktopSpec(short& outVRefNum, long& outDirID) {
 // Public API
 // --------------------------------------------------------------------------
 
-// Show DLOG 130 (Save As) — returns filename typed by user, empty if cancelled
-static Str255 RunSaveAsDialog(ConstStr255Param defaultName) {
-    Str255 result = { 0 };
+// Show DLOG 130 (Save As) — fills outFname, returns true if user clicked Save
+static bool RunSaveAsDialog(ConstStr255Param defaultName, Str255 outFname) {
+    outFname[0] = 0;
     DialogPtr dlg = GetNewDialog(130, nullptr, (WindowPtr)-1L);
-    if (!dlg) return result;
+    if (!dlg) return false;
 
-    // Pre-fill edit field (item 4) with current document name
     Handle h; short itype; Rect ir;
     GetDialogItem(dlg, 4, &itype, &h, &ir);
     SetDialogItemText(h, defaultName);
@@ -305,17 +304,17 @@ static Str255 RunSaveAsDialog(ConstStr255Param defaultName) {
 
     if (item == 1) {
         GetDialogItem(dlg, 4, &itype, &h, &ir);
-        GetDialogItemText(h, result);
+        GetDialogItemText(h, outFname);
     }
     DisposeDialog(dlg);
-    return result;
+    return (item == 1 && outFname[0] > 0);
 }
 
-// Show DLOG 131 (Open) — returns filename typed by user, empty if cancelled
-static Str255 RunOpenDialog() {
-    Str255 result = { 0 };
+// Show DLOG 131 (Open) — fills outFname, returns true if user clicked Open
+static bool RunOpenDialog(Str255 outFname) {
+    outFname[0] = 0;
     DialogPtr dlg = GetNewDialog(131, nullptr, (WindowPtr)-1L);
-    if (!dlg) return result;
+    if (!dlg) return false;
 
     short item = 0;
     while (item != 1 && item != 2)
@@ -324,10 +323,10 @@ static Str255 RunOpenDialog() {
     if (item == 1) {
         Handle h; short itype; Rect ir;
         GetDialogItem(dlg, 4, &itype, &h, &ir);
-        GetDialogItemText(h, result);
+        GetDialogItemText(h, outFname);
     }
     DisposeDialog(dlg);
-    return result;
+    return (item == 1 && outFname[0] > 0);
 }
 
 bool SaveDocument(Document* doc) {
@@ -337,8 +336,8 @@ bool SaveDocument(Document* doc) {
     Str255 origName;
     ToPStr31(suggested, origName);
 
-    Str255 fname = RunSaveAsDialog(origName);
-    if (fname[0] == 0) return false;
+    Str255 fname;
+    if (!RunSaveAsDialog(origName, fname)) return false;
 
     short vRefNum; long dirID;
     GetDesktopSpec(vRefNum, dirID);
@@ -382,8 +381,8 @@ bool SaveDocument(Document* doc) {
 }
 
 bool LoadDocument(Document*& doc) {
-    Str255 fname = RunOpenDialog();
-    if (fname[0] == 0) return false;
+    Str255 fname;
+    if (!RunOpenDialog(fname)) return false;
 
     short vRefNum; long dirID;
     GetDesktopSpec(vRefNum, dirID);
