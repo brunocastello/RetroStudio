@@ -2,7 +2,6 @@
 #include <Navigation.h>
 #include <Carbon.h>
 #include <cstring>
-#include <cstdio>
 
 // NavGetDefaultDialogOptions is in libNavigationLib.a but absent from the
 // Multiversal Navigation.h — forward-declare it directly.
@@ -314,34 +313,12 @@ bool SaveDocument(Document* doc) {
     NavDialogOptions options = {};
     NavGetDefaultDialogOptions(&options);
     options.version = 0;
+    ToPStr31("Save",         options.windowTitle);
     ToPStr31(suggested,      options.savedFileName);
     ToPStr31("RetroStudio",  options.clientName);
 
-    // Diagnostic: write log so we can see what error NavPutFile returns.
-    // The file appears next to the application; open in SimpleText to read it.
-    {
-        FILE* dbg = fopen("RS_SaveDebug.txt", "w");
-        if (dbg) {
-            fprintf(dbg, "SaveDocument: about to call NavPutFile\n");
-            fprintf(dbg, "options.version=%d\n", (int)options.version);
-            fprintf(dbg, "suggested: %s\n", suggested.c_str());
-            fflush(dbg);
-            fclose(dbg);
-        }
-    }
-
     NavReplyRecord reply = {};
     OSErr err = NavPutFile(nullptr, &reply, &options, nullptr, kDocType, kCreator, nullptr);
-
-    {
-        FILE* dbg = fopen("RS_SaveDebug.txt", "a");
-        if (dbg) {
-            fprintf(dbg, "NavPutFile returned err=%d validRecord=%d\n",
-                    (int)err, (int)reply.validRecord);
-            fclose(dbg);
-        }
-    }
-
     if (err != noErr || !reply.validRecord) { NavDisposeReply(&reply); return false; }
 
     FSSpec spec;
@@ -384,11 +361,13 @@ bool SaveDocument(Document* doc) {
 }
 
 bool LoadDocument(Document*& doc) {
-    NavDialogOptions options;
+    NavDialogOptions options = {};
     NavGetDefaultDialogOptions(&options);
-    ToPStr31("RetroStudio", options.clientName);
+    options.version = 0;
+    ToPStr31("Open",         options.windowTitle);
+    ToPStr31("RetroStudio",  options.clientName);
 
-    NavReplyRecord reply;
+    NavReplyRecord reply = {};
     OSErr err = NavGetFile(nullptr, &reply, &options, nullptr, nullptr, nullptr, nullptr, nullptr);
     if (err != noErr || !reply.validRecord) { NavDisposeReply(&reply); return false; }
 
