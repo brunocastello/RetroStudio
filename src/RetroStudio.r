@@ -6,37 +6,6 @@
 #include "Dialogs.r"
 #include "Processes.r"
 
-/* ---- About dialog (DLOG 128 + DITL 128) ---- */
-resource 'DLOG' (128) {
-    { 155, 90, 305, 510 },
-    movableDBoxProc,
-    visible,
-    noGoAway,
-    0,
-    128,
-    "About RetroStudio...",
-    centerMainScreen
-};
-
-resource 'DITL' (128) {
-    {
-        { 118, 316, 138, 406 },
-        Button { enabled, "OK" };
-
-        { 14, 14, 36, 406 },
-        StaticText { disabled, "RetroStudio 1.0" };
-
-        { 46, 14, 66, 406 },
-        StaticText { disabled, "A vector design & prototyping tool for Mac OS 9." };
-
-        { 76, 14, 96, 406 },
-        StaticText { disabled, "Bruno Castello, 2026." };
-
-        { 108, 14, 128, 250 },
-        StaticText { disabled, "\251 2026 Bruno Castello." }
-    }
-};
-
 /* ---- Save-before-close confirmation (DLOG 129 + DITL 129) ---- */
 resource 'DLOG' (129) {
     { 175, 110, 300, 450 },

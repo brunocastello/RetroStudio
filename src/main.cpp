@@ -59,6 +59,10 @@ int main(int argc, char* argv[]) {
                                 SwitchActiveDocument(win);
                                 break;
                             }
+                            if (win == gAboutWindow) {
+                                if (win != FrontWindow()) SelectWindow(win);
+                                break;
+                            }
                             if (win == gPaletteWindow) {
                                 if (win != FrontWindow()) SelectWindow(win);
                                 Point localPt = event.where;
@@ -121,7 +125,10 @@ int main(int argc, char* argv[]) {
                         }
                         case inGoAway:
                             if (TrackGoAway(win, event.where)) {
-                                if (IsDocumentCanvas(win))
+                                if (win == gAboutWindow) {
+                                    DisposeWindow(gAboutWindow);
+                                    gAboutWindow = nullptr;
+                                } else if (IsDocumentCanvas(win))
                                     CloseDocumentWindow(win);
                                 else if (win == gPaletteWindow)
                                     HideWindow(gPaletteWindow);
@@ -195,7 +202,9 @@ int main(int argc, char* argv[]) {
                 case updateEvt: {
                     WindowRef win = reinterpret_cast<WindowRef>(event.message);
                     BeginUpdate(win);
-                    if (win == gPaletteWindow)
+                    if (win == gAboutWindow)
+                        DrawAboutWindow();
+                    else if (win == gPaletteWindow)
                         DrawPalette();
                     else if (win == gLayersWindow)
                         DrawLayersPanel();
@@ -210,6 +219,10 @@ int main(int argc, char* argv[]) {
                     EndUpdate(win);
                     break;
                 }
+
+                case kHighLevelEvent:
+                    AEProcessAppleEvent(&event);
+                    break;
 
                 case activateEvt: {
                     WindowRef win = reinterpret_cast<WindowRef>(event.message);

@@ -8,6 +8,7 @@
 #include <cstring>
 
 WindowRef  gMainWindow    = nullptr;
+WindowRef  gAboutWindow   = nullptr;
 Boolean    gQuitFlag      = false;
 Tool       gActiveTool    = Tool::Select;
 Renderer*  gRenderer      = nullptr;
@@ -58,7 +59,8 @@ struct DocCtx {
 };
 static std::vector<std::unique_ptr<DocCtx>> sDocWindows;
 
-static const short kZoomDocProc = 8;
+static const short kZoomDocProc    = 8;
+static const short kNoGrowDocProc  = 4;  // title bar + close box, no grow/zoom
 static const short kFileMenuID  = 129;
 static const short kEditMenuID  = 130;
 static const short kViewMenuID  = 131;
@@ -251,14 +253,42 @@ static WindowRef CreateDocumentWindow(Document* doc) {
     return NewCWindow(nullptr, &bounds, title, true, kZoomDocProc, (WindowRef)-1L, true, 0);
 }
 
-// DLOG 128 = About dialog defined in RetroStudio.r
+// About window — non-modal document window, SimpleText-style.
+// Created on demand; clicking close box disposes it (handled in main.cpp).
 static void ShowAboutDialog() {
-    DialogPtr dlg = GetNewDialog(128, nullptr, (WindowPtr)-1L);
-    if (!dlg) return;
-    short item = 0;
-    while (item != 1)
-        ModalDialog(nullptr, &item);
-    DisposeDialog(dlg);
+    if (gAboutWindow) { SelectWindow(gAboutWindow); return; }
+    Rect bounds = { 130, 100, 340, 420 };   // 210 h × 320 w
+    gAboutWindow = NewCWindow(nullptr, &bounds, "\pAbout RetroStudio",
+                              true, kNoGrowDocProc, (WindowRef)-1L, true, 0L);
+}
+
+void DrawAboutWindow() {
+    if (!gAboutWindow) return;
+    SetPortWindowPort(gAboutWindow);
+    Rect portRect;
+    GetWindowPortBounds(gAboutWindow, &portRect);
+    EraseRect(&portRect);
+
+    RGBColor black = { 0, 0, 0 };
+    RGBForeColor(&black);
+
+    short cx = static_cast<short>((portRect.left + portRect.right) / 2);
+
+    // Helper: center a C string at vertical position y, with given size/face
+    auto drawC = [&](short y, short sz, short face, const char* s) {
+        short len = 0; while (s[len]) ++len;
+        TextFont(0); TextSize(sz); TextFace(face);
+        short w = TextWidth(s, 0, len);
+        MoveTo(static_cast<short>(cx - w / 2), y);
+        DrawText(s, 0, len);
+    };
+
+    drawC(48,  24, bold,   "RetroStudio");
+    drawC(70,  12, normal, "Version 1.0");
+    drawC(106, 12, normal, "A vector design & prototyping tool");
+    drawC(124, 12, normal, "for Classic Mac OS 9");
+    drawC(158, 12, normal, "Bruno Castello");
+    drawC(190, 10, normal, "\xA9 2026 Bruno Castello. All rights reserved.");
 }
 
 // DLOG 129 = Save-confirmation dialog defined in RetroStudio.r
@@ -337,8 +367,12 @@ void CloseDocumentWindow(WindowRef win) {
     DisposeWindow(winToDispose);
 
     if (sDocWindows.empty()) {
+        // Last document closed — open a fresh Untitled window instead of quitting.
+        // File > Quit (or Apple Event) is the only path that sets gQuitFlag.
         gDocument = nullptr; gMainWindow = nullptr;
-        gQuitFlag = true;
+        NewDocument();
+        RefreshLayersPanel();
+        RefreshInspector();
     } else {
         DocCtx* nextCtx = (!wasActive && prevCtx) ? prevCtx : sDocWindows.front().get();
         LoadGlobalsFromCtx(*nextCtx);
@@ -406,6 +440,10 @@ void SetupMenus() {
 // Window + document bootstrap
 // --------------------------------------------------------------------------
 
+// Apple Event handlers — installed during init so tools like A-Dock can quit us
+static pascal OSErr AEHandleOpenApp(const AppleEvent*, AppleEvent*, long) { return noErr; }
+static pascal OSErr AEHandleQuit   (const AppleEvent*, AppleEvent*, long) { gQuitFlag = true; return noErr; }
+
 void SetupWindow() {
     auto* doc = new Document();
     doc->name = "Untitled";
@@ -423,6 +461,12 @@ void SetupWindow() {
     sDocWindows.push_back(std::move(ctx));
     LoadGlobalsFromCtx(*sDocWindows.back());
     UpdateWindowTitle();
+
+    // Register Apple Event handlers so the Finder, A-Dock, etc. can quit us
+    AEInstallEventHandler(kCoreEventClass, kAEOpenApplication,
+                          NewAEEventHandlerUPP(AEHandleOpenApp), 0L, false);
+    AEInstallEventHandler(kCoreEventClass, kAEQuitApplication,
+                          NewAEEventHandlerUPP(AEHandleQuit),    0L, false);
 }
 
 // --------------------------------------------------------------------------

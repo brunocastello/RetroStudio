@@ -315,8 +315,7 @@ bool SaveDocument(Document* doc) {
     NavDialogOptions options;
     NavGetDefaultDialogOptions(&options);
     ToPStr31(suggested, options.savedFileName);
-    // Remove "Save as Stationery" checkbox (0x10 = kNavAllowStationery)
-    options.dialogOptionFlags &= ~static_cast<NavDialogOptionFlags>(0x00000010);
+    ToPStr31("Save:",  options.windowTitle);
 
     NavReplyRecord reply;
     OSErr err = NavPutFile(nullptr, &reply, &options, nullptr, kDocType, kCreator, nullptr);
@@ -364,6 +363,7 @@ bool SaveDocument(Document* doc) {
 bool LoadDocument(Document*& doc) {
     NavDialogOptions options;
     NavGetDefaultDialogOptions(&options);
+    ToPStr31("Open:", options.windowTitle);
 
     NavReplyRecord reply;
     OSErr err = NavGetFile(nullptr, &reply, &options, nullptr, nullptr, nullptr, nullptr, nullptr);

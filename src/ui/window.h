@@ -6,6 +6,7 @@
 #include "../core/Tool.h"
 
 extern WindowRef         gMainWindow;
+extern WindowRef         gAboutWindow;
 extern Boolean           gQuitFlag;
 extern Tool              gActiveTool;
 extern Renderer*         gRenderer;
@@ -32,6 +33,7 @@ Point ScreenToCanvas(Point screenPt); // screen local pt → canvas pt
 
 void SetupMenus();
 void SetupWindow();
+void DrawAboutWindow();
 bool IsDocumentCanvas(WindowRef win);
 void SwitchActiveDocument(WindowRef win);
 void CloseDocumentWindow(WindowRef win);
