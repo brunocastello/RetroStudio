@@ -12,6 +12,7 @@ file(GLOB_RECURSE SOURCES
 
 # Retro68 target executable setup
 add_application(RetroStudio ${SOURCES}
+    src/RetroStudio.r
     CREATOR "RSTD"
     TYPE "APPL"
 )
@@ -20,4 +21,5 @@ target_include_directories(RetroStudio PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
-# Mac OS Carbon / QuickDraw linking flags managed by Retro68 toolchain
+# Navigation Services is in a separate stub library in the Retro68 toolchain
+target_link_libraries(RetroStudio NavigationLib)

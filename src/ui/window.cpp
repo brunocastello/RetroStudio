@@ -59,7 +59,6 @@ struct DocCtx {
 static std::vector<std::unique_ptr<DocCtx>> sDocWindows;
 
 static const short kZoomDocProc = 8;
-static const short kDBoxProc    = 1;   // plain dialog frame, no title bar
 static const short kFileMenuID  = 129;
 static const short kEditMenuID  = 130;
 static const short kViewMenuID  = 131;
@@ -251,142 +250,23 @@ static WindowRef CreateDocumentWindow(Document* doc) {
     return NewCWindow(nullptr, &bounds, title, true, kZoomDocProc, (WindowRef)-1L, true, 0);
 }
 
+// ALRT 128 = About dialog defined in RetroStudio.r
 static void ShowAboutDialog() {
-    const short kW = 280, kH = 150;
-    short wx = static_cast<short>((640 - kW) / 2);
-    short wy = static_cast<short>((480 - kH) / 2);
-    Rect wr = { wy, wx, static_cast<short>(wy + kH), static_cast<short>(wx + kW) };
-    Str255 noTitle = { 0 };
-    WindowRef dlg = NewCWindow(nullptr, &wr, noTitle, true,
-                               kDBoxProc, (WindowRef)-1L, false, 0);
-    if (!dlg) return;
-    SetPortWindowPort(dlg);
-
-    Rect btnR = { static_cast<short>(kH - 36), static_cast<short>(kW - 82),
-                  static_cast<short>(kH - 16), static_cast<short>(kW - 14) };
-
-    auto draw = [&]() {
-        Rect portR; GetWindowPortBounds(dlg, &portR);
-        RGBColor white = { 0xFFFF, 0xFFFF, 0xFFFF };
-        RGBColor black = { 0, 0, 0 };
-        RGBBackColor(&white); RGBForeColor(&black);
-        EraseRect(&portR);
-        TextFont(0); TextSize(14); TextFace(bold);
-        MoveTo(14, 28); DrawString("\pRetroStudio 1.0");
-        TextSize(12); TextFace(normal);
-        MoveTo(14, 52); DrawString("\pA vector design & prototyping");
-        MoveTo(14, 68); DrawString("\ptool for Mac OS 9.");
-        MoveTo(14, 92); DrawString("\p\251 2026 Bruno Castello.");
-        // OK button (double-framed = default button)
-        FrameRect(&btnR);
-        Rect inner = { static_cast<short>(btnR.top + 2), static_cast<short>(btnR.left + 2),
-                       static_cast<short>(btnR.bottom - 2), static_cast<short>(btnR.right - 2) };
-        FrameRect(&inner);
-        MoveTo(static_cast<short>(btnR.left + 18), static_cast<short>(btnR.bottom - 6));
-        DrawString("\pOK");
-    };
-    draw();
-
-    while (Button()) {}
-    bool done = false;
-    EventRecord evt;
-    while (!done) {
-        if (WaitNextEvent(everyEvent, &evt, 10, nullptr)) {
-            switch (evt.what) {
-                case keyDown: case autoKey: {
-                    char c = static_cast<char>(evt.message & charCodeMask);
-                    if (c == 0x0D || c == 0x03 || c == 0x1B) done = true;
-                    break;
-                }
-                case mouseDown: {
-                    Point lp = evt.where;
-                    SetPortWindowPort(dlg); GlobalToLocal(&lp);
-                    if (PtInRect(lp, &btnR)) done = true;
-                    break;
-                }
-                case updateEvt: {
-                    WindowRef uw = reinterpret_cast<WindowRef>(evt.message);
-                    if (uw == dlg) { BeginUpdate(dlg); SetPortWindowPort(dlg); draw(); EndUpdate(dlg); }
-                    break;
-                }
-            }
-        }
-    }
-    DisposeWindow(dlg);
+    Alert(128, nullptr);
 }
 
-// 0 = Save, 1 = Don't Save, 2 = Cancel
+// DLOG 129 = Save-confirmation dialog defined in RetroStudio.r
+// Returns: 0 = Save, 1 = Don't Save, 2 = Cancel
 static int ShowConfirmCloseDialog() {
-    const short kW = 310, kH = 110;
-    short wx = static_cast<short>((640 - kW) / 2);
-    short wy = static_cast<short>((480 - kH) / 2);
-    Rect wr = { wy, wx, static_cast<short>(wy + kH), static_cast<short>(wx + kW) };
-    Str255 noTitle = { 0 };
-    WindowRef dlg = NewCWindow(nullptr, &wr, noTitle, true,
-                               kDBoxProc, (WindowRef)-1L, false, 0);
-    if (!dlg) return 2; // cancel
-
-    Rect btnSave     = { 74, 228, 94, 296 };
-    Rect btnDontSave = { 74, 124, 94, 222 };
-    Rect btnCancel   = { 74,  14, 94,  78 };
-
-    auto draw = [&]() {
-        Rect portR; GetWindowPortBounds(dlg, &portR);
-        RGBColor white = { 0xFFFF, 0xFFFF, 0xFFFF };
-        RGBColor black = { 0, 0, 0 };
-        RGBBackColor(&white); RGBForeColor(&black);
-        EraseRect(&portR);
-        TextFont(0); TextSize(12); TextFace(normal);
-        MoveTo(14, 28); DrawString("\pSave changes before closing?");
-        MoveTo(14, 46); DrawString("\pUnsaved changes will be lost.");
-        // Save (double-framed = default)
-        FrameRect(&btnSave);
-        Rect inner = { static_cast<short>(btnSave.top + 2), static_cast<short>(btnSave.left + 2),
-                       static_cast<short>(btnSave.bottom - 2), static_cast<short>(btnSave.right - 2) };
-        FrameRect(&inner);
-        MoveTo(static_cast<short>(btnSave.left + 14), static_cast<short>(btnSave.bottom - 6));
-        DrawString("\pSave");
-        FrameRect(&btnDontSave);
-        MoveTo(static_cast<short>(btnDontSave.left + 8), static_cast<short>(btnDontSave.bottom - 6));
-        DrawString("\pDon't Save");
-        FrameRect(&btnCancel);
-        MoveTo(static_cast<short>(btnCancel.left + 8), static_cast<short>(btnCancel.bottom - 6));
-        DrawString("\pCancel");
-    };
-    SetPortWindowPort(dlg);
-    draw();
-
-    while (Button()) {}
-    int result = 2; // cancel
-    bool done = false;
-    EventRecord evt;
-    while (!done) {
-        if (WaitNextEvent(everyEvent, &evt, 10, nullptr)) {
-            switch (evt.what) {
-                case keyDown: case autoKey: {
-                    char c = static_cast<char>(evt.message & charCodeMask);
-                    if (c == 0x0D || c == 0x03) { result = 0; done = true; } // Return/Enter = Save
-                    else if (c == 0x1B)          { result = 2; done = true; } // Escape = Cancel
-                    break;
-                }
-                case mouseDown: {
-                    Point lp = evt.where;
-                    SetPortWindowPort(dlg); GlobalToLocal(&lp);
-                    if      (PtInRect(lp, &btnSave))     { result = 0; done = true; }
-                    else if (PtInRect(lp, &btnDontSave)) { result = 1; done = true; }
-                    else if (PtInRect(lp, &btnCancel))   { result = 2; done = true; }
-                    break;
-                }
-                case updateEvt: {
-                    WindowRef uw = reinterpret_cast<WindowRef>(evt.message);
-                    if (uw == dlg) { BeginUpdate(dlg); SetPortWindowPort(dlg); draw(); EndUpdate(dlg); }
-                    break;
-                }
-            }
-        }
-    }
-    DisposeWindow(dlg);
-    return result;
+    DialogPtr dlg = GetNewDialog(129, nullptr, (WindowPtr)-1L);
+    if (!dlg) return 2;
+    short item = 0;
+    while (item < 1 || item > 3)
+        ModalDialog(nullptr, &item);
+    DisposeDialog(dlg);
+    if (item == 1) return 0; // Save
+    if (item == 2) return 1; // Don't Save
+    return 2;                // Cancel
 }
 
 void SwitchActiveDocument(WindowRef win) {

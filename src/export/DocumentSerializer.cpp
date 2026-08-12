@@ -1,4 +1,5 @@
 #include "DocumentSerializer.h"
+#include <Navigation.h>
 #include <Carbon.h>
 #include <cstring>
 
@@ -292,16 +293,26 @@ bool SaveDocument(Document* doc) {
     if (!doc) return false;
 
     std::string suggested = EnsureRsdExtension(doc->name);
-    Str255 origName;
-    ToPStr31(suggested, origName);
 
-    Point where = { 100, 100 };
-    SFReply reply;
-    SFPutFile(where, "\pSave document as:", origName, nullptr, &reply);
-    if (!reply.good) return false;
+    NavDialogOptions options;
+    NavGetDefaultDialogOptions(&options);
+    ToPStr31(suggested, options.savedFileName);
 
-    FSSpec spec;
-    if (FSMakeFSSpec(reply.vRefNum, 0, reply.fName, &spec) != noErr) return false;
+    NavReplyRecord reply;
+    OSErr err = NavPutFile(nullptr, &reply, &options,
+                           nullptr, kDocType, kCreator, nullptr);
+    if (err != noErr || !reply.validRecord) {
+        NavDisposeReply(&reply);
+        return false;
+    }
+
+    AEKeyword keyword;
+    AEDesc    resultDesc;
+    FSSpec    spec;
+    AEGetNthDesc(&reply.selection, 1, typeFSS, &keyword, &resultDesc);
+    AEGetDescData(&resultDesc, &spec, sizeof(FSSpec));
+    AEDisposeDesc(&resultDesc);
+    NavDisposeReply(&reply);
 
     FSpDelete(&spec);
     if (FSpCreate(&spec, kCreator, kDocType, smSystemScript) != noErr) return false;
@@ -310,8 +321,8 @@ bool SaveDocument(Document* doc) {
     if (FSpOpenDF(&spec, fsRdWrPerm, &refNum) != noErr) return false;
 
     std::string filename;
-    for (int i = 1; i <= reply.fName[0]; ++i)
-        filename += static_cast<char>(reply.fName[i]);
+    for (int i = 1; i <= spec.name[0]; ++i)
+        filename += static_cast<char>(spec.name[i]);
 
     Writer w; w.ref = refNum;
 
@@ -338,14 +349,25 @@ bool SaveDocument(Document* doc) {
 }
 
 bool LoadDocument(Document*& doc) {
-    Point where = { 100, 100 };
-    SFTypeList types = { kDocType, 0, 0, 0 };
-    SFReply reply;
-    SFGetFile(where, "\p", nullptr, 1, types, nullptr, &reply);
-    if (!reply.good) return false;
+    NavDialogOptions options;
+    NavGetDefaultDialogOptions(&options);
 
-    FSSpec spec;
-    if (FSMakeFSSpec(reply.vRefNum, 0, reply.fName, &spec) != noErr) return false;
+    NavTypeListHandle typeList = nullptr;
+    NavReplyRecord    reply;
+    OSErr err = NavGetFile(nullptr, &reply, &options,
+                           nullptr, nullptr, nullptr, typeList, nullptr);
+    if (err != noErr || !reply.validRecord) {
+        NavDisposeReply(&reply);
+        return false;
+    }
+
+    AEKeyword keyword;
+    AEDesc    resultDesc;
+    FSSpec    spec;
+    AEGetNthDesc(&reply.selection, 1, typeFSS, &keyword, &resultDesc);
+    AEGetDescData(&resultDesc, &spec, sizeof(FSSpec));
+    AEDisposeDesc(&resultDesc);
+    NavDisposeReply(&reply);
 
     short refNum;
     if (FSpOpenDF(&spec, fsRdPerm, &refNum) != noErr) return false;
@@ -379,7 +401,6 @@ bool LoadDocument(Document*& doc) {
             newDoc->rootChildOrder.push_back({ isf != 0, static_cast<int>(idx) });
         }
     } else {
-        // v12: build legacy order — rootShapes section first, then frames section
         for (int i = 0; i < (int)newDoc->rootShapes.size(); ++i)
             newDoc->rootChildOrder.push_back({ false, i });
         for (int i = 0; i < (int)newDoc->frames.size(); ++i)
