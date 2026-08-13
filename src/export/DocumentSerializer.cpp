@@ -3,9 +3,21 @@
 #include <Carbon.h>
 #include <cstring>
 
-// NavGetDefaultDialogOptions is in libNavigationLib.a but absent from the
+// NavGetDefaultDialogOptions is in libCarbonLib.a but absent from the
 // Multiversal Navigation.h — forward-declare it directly.
 extern "C" OSErr NavGetDefaultDialogOptions(NavDialogOptions* outOptions);
+
+// Nav Services event callbacks — called at kNavCBStart (value 2) to stamp
+// the window title into the dialog's title strip via SetWTitle.
+// Without this, NavDialogOptions.windowTitle is silently ignored on Mac OS 9.
+static void NavSaveEventProc(NavEventCallbackMessage msg, NavCBRecPtr params, void*) {
+    if (msg == kNavCBStart && params && params->window)
+        SetWTitle(params->window, "\pSave");
+}
+static void NavOpenEventProc(NavEventCallbackMessage msg, NavCBRecPtr params, void*) {
+    if (msg == kNavCBStart && params && params->window)
+        SetWTitle(params->window, "\pOpen");
+}
 
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
@@ -318,7 +330,9 @@ bool SaveDocument(Document* doc) {
     ToPStr31("RetroStudio",  options.clientName);
 
     NavReplyRecord reply = {};
-    OSErr err = NavPutFile(nullptr, &reply, &options, nullptr, kDocType, kCreator, nullptr);
+    OSErr err = NavPutFile(nullptr, &reply, &options,
+                           reinterpret_cast<NavEventUPP>(NavSaveEventProc),
+                           kDocType, kCreator, nullptr);
     if (err != noErr || !reply.validRecord) { NavDisposeReply(&reply); return false; }
 
     FSSpec spec;
@@ -368,7 +382,9 @@ bool LoadDocument(Document*& doc) {
     ToPStr31("RetroStudio",  options.clientName);
 
     NavReplyRecord reply = {};
-    OSErr err = NavGetFile(nullptr, &reply, &options, nullptr, nullptr, nullptr, nullptr, nullptr);
+    OSErr err = NavGetFile(nullptr, &reply, &options,
+                           reinterpret_cast<NavEventUPP>(NavOpenEventProc),
+                           nullptr, nullptr, nullptr, nullptr);
     if (err != noErr || !reply.validRecord) { NavDisposeReply(&reply); return false; }
 
     FSSpec spec;
