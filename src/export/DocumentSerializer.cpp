@@ -7,24 +7,10 @@
 // Multiversal Navigation.h — forward-declare it directly.
 extern "C" OSErr NavGetDefaultDialogOptions(NavDialogOptions* outOptions);
 
-// Nav Services event callbacks — called at kNavCBStart to stamp the window
-// title into the dialog's title strip via SetWTitle.
-// We use FrontWindow() instead of params->window to avoid the 2-byte struct
-// alignment difference between GCC (4-byte natural) and CodeWarrior (mac68k
-// 2-byte) for NavCBRec — accessing params->window directly reads the wrong
-// offset and causes a type-3 (illegal instruction) crash.
-static pascal void NavSaveEventProc(NavEventCallbackMessage msg, NavCBRecPtr, void*) {
-    if (msg == kNavCBStart) {
-        WindowRef win = FrontWindow();
-        if (win) SetWTitle(win, "\pSave");
-    }
-}
-static pascal void NavOpenEventProc(NavEventCallbackMessage msg, NavCBRecPtr, void*) {
-    if (msg == kNavCBStart) {
-        WindowRef win = FrontWindow();
-        if (win) SetWTitle(win, "\pOpen");
-    }
-}
+// Diagnostic: empty callbacks — if still crashes, the crash is in the call
+// mechanism (TVVector mismatch), not inside the function body.
+static pascal void NavSaveEventProc(NavEventCallbackMessage, NavCBRecPtr, void*) {}
+static pascal void NavOpenEventProc(NavEventCallbackMessage, NavCBRecPtr, void*) {}
 
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
