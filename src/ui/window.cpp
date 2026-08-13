@@ -527,9 +527,15 @@ static void DrawShape(const Shape& shape) {
     Rect r = CanvasRect(shape.bounds);
     switch (shape.GetType()) {
         case Shape::kRectangle:
-        case Shape::kLine:
+        case Shape::kLine: {
+            SInt16 cr = (shape.GetType() == Shape::kRectangle)
+                        ? static_cast<const RectShape&>(shape).cornerRadius : 0;
+            short ov = (cr > 0)
+                       ? static_cast<short>(SInt32(cr) * 2 * gCanvasZoom / 100) : 0;
+            if (ov < 2 && cr > 0) ov = 2;
             if (shape.hasFill) {
-                RGBColor c = shape.fillColor; RGBForeColor(&c); PaintRect(&r);
+                RGBColor c = shape.fillColor; RGBForeColor(&c);
+                if (ov > 0) PaintRoundRect(&r, ov, ov); else PaintRect(&r);
             }
             if (shape.hasStroke) {
                 RGBColor c = shape.strokeColor; RGBForeColor(&c);
@@ -537,9 +543,12 @@ static void DrawShape(const Shape& shape) {
                 Rect sr = r;
                 if (shape.strokeAlign == 2) { sr.top-=sw; sr.left-=sw; sr.bottom+=sw; sr.right+=sw; }
                 else if (shape.strokeAlign == 0) { short e=sw/2; sr.top-=e; sr.left-=e; sr.bottom+=e; sr.right+=e; }
-                PenSize(sw, sw); FrameRect(&sr); PenSize(1, 1);
+                PenSize(sw, sw);
+                if (ov > 0) FrameRoundRect(&sr, ov, ov); else FrameRect(&sr);
+                PenSize(1, 1);
             }
             break;
+        }
         case Shape::kEllipse:
             if (shape.hasFill) {
                 RGBColor c = shape.fillColor; RGBForeColor(&c); PaintOval(&r);
@@ -651,7 +660,10 @@ static void DrawFrame(const Frame& frame) {
     // Fill
     RGBColor bg = frame.backgroundColor;
     RGBForeColor(&bg);
-    PaintRect(&r);
+    short fov = (frame.cornerRadius > 0)
+                ? static_cast<short>(SInt32(frame.cornerRadius) * 2 * gCanvasZoom / 100) : 0;
+    if (fov < 2 && frame.cornerRadius > 0) fov = 2;
+    if (fov > 0) PaintRoundRect(&r, fov, fov); else PaintRect(&r);
 
     // Draw children, optionally clipped and optionally in reverse z-order.
     auto drawChildren = [&]() {
@@ -696,10 +708,13 @@ static void DrawFrame(const Frame& frame) {
         Rect sr = r;
         if (frame.strokeAlign == 2) { sr.top-=sw; sr.left-=sw; sr.bottom+=sw; sr.right+=sw; }
         else if (frame.strokeAlign == 0) { short e=sw/2; sr.top-=e; sr.left-=e; sr.bottom+=e; sr.right+=e; }
-        PenSize(sw, sw); FrameRect(&sr); PenSize(1, 1);
+        PenSize(sw, sw);
+        if (fov > 0) FrameRoundRect(&sr, fov, fov); else FrameRect(&sr);
+        PenSize(1, 1);
     } else {
         RGBColor border = { 0xBBBB, 0xBBBB, 0xBBBB };
-        RGBForeColor(&border); FrameRect(&r);
+        RGBForeColor(&border);
+        if (fov > 0) FrameRoundRect(&r, fov, fov); else FrameRect(&r);
     }
 
     // Name label — only on top-level frames (no parent)

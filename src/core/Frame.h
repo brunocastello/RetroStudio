@@ -23,6 +23,7 @@ public:
     RGBColor    strokeColor     = { 0, 0, 0 };
     UInt16      strokeWidth     = 1;
     UInt8       strokeAlign     = 0;  // 0=center 1=inside 2=outside
+    SInt16      cornerRadius    = 0;
     bool        visible         = true;
     bool        locked          = false;
     bool        clipContent     = true;

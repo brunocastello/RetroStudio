@@ -29,7 +29,7 @@ static pascal void NavOpenEventProc(NavEventCallbackMessage msg, NavCBRecPtr, vo
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
 static const UInt32 kMagic   = 0x52535444;  // 'RSTD'
-static const UInt16 kVersion = 13;
+static const UInt16 kVersion = 14;
 
 // Folder Manager constants — defined here because Retro68 Carbon headers
 // don't always expose <Folders.h> constants via <Carbon.h>.
@@ -207,6 +207,7 @@ static void WriteFrame(Writer& w, const Frame& f) {
     w.w8(static_cast<UInt8>(f.crossAlign));
     w.w8(static_cast<UInt8>(f.widthSizing));
     w.w8(static_cast<UInt8>(f.heightSizing));
+    w.w16(static_cast<UInt16>(f.cornerRadius));
 
     // Interleaved child serialization preserving childOrder z-ordering.
     // If childOrder is empty (legacy), fall back to shapes-then-frames.
@@ -225,7 +226,7 @@ static void WriteFrame(Writer& w, const Frame& f) {
     }
 }
 
-static std::unique_ptr<Frame> ReadFrame(Reader& r, Frame* parent) {
+static std::unique_ptr<Frame> ReadFrame(Reader& r, Frame* parent, UInt16 ver) {
     auto f    = std::make_unique<Frame>();
     f->parent = parent;
     f->name   = r.rStr();
@@ -256,6 +257,7 @@ static std::unique_ptr<Frame> ReadFrame(Reader& r, Frame* parent) {
     f->crossAlign    = static_cast<CrossAlign>(r.r8());
     f->widthSizing   = static_cast<SizingMode>(r.r8());
     f->heightSizing  = static_cast<SizingMode>(r.r8());
+    if (ver >= 14) f->cornerRadius = static_cast<SInt16>(r.r16());
 
     // Interleaved child deserialization (v12+). Each entry: type byte (0=shape,1=frame)
     // followed by the serialized child. Rebuilds childOrder alongside typed vectors.
@@ -263,7 +265,7 @@ static std::unique_ptr<Frame> ReadFrame(Reader& r, Frame* parent) {
     for (UInt16 i = 0; i < nTotal && r.ok; ++i) {
         UInt8 type = r.r8();
         if (type == 1) {
-            auto cf = ReadFrame(r, f.get());
+            auto cf = ReadFrame(r, f.get(), ver);
             if (cf) {
                 f->childOrder.push_back({ true, static_cast<int>(f->childFrames.size()) });
                 f->childFrames.push_back(std::move(cf));
@@ -406,7 +408,7 @@ bool LoadDocument(Document*& doc) {
 
     UInt32 magic = 0; r.read(&magic, 4);
     UInt16 ver   = r.r16();
-    if (!r.ok || magic != kMagic || (ver != 12 && ver != 13)) { FSClose(refNum); return false; }
+    if (!r.ok || magic != kMagic || (ver != 12 && ver != 13 && ver != 14)) { FSClose(refNum); return false; }
 
     auto newDoc  = std::make_unique<Document>();
     newDoc->name = r.rStr();
@@ -419,7 +421,7 @@ bool LoadDocument(Document*& doc) {
 
     UInt16 nFrames = r.r16();
     for (UInt16 i = 0; i < nFrames && r.ok; ++i) {
-        auto f = ReadFrame(r, nullptr);
+        auto f = ReadFrame(r, nullptr, ver);
         if (f) newDoc->frames.push_back(std::move(f));
     }
 
