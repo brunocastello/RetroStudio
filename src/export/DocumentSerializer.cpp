@@ -7,16 +7,23 @@
 // Multiversal Navigation.h — forward-declare it directly.
 extern "C" OSErr NavGetDefaultDialogOptions(NavDialogOptions* outOptions);
 
-// Nav Services event callbacks — called at kNavCBStart (value 2) to stamp
-// the window title into the dialog's title strip via SetWTitle.
-// Without this, NavDialogOptions.windowTitle is silently ignored on Mac OS 9.
-static void NavSaveEventProc(NavEventCallbackMessage msg, NavCBRecPtr params, void*) {
-    if (msg == kNavCBStart && params && params->window)
-        SetWTitle(params->window, "\pSave");
+// Nav Services event callbacks — called at kNavCBStart to stamp the window
+// title into the dialog's title strip via SetWTitle.
+// We use FrontWindow() instead of params->window to avoid the 2-byte struct
+// alignment difference between GCC (4-byte natural) and CodeWarrior (mac68k
+// 2-byte) for NavCBRec — accessing params->window directly reads the wrong
+// offset and causes a type-3 (illegal instruction) crash.
+static pascal void NavSaveEventProc(NavEventCallbackMessage msg, NavCBRecPtr, void*) {
+    if (msg == kNavCBStart) {
+        WindowRef win = FrontWindow();
+        if (win) SetWTitle(win, "\pSave");
+    }
 }
-static void NavOpenEventProc(NavEventCallbackMessage msg, NavCBRecPtr params, void*) {
-    if (msg == kNavCBStart && params && params->window)
-        SetWTitle(params->window, "\pOpen");
+static pascal void NavOpenEventProc(NavEventCallbackMessage msg, NavCBRecPtr, void*) {
+    if (msg == kNavCBStart) {
+        WindowRef win = FrontWindow();
+        if (win) SetWTitle(win, "\pOpen");
+    }
 }
 
 static const OSType kCreator = 'RSTD';
