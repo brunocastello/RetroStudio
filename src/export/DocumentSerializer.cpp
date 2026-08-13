@@ -7,10 +7,24 @@
 // Multiversal Navigation.h — forward-declare it directly.
 extern "C" OSErr NavGetDefaultDialogOptions(NavDialogOptions* outOptions);
 
-// Diagnostic: empty callbacks — if still crashes, the crash is in the call
-// mechanism (TVVector mismatch), not inside the function body.
-static pascal void NavSaveEventProc(NavEventCallbackMessage, NavCBRecPtr, void*) {}
-static pascal void NavOpenEventProc(NavEventCallbackMessage, NavCBRecPtr, void*) {}
+// Nav Services event callbacks.
+// NewNavEventUPP() calls NewRoutineDescriptor() internally, creating a proper
+// CFM RoutineDescriptor — required because CarbonLib dispatches via
+// CallUniversalProc which expects a RoutineDescriptor, not a bare code address.
+// We use FrontWindow() instead of params->window to avoid NavCBRec struct
+// alignment differences between GCC-PPC and mac68k padding.
+static pascal void NavSaveEventProc(NavEventCallbackMessage msg, NavCBRecPtr, void*) {
+    if (msg == kNavCBStart) {
+        WindowRef w = FrontWindow();
+        if (w) SetWTitle(w, "\pSave");
+    }
+}
+static pascal void NavOpenEventProc(NavEventCallbackMessage msg, NavCBRecPtr, void*) {
+    if (msg == kNavCBStart) {
+        WindowRef w = FrontWindow();
+        if (w) SetWTitle(w, "\pOpen");
+    }
+}
 
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
@@ -322,10 +336,10 @@ bool SaveDocument(Document* doc) {
     ToPStr31(suggested,      options.savedFileName);
     ToPStr31("RetroStudio",  options.clientName);
 
+    NavEventUPP saveUPP = NewNavEventUPP(NavSaveEventProc);
     NavReplyRecord reply = {};
-    OSErr err = NavPutFile(nullptr, &reply, &options,
-                           reinterpret_cast<NavEventUPP>(NavSaveEventProc),
-                           kDocType, kCreator, nullptr);
+    OSErr err = NavPutFile(nullptr, &reply, &options, saveUPP, kDocType, kCreator, nullptr);
+    DisposeNavEventUPP(saveUPP);
     if (err != noErr || !reply.validRecord) { NavDisposeReply(&reply); return false; }
 
     FSSpec spec;
@@ -374,10 +388,10 @@ bool LoadDocument(Document*& doc) {
     ToPStr31("Open",         options.windowTitle);
     ToPStr31("RetroStudio",  options.clientName);
 
+    NavEventUPP openUPP = NewNavEventUPP(NavOpenEventProc);
     NavReplyRecord reply = {};
-    OSErr err = NavGetFile(nullptr, &reply, &options,
-                           reinterpret_cast<NavEventUPP>(NavOpenEventProc),
-                           nullptr, nullptr, nullptr, nullptr);
+    OSErr err = NavGetFile(nullptr, &reply, &options, openUPP, nullptr, nullptr, nullptr, nullptr);
+    DisposeNavEventUPP(openUPP);
     if (err != noErr || !reply.validRecord) { NavDisposeReply(&reply); return false; }
 
     FSSpec spec;
