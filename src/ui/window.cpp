@@ -523,10 +523,12 @@ static void DrawShapeNameLabel(const Shape& shape) {
 }
 
 // Fill or frame a rect with four independent corner radii (already in screen pixels).
-// Compositional region approach: start with full RectRgn, subtract each corner's
-// "cut piece" (corner square minus inscribed oval) via DiffRgn.
-// This is reliable because FrameOval in OpenRgn mode records the full oval outline
-// cleanly, whereas FrameArc only records partial arcs and can produce XOR artifacts.
+// Approach: start with full RectRgn; for each corner subtract the "waste" piece
+// (cr×cr corner square minus the quarter of the inscribed oval that falls in it).
+// sq = cr×cr at the actual rect corner; ov = 2cr×2cr oval bounding box.
+// DiffRgn(sq, oval) = the corner square area that is NOT inside the circle → the
+// waste to punch out. This is correct because the oval extends beyond sq, so only
+// the quarter of the oval inside sq participates in the subtraction.
 static void ApplyRoundRectCorners(const Rect& r,
                                    short tl, short tr, short br, short bl,
                                    bool doFill) {
@@ -544,24 +546,28 @@ static void ApplyRoundRectCorners(const Rect& r,
     RgnHandle ovalRgn = NewRgn();
     RgnHandle cutRgn  = NewRgn();
 
-    RectRgn(rgn, &r);  // start with full rectangle
+    RectRgn(rgn, &r);
 
-    // For each non-zero corner: subtract the square corner piece outside the arc.
-    // cutCorner(cx,cy,cr): corner square at (cx,cy) of size 2cr×2cr; oval inscribed
-    // in that square; cut = square - oval; remove cut from rgn.
-    auto cutCorner = [&](short cx, short cy, short cr) {
-        if (cr <= 0) return;
-        Rect sq = { cy, cx, static_cast<short>(cy + 2*cr), static_cast<short>(cx + 2*cr) };
+    auto cutCorner = [&](Rect sq, Rect ov) {
         RectRgn(sqRgn, &sq);
-        OpenRgn(); FrameOval(&sq); CloseRgn(ovalRgn);
+        OpenRgn(); FrameOval(&ov); CloseRgn(ovalRgn);
         DiffRgn(sqRgn, ovalRgn, cutRgn);
         DiffRgn(rgn, cutRgn, rgn);
     };
 
-    cutCorner(x, y, tl);
-    cutCorner(static_cast<short>(x + w - 2*tr), y, tr);
-    cutCorner(static_cast<short>(x + w - 2*br), static_cast<short>(y + h - 2*br), br);
-    cutCorner(x, static_cast<short>(y + h - 2*bl), bl);
+    // sq = cr×cr at the rect corner; ov = 2cr×2cr arc bounding box for that corner.
+    if (tl > 0) cutCorner(
+        { y,                          x,                          static_cast<short>(y+tl),    static_cast<short>(x+tl)    },
+        { y,                          x,                          static_cast<short>(y+2*tl),  static_cast<short>(x+2*tl)  });
+    if (tr > 0) cutCorner(
+        { y,                          static_cast<short>(x+w-tr), static_cast<short>(y+tr),    static_cast<short>(x+w)     },
+        { y,                          static_cast<short>(x+w-2*tr), static_cast<short>(y+2*tr), static_cast<short>(x+w)   });
+    if (br > 0) cutCorner(
+        { static_cast<short>(y+h-br), static_cast<short>(x+w-br), static_cast<short>(y+h),    static_cast<short>(x+w)     },
+        { static_cast<short>(y+h-2*br), static_cast<short>(x+w-2*br), static_cast<short>(y+h), static_cast<short>(x+w)   });
+    if (bl > 0) cutCorner(
+        { static_cast<short>(y+h-bl), x,                          static_cast<short>(y+h),    static_cast<short>(x+bl)    },
+        { static_cast<short>(y+h-2*bl), x,                        static_cast<short>(y+h),    static_cast<short>(x+2*bl)  });
 
     if (doFill) PaintRgn(rgn); else FrameRgn(rgn);
 
