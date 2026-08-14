@@ -1145,9 +1145,10 @@ static HitResult HitTestFrame(Frame* f, Point pt) {
                 if (res.found) return res;
             } else {
                 const auto& s = f->children[it->idx];
+                Rect sr1 = CanvasRect(s->bounds);
                 bool hit = (s->rotation != 0)
                     ? HitTestRotated(s->bounds, s->rotation, pt)
-                    : PtInRect(pt, &CanvasRect(s->bounds)) != 0;
+                    : PtInRect(pt, &sr1) != 0;
                 if (hit) return { f, s.get(), true };
             }
         }
@@ -1159,9 +1160,10 @@ static HitResult HitTestFrame(Frame* f, Point pt) {
         }
         for (auto it = f->children.rbegin(); it != f->children.rend(); ++it) {
             const auto& s = *it;
+            Rect sr2 = CanvasRect(s->bounds);
             bool hit = (s->rotation != 0)
                 ? HitTestRotated(s->bounds, s->rotation, pt)
-                : PtInRect(pt, &CanvasRect(s->bounds)) != 0;
+                : PtInRect(pt, &sr2) != 0;
             if (hit) return { f, s.get(), true };
         }
     }
@@ -1569,9 +1571,10 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                 } else {
                     if (ref.idx < (int)gDocument->rootShapes.size()) {
                         Shape* s = gDocument->rootShapes[ref.idx].get();
+                        Rect sr3 = CanvasRect(s->bounds);
                         bool hit = (s->rotation != 0)
                             ? HitTestRotated(s->bounds, s->rotation, pt)
-                            : PtInRect(pt, &CanvasRect(s->bounds)) != 0;
+                            : PtInRect(pt, &sr3) != 0;
                         if (hit) { hitShape = s; hitFrame = nullptr; found = true; }
                     }
                 }
@@ -1585,9 +1588,10 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
             if (!found) {
                 for (auto it = gDocument->rootShapes.rbegin(); it != gDocument->rootShapes.rend(); ++it) {
                     Shape* s = it->get();
+                    Rect sr4 = CanvasRect(s->bounds);
                     bool hit = (s->rotation != 0)
                         ? HitTestRotated(s->bounds, s->rotation, pt)
-                        : PtInRect(pt, &CanvasRect(s->bounds)) != 0;
+                        : PtInRect(pt, &sr4) != 0;
                     if (hit) { hitShape = s; hitFrame = nullptr; found = true; break; }
                 }
             }
