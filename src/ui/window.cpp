@@ -522,31 +522,110 @@ static void DrawShapeNameLabel(const Shape& shape) {
     TextSize(12);
 }
 
+// Fill or frame a rect with four independent corner radii (already in screen pixels).
+// Builds a closed QuickDraw region via OpenRgn so each corner can differ.
+static void ApplyRoundRectCorners(const Rect& r,
+                                   short tl, short tr, short br, short bl,
+                                   bool doFill) {
+    short x = r.left,  y = r.top;
+    short w = static_cast<short>(r.right  - r.left);
+    short h = static_cast<short>(r.bottom - r.top);
+    short maxR = static_cast<short>((w < h ? w : h) / 2);
+    if (tl > maxR) tl = maxR; if (tr > maxR) tr = maxR;
+    if (br > maxR) br = maxR; if (bl > maxR) bl = maxR;
+    if (tl < 0) tl = 0; if (tr < 0) tr = 0;
+    if (br < 0) br = 0; if (bl < 0) bl = 0;
+
+    RgnHandle rgn = NewRgn();
+    OpenRgn();
+
+    MoveTo(static_cast<short>(x + tl), y);
+    LineTo(static_cast<short>(x + w - tr), y);
+    if (tr > 0) {
+        Rect o = { y, static_cast<short>(x+w-2*tr),
+                   static_cast<short>(y+2*tr), static_cast<short>(x+w) };
+        FrameArc(&o, 270, 90);
+    }
+    LineTo(static_cast<short>(x + w), static_cast<short>(y + h - br));
+    if (br > 0) {
+        Rect o = { static_cast<short>(y+h-2*br), static_cast<short>(x+w-2*br),
+                   static_cast<short>(y+h), static_cast<short>(x+w) };
+        FrameArc(&o, 0, 90);
+    }
+    LineTo(static_cast<short>(x + bl), static_cast<short>(y + h));
+    if (bl > 0) {
+        Rect o = { static_cast<short>(y+h-2*bl), x,
+                   static_cast<short>(y+h), static_cast<short>(x+2*bl) };
+        FrameArc(&o, 90, 90);
+    }
+    LineTo(x, static_cast<short>(y + tl));
+    if (tl > 0) {
+        Rect o = { y, x, static_cast<short>(y+2*tl), static_cast<short>(x+2*tl) };
+        FrameArc(&o, 180, 90);
+    }
+
+    CloseRgn(rgn);
+    if (doFill) PaintRgn(rgn); else FrameRgn(rgn);
+    DisposeRgn(rgn);
+}
+
+// Scale a canvas-pixel corner radius to screen pixels (clamped to 16383 so 2× fits in short).
+static short ScaleCornerRadius(SInt16 cr) {
+    if (cr <= 0) return 0;
+    SInt32 v = SInt32(cr) * gCanvasZoom / 100;
+    if (v > 16383) v = 16383;
+    if (v < 1) v = 1;
+    return static_cast<short>(v);
+}
+
 static void DrawShape(const Shape& shape) {
     if (!shape.visible) return;
     Rect r = CanvasRect(shape.bounds);
     switch (shape.GetType()) {
         case Shape::kRectangle:
         case Shape::kLine: {
-            SInt16 cr = (shape.GetType() == Shape::kRectangle)
-                        ? static_cast<const RectShape&>(shape).cornerRadius : 0;
-            SInt32 ovL = (cr > 0) ? (SInt32(cr) * 2 * gCanvasZoom / 100) : 0;
-            if (ovL > 32767) ovL = 32767;
-            short ov = static_cast<short>(ovL);
-            if (ov < 2 && cr > 0) ov = 2;
-            if (shape.hasFill) {
-                RGBColor c = shape.fillColor; RGBForeColor(&c);
-                if (ov > 0) PaintRoundRect(&r, ov, ov); else PaintRect(&r);
-            }
-            if (shape.hasStroke) {
-                RGBColor c = shape.strokeColor; RGBForeColor(&c);
-                short sw = static_cast<short>(shape.strokeWidth);
-                Rect sr = r;
-                if (shape.strokeAlign == 2) { sr.top-=sw; sr.left-=sw; sr.bottom+=sw; sr.right+=sw; }
-                else if (shape.strokeAlign == 0) { short e=sw/2; sr.top-=e; sr.left-=e; sr.bottom+=e; sr.right+=e; }
-                PenSize(sw, sw);
-                if (ov > 0) FrameRoundRect(&sr, ov, ov); else FrameRect(&sr);
-                PenSize(1, 1);
+            if (shape.GetType() == Shape::kRectangle &&
+                static_cast<const RectShape&>(shape).cornerIndividual) {
+                const auto& rs = static_cast<const RectShape&>(shape);
+                short itl = ScaleCornerRadius(rs.cornerTL);
+                short itr = ScaleCornerRadius(rs.cornerTR);
+                short ibr = ScaleCornerRadius(rs.cornerBR);
+                short ibl = ScaleCornerRadius(rs.cornerBL);
+                if (shape.hasFill) {
+                    RGBColor c = shape.fillColor; RGBForeColor(&c);
+                    ApplyRoundRectCorners(r, itl, itr, ibr, ibl, true);
+                }
+                if (shape.hasStroke) {
+                    RGBColor c = shape.strokeColor; RGBForeColor(&c);
+                    short sw = static_cast<short>(shape.strokeWidth);
+                    Rect sr = r;
+                    if (shape.strokeAlign == 2) { sr.top-=sw; sr.left-=sw; sr.bottom+=sw; sr.right+=sw; }
+                    else if (shape.strokeAlign == 0) { short e=sw/2; sr.top-=e; sr.left-=e; sr.bottom+=e; sr.right+=e; }
+                    PenSize(sw, sw);
+                    ApplyRoundRectCorners(sr, itl, itr, ibr, ibl, false);
+                    PenSize(1, 1);
+                }
+            } else {
+                SInt16 cr = (shape.GetType() == Shape::kRectangle)
+                            ? static_cast<const RectShape&>(shape).cornerRadius : 0;
+                SInt32 ovL = (cr > 0) ? (SInt32(cr) * 2 * gCanvasZoom / 100) : 0;
+                if (ovL > 32767) ovL = 32767;
+                short ov = static_cast<short>(ovL);
+                if (ov < 2 && cr > 0) ov = 2;
+                if (shape.hasFill) {
+                    RGBColor c = shape.fillColor; RGBForeColor(&c);
+                    if (ov > 0) PaintRoundRect(&r, ov, ov); else PaintRect(&r);
+                }
+                if (shape.hasStroke) {
+                    RGBColor c = shape.strokeColor; RGBForeColor(&c);
+                    short sw = static_cast<short>(shape.strokeWidth);
+                    Rect sr = r;
+                    if (shape.strokeAlign == 2) { sr.top-=sw; sr.left-=sw; sr.bottom+=sw; sr.right+=sw; }
+                    else if (shape.strokeAlign == 0) { short e=sw/2; sr.top-=e; sr.left-=e; sr.bottom+=e; sr.right+=e; }
+                    PenSize(sw, sw);
+                    if (ov > 0) FrameRoundRect(&sr, ov, ov); else FrameRect(&sr);
+                    PenSize(1, 1);
+                }
             }
             break;
         }
@@ -658,15 +737,28 @@ static void DrawFrame(const Frame& frame) {
     if (!frame.visible) return;
     Rect r = CanvasRect(frame.bounds);
 
+    // Compute corner rendering params — individual per-corner or uniform
+    bool fIndiv = frame.cornerIndividual;
+    short fitl = 0, fitr = 0, fibr = 0, fibl = 0;
+    short fov = 0;
+    if (fIndiv) {
+        fitl = ScaleCornerRadius(frame.cornerTL);
+        fitr = ScaleCornerRadius(frame.cornerTR);
+        fibr = ScaleCornerRadius(frame.cornerBR);
+        fibl = ScaleCornerRadius(frame.cornerBL);
+    } else {
+        SInt32 fovL = (frame.cornerRadius > 0)
+                      ? (SInt32(frame.cornerRadius) * 2 * gCanvasZoom / 100) : 0;
+        if (fovL > 32767) fovL = 32767;
+        fov = static_cast<short>(fovL);
+        if (fov < 2 && frame.cornerRadius > 0) fov = 2;
+    }
+
     // Fill
     RGBColor bg = frame.backgroundColor;
     RGBForeColor(&bg);
-    SInt32 fovL = (frame.cornerRadius > 0)
-                  ? (SInt32(frame.cornerRadius) * 2 * gCanvasZoom / 100) : 0;
-    if (fovL > 32767) fovL = 32767;
-    short fov = static_cast<short>(fovL);
-    if (fov < 2 && frame.cornerRadius > 0) fov = 2;
-    if (fov > 0) PaintRoundRect(&r, fov, fov); else PaintRect(&r);
+    if (fIndiv) ApplyRoundRectCorners(r, fitl, fitr, fibr, fibl, true);
+    else if (fov > 0) PaintRoundRect(&r, fov, fov); else PaintRect(&r);
 
     // Draw children, optionally clipped and optionally in reverse z-order.
     auto drawChildren = [&]() {
@@ -712,12 +804,14 @@ static void DrawFrame(const Frame& frame) {
         if (frame.strokeAlign == 2) { sr.top-=sw; sr.left-=sw; sr.bottom+=sw; sr.right+=sw; }
         else if (frame.strokeAlign == 0) { short e=sw/2; sr.top-=e; sr.left-=e; sr.bottom+=e; sr.right+=e; }
         PenSize(sw, sw);
-        if (fov > 0) FrameRoundRect(&sr, fov, fov); else FrameRect(&sr);
+        if (fIndiv) ApplyRoundRectCorners(sr, fitl, fitr, fibr, fibl, false);
+        else if (fov > 0) FrameRoundRect(&sr, fov, fov); else FrameRect(&sr);
         PenSize(1, 1);
     } else {
         RGBColor border = { 0xBBBB, 0xBBBB, 0xBBBB };
         RGBForeColor(&border);
-        if (fov > 0) FrameRoundRect(&r, fov, fov); else FrameRect(&r);
+        if (fIndiv) ApplyRoundRectCorners(r, fitl, fitr, fibr, fibl, false);
+        else if (fov > 0) FrameRoundRect(&r, fov, fov); else FrameRect(&r);
     }
 
     // Name label — only on top-level frames (no parent)

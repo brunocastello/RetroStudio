@@ -24,6 +24,8 @@ public:
     UInt16      strokeWidth     = 1;
     UInt8       strokeAlign     = 0;  // 0=center 1=inside 2=outside
     SInt16      cornerRadius    = 0;
+    SInt16      cornerTL = 0, cornerTR = 0, cornerBR = 0, cornerBL = 0;
+    bool        cornerIndividual = false;
     bool        visible         = true;
     bool        locked          = false;
     bool        clipContent     = true;

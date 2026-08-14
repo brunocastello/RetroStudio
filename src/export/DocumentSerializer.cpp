@@ -29,7 +29,7 @@ static pascal void NavOpenEventProc(NavEventCallbackMessage msg, NavCBRecPtr, vo
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
 static const UInt32 kMagic   = 0x52535444;  // 'RSTD'
-static const UInt16 kVersion = 14;
+static const UInt16 kVersion = 15;
 
 // Folder Manager constants — defined here because Retro68 Carbon headers
 // don't always expose <Folders.h> constants via <Carbon.h>.
@@ -106,9 +106,13 @@ static void WriteShape(Writer& w, const Shape& s) {
     w.w8(s.strokeAlign);
     w.w8(s.wSizing);
     w.w8(s.hSizing);
-    if (s.GetType() == Shape::kRectangle)
-        w.w16(static_cast<UInt16>(static_cast<const RectShape&>(s).cornerRadius));
-    else if (s.GetType() == Shape::kText) {
+    if (s.GetType() == Shape::kRectangle) {
+        const auto& rs = static_cast<const RectShape&>(s);
+        w.w16(static_cast<UInt16>(rs.cornerRadius));
+        w.w8(rs.cornerIndividual ? 1 : 0);
+        w.w16(static_cast<UInt16>(rs.cornerTL)); w.w16(static_cast<UInt16>(rs.cornerTR));
+        w.w16(static_cast<UInt16>(rs.cornerBR)); w.w16(static_cast<UInt16>(rs.cornerBL));
+    } else if (s.GetType() == Shape::kText) {
         const TextShape& ts = static_cast<const TextShape&>(s);
         w.w16(static_cast<UInt16>(ts.fontSize));
         w.w8(ts.fontFace);
@@ -122,7 +126,7 @@ static void WriteShape(Writer& w, const Shape& s) {
     w.wStr(s.name);
 }
 
-static std::unique_ptr<Shape> ReadShape(Reader& r) {
+static std::unique_ptr<Shape> ReadShape(Reader& r, UInt16 ver) {
     UInt8 type = r.r8();
     Bounds2 b;
     b.x = r.r32(); b.y = r.r32();
@@ -140,9 +144,13 @@ static std::unique_ptr<Shape> ReadShape(Reader& r) {
 
     std::unique_ptr<Shape> shape;
     if (type == Shape::kRectangle) {
-        SInt16 cr = static_cast<SInt16>(r.r16());
         auto rs = std::make_unique<RectShape>();
-        rs->cornerRadius = cr;
+        rs->cornerRadius = static_cast<SInt16>(r.r16());
+        if (ver >= 15) {
+            rs->cornerIndividual = r.r8() != 0;
+            rs->cornerTL = static_cast<SInt16>(r.r16()); rs->cornerTR = static_cast<SInt16>(r.r16());
+            rs->cornerBR = static_cast<SInt16>(r.r16()); rs->cornerBL = static_cast<SInt16>(r.r16());
+        }
         shape = std::move(rs);
     } else if (type == Shape::kText) {
         auto ts          = std::make_unique<TextShape>();
@@ -208,6 +216,9 @@ static void WriteFrame(Writer& w, const Frame& f) {
     w.w8(static_cast<UInt8>(f.widthSizing));
     w.w8(static_cast<UInt8>(f.heightSizing));
     w.w16(static_cast<UInt16>(f.cornerRadius));
+    w.w8(f.cornerIndividual ? 1 : 0);
+    w.w16(static_cast<UInt16>(f.cornerTL)); w.w16(static_cast<UInt16>(f.cornerTR));
+    w.w16(static_cast<UInt16>(f.cornerBR)); w.w16(static_cast<UInt16>(f.cornerBL));
 
     // Interleaved child serialization preserving childOrder z-ordering.
     // If childOrder is empty (legacy), fall back to shapes-then-frames.
@@ -258,6 +269,11 @@ static std::unique_ptr<Frame> ReadFrame(Reader& r, Frame* parent, UInt16 ver) {
     f->widthSizing   = static_cast<SizingMode>(r.r8());
     f->heightSizing  = static_cast<SizingMode>(r.r8());
     if (ver >= 14) f->cornerRadius = static_cast<SInt16>(r.r16());
+    if (ver >= 15) {
+        f->cornerIndividual = r.r8() != 0;
+        f->cornerTL = static_cast<SInt16>(r.r16()); f->cornerTR = static_cast<SInt16>(r.r16());
+        f->cornerBR = static_cast<SInt16>(r.r16()); f->cornerBL = static_cast<SInt16>(r.r16());
+    }
 
     // Interleaved child deserialization (v12+). Each entry: type byte (0=shape,1=frame)
     // followed by the serialized child. Rebuilds childOrder alongside typed vectors.
@@ -271,7 +287,7 @@ static std::unique_ptr<Frame> ReadFrame(Reader& r, Frame* parent, UInt16 ver) {
                 f->childFrames.push_back(std::move(cf));
             }
         } else {
-            auto s = ReadShape(r);
+            auto s = ReadShape(r, ver);
             if (s) {
                 f->childOrder.push_back({ false, static_cast<int>(f->children.size()) });
                 f->children.push_back(std::move(s));
@@ -408,14 +424,14 @@ bool LoadDocument(Document*& doc) {
 
     UInt32 magic = 0; r.read(&magic, 4);
     UInt16 ver   = r.r16();
-    if (!r.ok || magic != kMagic || (ver != 12 && ver != 13 && ver != 14)) { FSClose(refNum); return false; }
+    if (!r.ok || magic != kMagic || (ver != 12 && ver != 13 && ver != 14 && ver != 15)) { FSClose(refNum); return false; }
 
     auto newDoc  = std::make_unique<Document>();
     newDoc->name = r.rStr();
 
     UInt16 nRoots = r.r16();
     for (UInt16 i = 0; i < nRoots && r.ok; ++i) {
-        auto s = ReadShape(r);
+        auto s = ReadShape(r, ver);
         if (s) newDoc->rootShapes.push_back(std::move(s));
     }
 

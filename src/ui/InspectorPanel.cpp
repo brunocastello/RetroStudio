@@ -72,6 +72,11 @@ static Rect sShapeHFlRect        = {0,0,0,0};
 static Rect sLayoutCounterGapRect     = {0,0,0,0};
 static Rect sLayoutCounterGapModeRect = {0,0,0,0};
 static Rect sCornerRadiusRect         = {0,0,0,0};
+static Rect sCornerTLRect             = {0,0,0,0};
+static Rect sCornerTRRect             = {0,0,0,0};
+static Rect sCornerBRRect             = {0,0,0,0};
+static Rect sCornerBLRect             = {0,0,0,0};
+static Rect sCornerIndividualBtnRect  = {0,0,0,0};
 
 // Auto Layout controls (frame selected)
 static Rect sLayoutModeRect[3]       = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
@@ -101,7 +106,8 @@ static Rect sClipContentRect         = {0, 0, 0, 0};
 // Inline text-edit state for numeric fields
 enum EditField { kNoField, kFieldX, kFieldY, kFieldW, kFieldH, kFieldStrokeWidth, kFieldFontSize, kFieldLayoutGap,
                  kFieldPadH, kFieldPadV, kFieldPadTop, kFieldPadRight, kFieldPadBottom, kFieldPadLeft,
-                 kFieldCounterGap, kFieldCornerRadius };
+                 kFieldCounterGap, kFieldCornerRadius,
+                 kFieldCornerTL, kFieldCornerTR, kFieldCornerBR, kFieldCornerBL };
 static EditField sActiveField = kNoField;
 static char      sEditBuf[12] = {};
 static int       sEditLen     = 0;
@@ -510,7 +516,8 @@ void DrawInspectorPanel() {
     for (int i=0;i<3;++i) sTextSizingRect[i]={0,0,0,0};
     sShapeWFxRect = sShapeWFlRect = sShapeHFxRect = sShapeHFlRect = {0,0,0,0};
     sLayoutCounterGapRect = sLayoutCounterGapModeRect = {0,0,0,0};
-    sCornerRadiusRect = {0,0,0,0};
+    sCornerRadiusRect = sCornerTLRect = sCornerTRRect = sCornerBRRect = sCornerBLRect = {0,0,0,0};
+    sCornerIndividualBtnRect = {0,0,0,0};
 
     if (!gSelectedFrame && !gSelectedShape && gSelectedFrames.empty()) {
         SetOrigin(0, 0);
@@ -1104,17 +1111,83 @@ void DrawInspectorPanel() {
         bool isRectSel  = (gSelectedShape && gSelectedShape->GetType() == Shape::kRectangle);
         bool isFrameSel = (!gSelectedShape && gSelectedFrame);
         if (isRectSel || isFrameSel) {
-            SInt16 crVal = isRectSel
-                ? static_cast<RectShape*>(gSelectedShape)->cornerRadius
-                : gSelectedFrame->cornerRadius;
+            bool indiv = isRectSel
+                ? static_cast<const RectShape*>(gSelectedShape)->cornerIndividual
+                : gSelectedFrame->cornerIndividual;
+
             y = DrawSectionHeader(y, "CORNER", portRect);
+
+            // Individual-corners toggle button in header row
+            {
+                Rect tBtn = { static_cast<short>(y-15), static_cast<short>(cRight-16),
+                              static_cast<short>(y-1),  static_cast<short>(cRight-2) };
+                sCornerIndividualBtnRect = tBtn;
+                if (indiv) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
+                else        { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
+                PaintRect(&tBtn);
+                RGBColor bd={0x7777,0x7777,0x7777}; RGBForeColor(&bd); FrameRect(&tBtn);
+                RGBColor ic = indiv ? RGBColor{0xFFFF,0xFFFF,0xFFFF} : RGBColor{0x3333,0x3333,0x3333};
+                RGBForeColor(&ic);
+                for (int row2=0; row2<2; ++row2) for (int col2=0; col2<2; ++col2) {
+                    Rect sq = { static_cast<short>(y-14+row2*6), static_cast<short>(cRight-15+col2*6),
+                                static_cast<short>(y-9+row2*6),  static_cast<short>(cRight-10+col2*6) };
+                    FrameRect(&sq);
+                }
+            }
+
             y = static_cast<short>(y + 6);
-            RGBForeColor(&labelClr); TextSize(9);
-            PStrC("R", ps); MoveTo(6, static_cast<short>(y + 12)); DrawString(ps);
-            TextSize(11);
-            DrawNumField(18, static_cast<short>(y + 12), 40, kFieldCornerRadius,
-                         static_cast<SInt32>(crVal), sCornerRadiusRect);
-            y = static_cast<short>(y + 22);
+
+            if (!indiv) {
+                // Uniform: single R field
+                SInt16 crVal = isRectSel
+                    ? static_cast<const RectShape*>(gSelectedShape)->cornerRadius
+                    : gSelectedFrame->cornerRadius;
+                RGBForeColor(&labelClr); TextSize(9);
+                PStrC("R", ps); MoveTo(6, static_cast<short>(y + 12)); DrawString(ps);
+                TextSize(11);
+                DrawNumField(18, static_cast<short>(y + 12), 40, kFieldCornerRadius,
+                             static_cast<SInt32>(crVal), sCornerRadiusRect);
+                sCornerTLRect = sCornerTRRect = sCornerBRRect = sCornerBLRect = {0,0,0,0};
+                y = static_cast<short>(y + 22);
+            } else {
+                // Individual: 2×2 grid (TL/TR top row, BL/BR bottom row)
+                SInt16 vtl, vtr, vbr, vbl;
+                if (isRectSel) {
+                    const auto* rs2 = static_cast<const RectShape*>(gSelectedShape);
+                    vtl=rs2->cornerTL; vtr=rs2->cornerTR; vbr=rs2->cornerBR; vbl=rs2->cornerBL;
+                } else {
+                    vtl=gSelectedFrame->cornerTL; vtr=gSelectedFrame->cornerTR;
+                    vbr=gSelectedFrame->cornerBR; vbl=gSelectedFrame->cornerBL;
+                }
+                short halfW2 = static_cast<short>((cRight - 8) / 2);
+                short col2X2 = static_cast<short>(4 + halfW2 + 2);
+                short fldW2  = static_cast<short>(halfW2 - 22);
+                // Row 1: TL | TR
+                RGBForeColor(&labelClr); TextSize(9);
+                PStrC("TL", ps); MoveTo(4, static_cast<short>(y+12)); DrawString(ps);
+                TextSize(11);
+                DrawNumField(22, static_cast<short>(y+12), fldW2, kFieldCornerTL,
+                             static_cast<SInt32>(vtl), sCornerTLRect);
+                RGBForeColor(&labelClr); TextSize(9);
+                PStrC("TR", ps); MoveTo(col2X2, static_cast<short>(y+12)); DrawString(ps);
+                TextSize(11);
+                DrawNumField(static_cast<short>(col2X2+18), static_cast<short>(y+12), fldW2,
+                             kFieldCornerTR, static_cast<SInt32>(vtr), sCornerTRRect);
+                y = static_cast<short>(y + 18);
+                // Row 2: BL | BR
+                RGBForeColor(&labelClr); TextSize(9);
+                PStrC("BL", ps); MoveTo(4, static_cast<short>(y+12)); DrawString(ps);
+                TextSize(11);
+                DrawNumField(22, static_cast<short>(y+12), fldW2, kFieldCornerBL,
+                             static_cast<SInt32>(vbl), sCornerBLRect);
+                RGBForeColor(&labelClr); TextSize(9);
+                PStrC("BR", ps); MoveTo(col2X2, static_cast<short>(y+12)); DrawString(ps);
+                TextSize(11);
+                DrawNumField(static_cast<short>(col2X2+18), static_cast<short>(y+12), fldW2,
+                             kFieldCornerBR, static_cast<SInt32>(vbr), sCornerBRRect);
+                sCornerRadiusRect = {0,0,0,0};
+                y = static_cast<short>(y + 22);
+            }
         }
     }
 
@@ -1519,6 +1592,26 @@ static void StartEditForField(EditField field) {
             StartEdit(field, static_cast<SInt32>(crv));
             break;
         }
+        case kFieldCornerTL:
+            if (gSelectedShape && gSelectedShape->GetType() == Shape::kRectangle)
+                StartEdit(field, static_cast<RectShape&>(*gSelectedShape).cornerTL);
+            else if (gSelectedFrame) StartEdit(field, gSelectedFrame->cornerTL);
+            break;
+        case kFieldCornerTR:
+            if (gSelectedShape && gSelectedShape->GetType() == Shape::kRectangle)
+                StartEdit(field, static_cast<RectShape&>(*gSelectedShape).cornerTR);
+            else if (gSelectedFrame) StartEdit(field, gSelectedFrame->cornerTR);
+            break;
+        case kFieldCornerBR:
+            if (gSelectedShape && gSelectedShape->GetType() == Shape::kRectangle)
+                StartEdit(field, static_cast<RectShape&>(*gSelectedShape).cornerBR);
+            else if (gSelectedFrame) StartEdit(field, gSelectedFrame->cornerBR);
+            break;
+        case kFieldCornerBL:
+            if (gSelectedShape && gSelectedShape->GetType() == Shape::kRectangle)
+                StartEdit(field, static_cast<RectShape&>(*gSelectedShape).cornerBL);
+            else if (gSelectedFrame) StartEdit(field, gSelectedFrame->cornerBL);
+            break;
         case kFieldPadH:
             if (gSelectedFrame) {
                 std::string s = padCompactStr(gSelectedFrame->paddingLeft, gSelectedFrame->paddingRight);
@@ -1559,8 +1652,17 @@ static EditField TabToNextField(EditField cur, bool reverse) {
 
     // Corner radius (rect shapes and frames)
     bool isRectShape2 = (gSelectedShape && gSelectedShape->GetType() == Shape::kRectangle);
-    if (isRectShape2 || (!gSelectedShape && gSelectedFrame))
-        order.push_back(kFieldCornerRadius);
+    if (isRectShape2 || (!gSelectedShape && gSelectedFrame)) {
+        bool indiv2 = isRectShape2
+            ? static_cast<const RectShape&>(*gSelectedShape).cornerIndividual
+            : gSelectedFrame->cornerIndividual;
+        if (indiv2) {
+            order.push_back(kFieldCornerTL); order.push_back(kFieldCornerTR);
+            order.push_back(kFieldCornerBR); order.push_back(kFieldCornerBL);
+        } else {
+            order.push_back(kFieldCornerRadius);
+        }
+    }
 
     // Layout fields (frame with active layout only)
     if (!gSelectedShape && gSelectedFrame && gSelectedFrame->layoutMode != LayoutMode::None) {
@@ -1793,7 +1895,7 @@ void ApplyInspectorEdit() {
         }
     }
     if (sActiveField == kFieldCornerRadius) {
-        if (val < 0) val = 0; if (val > 9999) val = 9999;
+        if (val < 0) val = 0; if (val > 999) val = 999;
         SInt16 nv = static_cast<SInt16>(val);
         if (applyMultiFrame) {
             bool any = false;
@@ -1805,6 +1907,25 @@ void ApplyInspectorEdit() {
         } else if (gSelectedFrame && gSelectedFrame->cornerRadius != nv) {
             PushUndo(); gSelectedFrame->cornerRadius = nv; changed = true;
         }
+    }
+    if (sActiveField == kFieldCornerTL || sActiveField == kFieldCornerTR ||
+        sActiveField == kFieldCornerBR || sActiveField == kFieldCornerBL) {
+        if (val < 0) val = 0; if (val > 999) val = 999;
+        SInt16 nv = static_cast<SInt16>(val);
+        SInt16* target = nullptr;
+        if (gSelectedShape && gSelectedShape->GetType() == Shape::kRectangle) {
+            auto& rs = static_cast<RectShape&>(*gSelectedShape);
+            if (sActiveField == kFieldCornerTL)      target = &rs.cornerTL;
+            else if (sActiveField == kFieldCornerTR)  target = &rs.cornerTR;
+            else if (sActiveField == kFieldCornerBR)  target = &rs.cornerBR;
+            else                                       target = &rs.cornerBL;
+        } else if (gSelectedFrame) {
+            if (sActiveField == kFieldCornerTL)      target = &gSelectedFrame->cornerTL;
+            else if (sActiveField == kFieldCornerTR)  target = &gSelectedFrame->cornerTR;
+            else if (sActiveField == kFieldCornerBR)  target = &gSelectedFrame->cornerBR;
+            else                                       target = &gSelectedFrame->cornerBL;
+        }
+        if (target && *target != nv) { PushUndo(); *target = nv; changed = true; }
     }
     if (!applyMultiFrame && sActiveField == kFieldStrokeWidth) {
         if (val < 1) val = 1; if (val > 20) val = 20;
@@ -2337,6 +2458,50 @@ void HandleInspectorClick(Point localPt) {
             crv = gSelectedFrame->cornerRadius;
         StartEdit(kFieldCornerRadius, static_cast<SInt32>(crv));
         return;
+    }
+
+    // Individual corner toggle button
+    if (PtInRect(localPt, &sCornerIndividualBtnRect)) {
+        PushUndo();
+        if (gSelectedShape && gSelectedShape->GetType() == Shape::kRectangle) {
+            auto& rs = static_cast<RectShape&>(*gSelectedShape);
+            rs.cornerIndividual = !rs.cornerIndividual;
+            if (rs.cornerIndividual) rs.cornerTL = rs.cornerTR = rs.cornerBR = rs.cornerBL = rs.cornerRadius;
+        } else if (gSelectedFrame) {
+            gSelectedFrame->cornerIndividual = !gSelectedFrame->cornerIndividual;
+            if (gSelectedFrame->cornerIndividual)
+                gSelectedFrame->cornerTL = gSelectedFrame->cornerTR =
+                gSelectedFrame->cornerBR = gSelectedFrame->cornerBL = gSelectedFrame->cornerRadius;
+        }
+        InvalidateInspector();
+        if (gMainWindow) { Rect wr; GetWindowPortBounds(gMainWindow, &wr); InvalWindowRect(gMainWindow, &wr); }
+        return;
+    }
+
+    // Individual corner fields
+    if (PtInRect(localPt, &sCornerTLRect)) {
+        SInt16 v = (gSelectedShape && gSelectedShape->GetType() == Shape::kRectangle)
+            ? static_cast<RectShape&>(*gSelectedShape).cornerTL
+            : (gSelectedFrame ? gSelectedFrame->cornerTL : 0);
+        StartEdit(kFieldCornerTL, v); return;
+    }
+    if (PtInRect(localPt, &sCornerTRRect)) {
+        SInt16 v = (gSelectedShape && gSelectedShape->GetType() == Shape::kRectangle)
+            ? static_cast<RectShape&>(*gSelectedShape).cornerTR
+            : (gSelectedFrame ? gSelectedFrame->cornerTR : 0);
+        StartEdit(kFieldCornerTR, v); return;
+    }
+    if (PtInRect(localPt, &sCornerBRRect)) {
+        SInt16 v = (gSelectedShape && gSelectedShape->GetType() == Shape::kRectangle)
+            ? static_cast<RectShape&>(*gSelectedShape).cornerBR
+            : (gSelectedFrame ? gSelectedFrame->cornerBR : 0);
+        StartEdit(kFieldCornerBR, v); return;
+    }
+    if (PtInRect(localPt, &sCornerBLRect)) {
+        SInt16 v = (gSelectedShape && gSelectedShape->GetType() == Shape::kRectangle)
+            ? static_cast<RectShape&>(*gSelectedShape).cornerBL
+            : (gSelectedFrame ? gSelectedFrame->cornerBL : 0);
+        StartEdit(kFieldCornerBL, v); return;
     }
 }
 

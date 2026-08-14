@@ -47,7 +47,9 @@ class RectShape : public Shape {
 public:
     Type GetType() const override { return kRectangle; }
     std::unique_ptr<Shape> Clone() const override { return std::make_unique<RectShape>(*this); }
-    SInt16 cornerRadius = 0;
+    SInt16 cornerRadius     = 0;
+    SInt16 cornerTL = 0, cornerTR = 0, cornerBR = 0, cornerBL = 0;
+    bool   cornerIndividual = false;
 };
 
 class EllipseShape : public Shape {
