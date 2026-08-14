@@ -612,6 +612,9 @@ static void DrawShape(const Shape& shape) {
                 if (ovL > 32767) ovL = 32767;
                 short ov = static_cast<short>(ovL);
                 if (ov < 2 && cr > 0) ov = 2;
+                // Clamp oval to rect dimensions so large radii give a pill, not an ellipse.
+                { short rw=static_cast<short>(r.right-r.left), rh=static_cast<short>(r.bottom-r.top);
+                  short mx=static_cast<short>(rw<rh?rw:rh); if(ov>mx) ov=mx; }
                 if (shape.hasFill) {
                     RGBColor c = shape.fillColor; RGBForeColor(&c);
                     if (ov > 0) PaintRoundRect(&r, ov, ov); else PaintRect(&r);
@@ -752,6 +755,9 @@ static void DrawFrame(const Frame& frame) {
         if (fovL > 32767) fovL = 32767;
         fov = static_cast<short>(fovL);
         if (fov < 2 && frame.cornerRadius > 0) fov = 2;
+        // Clamp oval to rect dimensions — Figma caps effective radius at min(w,h)/2.
+        { short rw=static_cast<short>(r.right-r.left), rh=static_cast<short>(r.bottom-r.top);
+          short mx=static_cast<short>(rw<rh?rw:rh); if(fov>mx) fov=mx; }
     }
 
     // Fill
