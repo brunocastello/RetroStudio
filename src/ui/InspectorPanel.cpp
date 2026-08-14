@@ -570,15 +570,6 @@ void DrawInspectorPanel() {
         RGBForeColor(&hint2); TextSize(9);
         PStrC("Click to change", ps2); MoveTo(48, static_cast<short>(y2 + 13)); DrawString(ps2);
         TextSize(11);
-        // Opacity field — right side of swatch row
-        {
-            UInt8 opV2 = gSelectedFrame->opacity;
-            RGBForeColor(&labelClr2); TextSize(9);
-            PStrC("%", ps2); MoveTo(static_cast<short>(cRight - 6), static_cast<short>(y2 + 13)); DrawString(ps2);
-            TextSize(11);
-            DrawNumField(static_cast<short>(cRight - 36), static_cast<short>(y2 + 13), 28,
-                         kFieldOpacity, static_cast<SInt32>(opV2), sOpacityRect);
-        }
         y2 = static_cast<short>(y2 + 26);
 
         // STROKE
@@ -602,15 +593,25 @@ void DrawInspectorPanel() {
         }
         y2 = static_cast<short>(y2 + 24);
 
-        // CORNER RADIUS
+        // APPEARANCE (opacity + corner radius)
         {
+            y2 = DrawSectionHeader(y2, "APPEARANCE", portRect);
+            y2 = static_cast<short>(y2 + 5);
+            UInt8 opV2 = gSelectedFrame->opacity;
             SInt16 mfCr = gSelectedFrame->cornerRadius;
-            y2 = DrawSectionHeader(y2, "CORNER", portRect);
-            y2 = static_cast<short>(y2 + 6);
+            // Left col: Opacity
             RGBForeColor(&labelClr2); TextSize(9);
-            PStrC("R", ps2); MoveTo(6, static_cast<short>(y2 + 12)); DrawString(ps2);
+            PStrC("Op", ps2); MoveTo(6, static_cast<short>(y2 + 12)); DrawString(ps2);
             TextSize(11);
-            DrawNumField(18, static_cast<short>(y2 + 12), 40, kFieldCornerRadius,
+            DrawNumField(22, static_cast<short>(y2 + 12), 32, kFieldOpacity,
+                         static_cast<SInt32>(opV2), sOpacityRect);
+            RGBForeColor(&labelClr2); TextSize(9);
+            PStrC("%", ps2); MoveTo(56, static_cast<short>(y2 + 12)); DrawString(ps2);
+            TextSize(11);
+            // Right col: Corner radius
+            PStrC("R", ps2); MoveTo(84, static_cast<short>(y2 + 12)); DrawString(ps2);
+            TextSize(11);
+            DrawNumField(96, static_cast<short>(y2 + 12), 40, kFieldCornerRadius,
                          static_cast<SInt32>(mfCr), sCornerRadiusRect);
             y2 = static_cast<short>(y2 + 22);
         }
@@ -1006,16 +1007,6 @@ void DrawInspectorPanel() {
     RGBForeColor(&hint); TextSize(9);
     PStrC("Click to change", ps); MoveTo(48, static_cast<short>(y + 13)); DrawString(ps);
     TextSize(11);
-    // Opacity field — right side of swatch row
-    {
-        UInt8 opV = gSelectedShape ? gSelectedShape->opacity
-                  : (gSelectedFrame ? gSelectedFrame->opacity : 100);
-        RGBForeColor(&labelClr); TextSize(9);
-        PStrC("%", ps); MoveTo(static_cast<short>(cRight - 6), static_cast<short>(y + 13)); DrawString(ps);
-        TextSize(11);
-        DrawNumField(static_cast<short>(cRight - 36), static_cast<short>(y + 13), 28,
-                     kFieldOpacity, static_cast<SInt32>(opV), sOpacityRect);
-    }
     y = static_cast<short>(y + 26);
 
     // -------------------------------------------------------------- STROKE --
@@ -1126,89 +1117,115 @@ void DrawInspectorPanel() {
         y = static_cast<short>(y + 22);
     }
 
-    // ---------------------------------------------------------- CORNER RADIUS --
-    // Shown for frames and rectangle shapes; not for ellipses or text.
+    // ---------------------------------------------------------- APPEARANCE --
+    // Always shown. Left col: Opacity. Right col: Corner radius (rects + frames only).
     {
         bool isRectSel  = (gSelectedShape && gSelectedShape->GetType() == Shape::kRectangle);
         bool isFrameSel = (!gSelectedShape && gSelectedFrame);
-        if (isRectSel || isFrameSel) {
-            bool indiv = isRectSel
-                ? static_cast<const RectShape*>(gSelectedShape)->cornerIndividual
-                : gSelectedFrame->cornerIndividual;
+        bool showCorner = (isRectSel || isFrameSel);
+        bool indiv = showCorner && (isRectSel
+            ? static_cast<const RectShape*>(gSelectedShape)->cornerIndividual
+            : gSelectedFrame->cornerIndividual);
 
-            y = DrawSectionHeader(y, "CORNER", portRect);
+        y = DrawSectionHeader(y, "APPEARANCE", portRect);
 
-            // Individual-corners toggle button in header row
-            {
-                Rect tBtn = { static_cast<short>(y-15), static_cast<short>(cRight-16),
-                              static_cast<short>(y-1),  static_cast<short>(cRight-2) };
-                sCornerIndividualBtnRect = tBtn;
-                if (indiv) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
-                else        { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
-                PaintRect(&tBtn);
-                RGBColor bd={0x7777,0x7777,0x7777}; RGBForeColor(&bd); FrameRect(&tBtn);
-                RGBColor ic = indiv ? RGBColor{0xFFFF,0xFFFF,0xFFFF} : RGBColor{0x3333,0x3333,0x3333};
-                RGBForeColor(&ic);
-                for (int row2=0; row2<2; ++row2) for (int col2=0; col2<2; ++col2) {
-                    Rect sq = { static_cast<short>(y-14+row2*6), static_cast<short>(cRight-15+col2*6),
-                                static_cast<short>(y-9+row2*6),  static_cast<short>(cRight-10+col2*6) };
-                    FrameRect(&sq);
-                }
+        // Individual-corners toggle in header — only when corner is applicable
+        if (showCorner) {
+            Rect tBtn = { static_cast<short>(y-15), static_cast<short>(cRight-16),
+                          static_cast<short>(y-1),  static_cast<short>(cRight-2) };
+            sCornerIndividualBtnRect = tBtn;
+            if (indiv) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
+            else        { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
+            PaintRect(&tBtn);
+            RGBColor bd={0x7777,0x7777,0x7777}; RGBForeColor(&bd); FrameRect(&tBtn);
+            RGBColor ic = indiv ? RGBColor{0xFFFF,0xFFFF,0xFFFF} : RGBColor{0x3333,0x3333,0x3333};
+            RGBForeColor(&ic);
+            for (int row2=0; row2<2; ++row2) for (int col2=0; col2<2; ++col2) {
+                Rect sq = { static_cast<short>(y-14+row2*6), static_cast<short>(cRight-15+col2*6),
+                            static_cast<short>(y-9+row2*6),  static_cast<short>(cRight-10+col2*6) };
+                FrameRect(&sq);
             }
+        } else {
+            sCornerIndividualBtnRect = {0,0,0,0};
+        }
 
-            y = static_cast<short>(y + 6);
+        y = static_cast<short>(y + 5);
 
-            if (!indiv) {
-                // Uniform: single R field
+        UInt8 opV = gSelectedShape ? gSelectedShape->opacity
+                  : (gSelectedFrame ? gSelectedFrame->opacity : 100);
+
+        if (!indiv) {
+            // Single row: [Op% field] [R field]
+            RGBForeColor(&labelClr); TextSize(9);
+            PStrC("Op", ps); MoveTo(6, static_cast<short>(y + 12)); DrawString(ps);
+            TextSize(11);
+            DrawNumField(22, static_cast<short>(y + 12), 32, kFieldOpacity,
+                         static_cast<SInt32>(opV), sOpacityRect);
+            RGBForeColor(&labelClr); TextSize(9);
+            PStrC("%", ps); MoveTo(56, static_cast<short>(y + 12)); DrawString(ps);
+            TextSize(11);
+            if (showCorner) {
                 SInt16 crVal = isRectSel
                     ? static_cast<const RectShape*>(gSelectedShape)->cornerRadius
                     : gSelectedFrame->cornerRadius;
                 RGBForeColor(&labelClr); TextSize(9);
-                PStrC("R", ps); MoveTo(6, static_cast<short>(y + 12)); DrawString(ps);
+                PStrC("R", ps); MoveTo(84, static_cast<short>(y + 12)); DrawString(ps);
                 TextSize(11);
-                DrawNumField(18, static_cast<short>(y + 12), 40, kFieldCornerRadius,
+                DrawNumField(96, static_cast<short>(y + 12), 40, kFieldCornerRadius,
                              static_cast<SInt32>(crVal), sCornerRadiusRect);
                 sCornerTLRect = sCornerTRRect = sCornerBRRect = sCornerBLRect = {0,0,0,0};
-                y = static_cast<short>(y + 22);
             } else {
-                // Individual: 2×2 grid (TL/TR top row, BL/BR bottom row)
-                SInt16 vtl, vtr, vbr, vbl;
-                if (isRectSel) {
-                    const auto* rs2 = static_cast<const RectShape*>(gSelectedShape);
-                    vtl=rs2->cornerTL; vtr=rs2->cornerTR; vbr=rs2->cornerBR; vbl=rs2->cornerBL;
-                } else {
-                    vtl=gSelectedFrame->cornerTL; vtr=gSelectedFrame->cornerTR;
-                    vbr=gSelectedFrame->cornerBR; vbl=gSelectedFrame->cornerBL;
-                }
-                short halfW2 = static_cast<short>((cRight - 8) / 2);
-                short col2X2 = static_cast<short>(4 + halfW2 + 2);
-                short fldW2  = static_cast<short>(halfW2 - 22);
-                // Row 1: TL | TR
-                RGBForeColor(&labelClr); TextSize(9);
-                PStrC("TL", ps); MoveTo(4, static_cast<short>(y+12)); DrawString(ps);
-                TextSize(11);
-                DrawNumField(22, static_cast<short>(y+12), fldW2, kFieldCornerTL,
-                             static_cast<SInt32>(vtl), sCornerTLRect);
-                RGBForeColor(&labelClr); TextSize(9);
-                PStrC("TR", ps); MoveTo(col2X2, static_cast<short>(y+12)); DrawString(ps);
-                TextSize(11);
-                DrawNumField(static_cast<short>(col2X2+18), static_cast<short>(y+12), fldW2,
-                             kFieldCornerTR, static_cast<SInt32>(vtr), sCornerTRRect);
-                y = static_cast<short>(y + 18);
-                // Row 2: BL | BR
-                RGBForeColor(&labelClr); TextSize(9);
-                PStrC("BL", ps); MoveTo(4, static_cast<short>(y+12)); DrawString(ps);
-                TextSize(11);
-                DrawNumField(22, static_cast<short>(y+12), fldW2, kFieldCornerBL,
-                             static_cast<SInt32>(vbl), sCornerBLRect);
-                RGBForeColor(&labelClr); TextSize(9);
-                PStrC("BR", ps); MoveTo(col2X2, static_cast<short>(y+12)); DrawString(ps);
-                TextSize(11);
-                DrawNumField(static_cast<short>(col2X2+18), static_cast<short>(y+12), fldW2,
-                             kFieldCornerBR, static_cast<SInt32>(vbr), sCornerBRRect);
-                sCornerRadiusRect = {0,0,0,0};
-                y = static_cast<short>(y + 22);
+                sCornerRadiusRect = sCornerTLRect = sCornerTRRect = sCornerBRRect = sCornerBLRect = {0,0,0,0};
             }
+            y = static_cast<short>(y + 22);
+        } else {
+            // Individual mode: Opacity row, then 2×2 corner grid
+            RGBForeColor(&labelClr); TextSize(9);
+            PStrC("Op", ps); MoveTo(6, static_cast<short>(y + 12)); DrawString(ps);
+            TextSize(11);
+            DrawNumField(22, static_cast<short>(y + 12), 32, kFieldOpacity,
+                         static_cast<SInt32>(opV), sOpacityRect);
+            RGBForeColor(&labelClr); TextSize(9);
+            PStrC("%", ps); MoveTo(56, static_cast<short>(y + 12)); DrawString(ps);
+            TextSize(11);
+            y = static_cast<short>(y + 22);
+
+            SInt16 vtl, vtr, vbr, vbl;
+            if (isRectSel) {
+                const auto* rs2 = static_cast<const RectShape*>(gSelectedShape);
+                vtl=rs2->cornerTL; vtr=rs2->cornerTR; vbr=rs2->cornerBR; vbl=rs2->cornerBL;
+            } else {
+                vtl=gSelectedFrame->cornerTL; vtr=gSelectedFrame->cornerTR;
+                vbr=gSelectedFrame->cornerBR; vbl=gSelectedFrame->cornerBL;
+            }
+            short halfW2 = static_cast<short>((cRight - 8) / 2);
+            short col2X2 = static_cast<short>(4 + halfW2 + 2);
+            short fldW2  = static_cast<short>(halfW2 - 22);
+            // Row 1: TL | TR
+            RGBForeColor(&labelClr); TextSize(9);
+            PStrC("TL", ps); MoveTo(4, static_cast<short>(y+12)); DrawString(ps);
+            TextSize(11);
+            DrawNumField(22, static_cast<short>(y+12), fldW2, kFieldCornerTL,
+                         static_cast<SInt32>(vtl), sCornerTLRect);
+            RGBForeColor(&labelClr); TextSize(9);
+            PStrC("TR", ps); MoveTo(col2X2, static_cast<short>(y+12)); DrawString(ps);
+            TextSize(11);
+            DrawNumField(static_cast<short>(col2X2+18), static_cast<short>(y+12), fldW2,
+                         kFieldCornerTR, static_cast<SInt32>(vtr), sCornerTRRect);
+            y = static_cast<short>(y + 18);
+            // Row 2: BL | BR
+            RGBForeColor(&labelClr); TextSize(9);
+            PStrC("BL", ps); MoveTo(4, static_cast<short>(y+12)); DrawString(ps);
+            TextSize(11);
+            DrawNumField(22, static_cast<short>(y+12), fldW2, kFieldCornerBL,
+                         static_cast<SInt32>(vbl), sCornerBLRect);
+            RGBForeColor(&labelClr); TextSize(9);
+            PStrC("BR", ps); MoveTo(col2X2, static_cast<short>(y+12)); DrawString(ps);
+            TextSize(11);
+            DrawNumField(static_cast<short>(col2X2+18), static_cast<short>(y+12), fldW2,
+                         kFieldCornerBR, static_cast<SInt32>(vbr), sCornerBRRect);
+            sCornerRadiusRect = {0,0,0,0};
+            y = static_cast<short>(y + 22);
         }
     }
 
