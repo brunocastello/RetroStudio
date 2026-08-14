@@ -1793,7 +1793,7 @@ void ApplyInspectorEdit() {
         }
     }
     if (sActiveField == kFieldCornerRadius) {
-        if (val < 0) val = 0; if (val > 500) val = 500;
+        if (val < 0) val = 0; if (val > 9999) val = 9999;
         SInt16 nv = static_cast<SInt16>(val);
         if (applyMultiFrame) {
             bool any = false;

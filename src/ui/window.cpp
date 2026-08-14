@@ -530,8 +530,9 @@ static void DrawShape(const Shape& shape) {
         case Shape::kLine: {
             SInt16 cr = (shape.GetType() == Shape::kRectangle)
                         ? static_cast<const RectShape&>(shape).cornerRadius : 0;
-            short ov = (cr > 0)
-                       ? static_cast<short>(SInt32(cr) * 2 * gCanvasZoom / 100) : 0;
+            SInt32 ovL = (cr > 0) ? (SInt32(cr) * 2 * gCanvasZoom / 100) : 0;
+            if (ovL > 32767) ovL = 32767;
+            short ov = static_cast<short>(ovL);
             if (ov < 2 && cr > 0) ov = 2;
             if (shape.hasFill) {
                 RGBColor c = shape.fillColor; RGBForeColor(&c);
@@ -660,8 +661,10 @@ static void DrawFrame(const Frame& frame) {
     // Fill
     RGBColor bg = frame.backgroundColor;
     RGBForeColor(&bg);
-    short fov = (frame.cornerRadius > 0)
-                ? static_cast<short>(SInt32(frame.cornerRadius) * 2 * gCanvasZoom / 100) : 0;
+    SInt32 fovL = (frame.cornerRadius > 0)
+                  ? (SInt32(frame.cornerRadius) * 2 * gCanvasZoom / 100) : 0;
+    if (fovL > 32767) fovL = 32767;
+    short fov = static_cast<short>(fovL);
     if (fov < 2 && frame.cornerRadius > 0) fov = 2;
     if (fov > 0) PaintRoundRect(&r, fov, fov); else PaintRect(&r);
 
