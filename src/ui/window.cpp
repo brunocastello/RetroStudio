@@ -523,7 +523,10 @@ static void DrawShapeNameLabel(const Shape& shape) {
 }
 
 // Fill or frame a rect with four independent corner radii (already in screen pixels).
-// Builds a closed QuickDraw region via OpenRgn so each corner can differ.
+// Compositional region approach: start with full RectRgn, subtract each corner's
+// "cut piece" (corner square minus inscribed oval) via DiffRgn.
+// This is reliable because FrameOval in OpenRgn mode records the full oval outline
+// cleanly, whereas FrameArc only records partial arcs and can produce XOR artifacts.
 static void ApplyRoundRectCorners(const Rect& r,
                                    short tl, short tr, short br, short bl,
                                    bool doFill) {
@@ -536,36 +539,35 @@ static void ApplyRoundRectCorners(const Rect& r,
     if (tl < 0) tl = 0; if (tr < 0) tr = 0;
     if (br < 0) br = 0; if (bl < 0) bl = 0;
 
-    RgnHandle rgn = NewRgn();
-    OpenRgn();
+    RgnHandle rgn     = NewRgn();
+    RgnHandle sqRgn   = NewRgn();
+    RgnHandle ovalRgn = NewRgn();
+    RgnHandle cutRgn  = NewRgn();
 
-    MoveTo(static_cast<short>(x + tl), y);
-    LineTo(static_cast<short>(x + w - tr), y);
-    if (tr > 0) {
-        Rect o = { y, static_cast<short>(x+w-2*tr),
-                   static_cast<short>(y+2*tr), static_cast<short>(x+w) };
-        FrameArc(&o, 270, 90);
-    }
-    LineTo(static_cast<short>(x + w), static_cast<short>(y + h - br));
-    if (br > 0) {
-        Rect o = { static_cast<short>(y+h-2*br), static_cast<short>(x+w-2*br),
-                   static_cast<short>(y+h), static_cast<short>(x+w) };
-        FrameArc(&o, 0, 90);
-    }
-    LineTo(static_cast<short>(x + bl), static_cast<short>(y + h));
-    if (bl > 0) {
-        Rect o = { static_cast<short>(y+h-2*bl), x,
-                   static_cast<short>(y+h), static_cast<short>(x+2*bl) };
-        FrameArc(&o, 90, 90);
-    }
-    LineTo(x, static_cast<short>(y + tl));
-    if (tl > 0) {
-        Rect o = { y, x, static_cast<short>(y+2*tl), static_cast<short>(x+2*tl) };
-        FrameArc(&o, 180, 90);
-    }
+    RectRgn(rgn, &r);  // start with full rectangle
 
-    CloseRgn(rgn);
+    // For each non-zero corner: subtract the square corner piece outside the arc.
+    // cutCorner(cx,cy,cr): corner square at (cx,cy) of size 2cr×2cr; oval inscribed
+    // in that square; cut = square - oval; remove cut from rgn.
+    auto cutCorner = [&](short cx, short cy, short cr) {
+        if (cr <= 0) return;
+        Rect sq = { cy, cx, static_cast<short>(cy + 2*cr), static_cast<short>(cx + 2*cr) };
+        RectRgn(sqRgn, &sq);
+        OpenRgn(); FrameOval(&sq); CloseRgn(ovalRgn);
+        DiffRgn(sqRgn, ovalRgn, cutRgn);
+        DiffRgn(rgn, cutRgn, rgn);
+    };
+
+    cutCorner(x, y, tl);
+    cutCorner(static_cast<short>(x + w - 2*tr), y, tr);
+    cutCorner(static_cast<short>(x + w - 2*br), static_cast<short>(y + h - 2*br), br);
+    cutCorner(x, static_cast<short>(y + h - 2*bl), bl);
+
     if (doFill) PaintRgn(rgn); else FrameRgn(rgn);
+
+    DisposeRgn(cutRgn);
+    DisposeRgn(ovalRgn);
+    DisposeRgn(sqRgn);
     DisposeRgn(rgn);
 }
 
