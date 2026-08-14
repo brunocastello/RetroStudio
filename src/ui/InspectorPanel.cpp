@@ -78,6 +78,7 @@ static Rect sCornerBRRect             = {0,0,0,0};
 static Rect sCornerBLRect             = {0,0,0,0};
 static Rect sCornerIndividualBtnRect  = {0,0,0,0};
 static Rect sOpacityRect              = {0,0,0,0};
+static Rect sRotationRect             = {0,0,0,0};
 
 // Auto Layout controls (frame selected)
 static Rect sLayoutModeRect[3]       = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
@@ -109,7 +110,7 @@ enum EditField { kNoField, kFieldX, kFieldY, kFieldW, kFieldH, kFieldStrokeWidth
                  kFieldPadH, kFieldPadV, kFieldPadTop, kFieldPadRight, kFieldPadBottom, kFieldPadLeft,
                  kFieldCounterGap, kFieldCornerRadius,
                  kFieldCornerTL, kFieldCornerTR, kFieldCornerBR, kFieldCornerBL,
-                 kFieldOpacity };
+                 kFieldOpacity, kFieldRotation };
 static EditField sActiveField = kNoField;
 static char      sEditBuf[12] = {};
 static int       sEditLen     = 0;
@@ -519,7 +520,7 @@ void DrawInspectorPanel() {
     sShapeWFxRect = sShapeWFlRect = sShapeHFxRect = sShapeHFlRect = {0,0,0,0};
     sLayoutCounterGapRect = sLayoutCounterGapModeRect = {0,0,0,0};
     sCornerRadiusRect = sCornerTLRect = sCornerTRRect = sCornerBRRect = sCornerBLRect = {0,0,0,0};
-    sCornerIndividualBtnRect = sOpacityRect = {0,0,0,0};
+    sCornerIndividualBtnRect = sOpacityRect = sRotationRect = {0,0,0,0};
 
     if (!gSelectedFrame && !gSelectedShape && gSelectedFrames.empty()) {
         SetOrigin(0, 0);
@@ -614,6 +615,16 @@ void DrawInspectorPanel() {
             DrawNumField(96, static_cast<short>(y2 + 12), 40, kFieldCornerRadius,
                          static_cast<SInt32>(mfCr), sCornerRadiusRect);
             y2 = static_cast<short>(y2 + 22);
+            // Rotation row
+            {
+                SInt16 rotV2 = gSelectedFrame->rotation;
+                RGBForeColor(&labelClr2); TextSize(9);
+                PStrC("\xB0", ps2); MoveTo(6, static_cast<short>(y2 + 12)); DrawString(ps2);
+                TextSize(11);
+                DrawNumField(18, static_cast<short>(y2 + 12), 36, kFieldRotation,
+                             static_cast<SInt32>(rotV2), sRotationRect);
+                y2 = static_cast<short>(y2 + 22);
+            }
         }
 
         // POSITION — X/Y show gSelectedFrame; editing applies delta to all
@@ -1227,6 +1238,17 @@ void DrawInspectorPanel() {
             sCornerRadiusRect = {0,0,0,0};
             y = static_cast<short>(y + 22);
         }
+        // Rotation row (all shapes and frames)
+        {
+            SInt16 rotV = gSelectedShape ? gSelectedShape->rotation
+                        : (gSelectedFrame ? gSelectedFrame->rotation : 0);
+            RGBForeColor(&labelClr); TextSize(9);
+            PStrC("\xB0", ps); MoveTo(6, static_cast<short>(y + 12)); DrawString(ps);
+            TextSize(11);
+            DrawNumField(18, static_cast<short>(y + 12), 36, kFieldRotation,
+                         static_cast<SInt32>(rotV), sRotationRect);
+            y = static_cast<short>(y + 22);
+        }
     }
 
     // ---------------------------------------------------------- LAYOUT --
@@ -1654,6 +1676,10 @@ static void StartEditForField(EditField field) {
             if (gSelectedShape)       StartEdit(field, static_cast<SInt32>(gSelectedShape->opacity));
             else if (gSelectedFrame)  StartEdit(field, static_cast<SInt32>(gSelectedFrame->opacity));
             break;
+        case kFieldRotation:
+            if (gSelectedShape)       StartEdit(field, static_cast<SInt32>(gSelectedShape->rotation));
+            else if (gSelectedFrame)  StartEdit(field, static_cast<SInt32>(gSelectedFrame->rotation));
+            break;
         case kFieldPadH:
             if (gSelectedFrame) {
                 std::string s = padCompactStr(gSelectedFrame->paddingLeft, gSelectedFrame->paddingRight);
@@ -1692,8 +1718,9 @@ static EditField TabToNextField(EditField cur, bool reverse) {
                                     : (gSelectedFrame ? gSelectedFrame->hasStroke : false);
     if (hasStroke) order.push_back(kFieldStrokeWidth);
 
-    // Opacity (all shape and frame types)
+    // Opacity + Rotation (all shape and frame types)
     order.push_back(kFieldOpacity);
+    order.push_back(kFieldRotation);
 
     // Corner radius (rect shapes and frames)
     bool isRectShape2 = (gSelectedShape && gSelectedShape->GetType() == Shape::kRectangle);
@@ -1987,6 +2014,24 @@ void ApplyInspectorEdit() {
             PushUndo(); gSelectedShape->opacity = nv; changed = true;
         } else if (gSelectedFrame && gSelectedFrame->opacity != nv) {
             PushUndo(); gSelectedFrame->opacity = nv; changed = true;
+        }
+    }
+    if (sActiveField == kFieldRotation) {
+        // Wrap to 0–359
+        val = ((val % 360) + 360) % 360;
+        SInt16 nv = static_cast<SInt16>(val);
+        if (applyMultiFrame) {
+            bool any = false;
+            for (Frame* f : gSelectedFrames) if (f->rotation != nv) { any = true; break; }
+            if (any) { PushUndo(); for (Frame* f : gSelectedFrames) f->rotation = nv; changed = true; }
+        } else if (applyMulti) {
+            bool any = false;
+            for (Shape* s : gSelectedShapes) if (s->rotation != nv) { any = true; break; }
+            if (any) { PushUndo(); for (Shape* s : gSelectedShapes) s->rotation = nv; changed = true; }
+        } else if (gSelectedShape && gSelectedShape->rotation != nv) {
+            PushUndo(); gSelectedShape->rotation = nv; changed = true;
+        } else if (gSelectedFrame && gSelectedFrame->rotation != nv) {
+            PushUndo(); gSelectedFrame->rotation = nv; changed = true;
         }
     }
     if (!applyMultiFrame && sActiveField == kFieldStrokeWidth) {
@@ -2569,6 +2614,11 @@ void HandleInspectorClick(Point localPt) {
         UInt8 v = gSelectedShape ? gSelectedShape->opacity
                 : (gSelectedFrame ? gSelectedFrame->opacity : 100);
         StartEdit(kFieldOpacity, static_cast<SInt32>(v)); return;
+    }
+    if (PtInRect(localPt, &sRotationRect)) {
+        SInt16 v = gSelectedShape ? gSelectedShape->rotation
+                 : (gSelectedFrame ? gSelectedFrame->rotation : 0);
+        StartEdit(kFieldRotation, static_cast<SInt32>(v)); return;
     }
 }
 

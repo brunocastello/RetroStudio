@@ -6,6 +6,7 @@
 #include "../canvas/AutoLayout.h"
 #include <algorithm>
 #include <cstring>
+#include <cmath>
 
 WindowRef  gMainWindow    = nullptr;
 WindowRef  gAboutWindow   = nullptr;
@@ -586,6 +587,75 @@ static short ScaleCornerRadius(SInt16 cr) {
     return static_cast<short>(v);
 }
 
+// Rotate 4 rect corners and draw as a filled/stroked polygon.
+// angleDeg is clockwise in screen coordinates (Y-down).
+static void DrawRotatedRect(const Rect& r, short angleDeg,
+                             bool doFill, const RGBColor& fillC,
+                             bool doStroke, const RGBColor& strokeC, short sw) {
+    double cx = (r.left + r.right)  * 0.5;
+    double cy = (r.top  + r.bottom) * 0.5;
+    double hw = (r.right  - r.left) * 0.5;
+    double hh = (r.bottom - r.top)  * 0.5;
+    double rad = angleDeg * 3.14159265358979323846 / 180.0;
+    double cosA = std::cos(rad), sinA = std::sin(rad);
+    // 4 corners: TL TR BR BL
+    double lx[4] = { -hw,  hw,  hw, -hw };
+    double ly[4] = { -hh, -hh,  hh,  hh };
+    Point pts[4];
+    for (int i = 0; i < 4; ++i) {
+        pts[i].h = static_cast<short>(cx + lx[i]*cosA - ly[i]*sinA + 0.5);
+        pts[i].v = static_cast<short>(cy + lx[i]*sinA + ly[i]*cosA + 0.5);
+    }
+    PolyHandle poly = OpenPoly();
+    MoveTo(pts[0].h, pts[0].v);
+    LineTo(pts[1].h, pts[1].v); LineTo(pts[2].h, pts[2].v);
+    LineTo(pts[3].h, pts[3].v); LineTo(pts[0].h, pts[0].v);
+    ClosePoly();
+    if (doFill)   { RGBColor c = fillC;   RGBForeColor(&c); PaintPoly(poly); }
+    if (doStroke) { RGBColor c = strokeC; RGBForeColor(&c); PenSize(sw,sw); FramePoly(poly); PenSize(1,1); }
+    KillPoly(poly);
+}
+
+// Approximate a rotated ellipse as a 36-gon polygon.
+static void DrawRotatedEllipse(const Rect& r, short angleDeg,
+                                bool doFill, const RGBColor& fillC,
+                                bool doStroke, const RGBColor& strokeC, short sw) {
+    double cx = (r.left + r.right)  * 0.5;
+    double cy = (r.top  + r.bottom) * 0.5;
+    double hw = (r.right  - r.left) * 0.5;
+    double hh = (r.bottom - r.top)  * 0.5;
+    double rotRad = angleDeg * 3.14159265358979323846 / 180.0;
+    double cosR = std::cos(rotRad), sinR = std::sin(rotRad);
+    const int N = 36;
+    PolyHandle poly = OpenPoly();
+    for (int i = 0; i <= N; ++i) {
+        double t   = 2.0 * 3.14159265358979323846 * i / N;
+        double ex  = hw * std::cos(t);
+        double ey  = hh * std::sin(t);
+        short ph   = static_cast<short>(cx + ex*cosR - ey*sinR + 0.5);
+        short pv   = static_cast<short>(cy + ex*sinR + ey*cosR + 0.5);
+        if (i == 0) MoveTo(ph, pv); else LineTo(ph, pv);
+    }
+    ClosePoly();
+    if (doFill)   { RGBColor c = fillC;   RGBForeColor(&c); PaintPoly(poly); }
+    if (doStroke) { RGBColor c = strokeC; RGBForeColor(&c); PenSize(sw,sw); FramePoly(poly); PenSize(1,1); }
+    KillPoly(poly);
+}
+
+// Returns true if screen point `pt` is inside `bounds` rotated by `angleDeg` clockwise.
+static bool HitTestRotated(const Bounds2& bounds, short angleDeg, Point pt) {
+    Rect r = CanvasRect(bounds);
+    double cx = (r.left + r.right)  * 0.5;
+    double cy = (r.top  + r.bottom) * 0.5;
+    double hw = (r.right  - r.left) * 0.5;
+    double hh = (r.bottom - r.top)  * 0.5;
+    double rad = -angleDeg * 3.14159265358979323846 / 180.0;  // inverse rotation
+    double dx = pt.h - cx, dy = pt.v - cy;
+    double rx = dx * std::cos(rad) - dy * std::sin(rad);
+    double ry = dx * std::sin(rad) + dy * std::cos(rad);
+    return (rx >= -hw && rx <= hw && ry >= -hh && ry <= hh);
+}
+
 static void DrawShape(const Shape& shape) {
     if (!shape.visible) return;
     Rect r = CanvasRect(shape.bounds);
@@ -598,6 +668,14 @@ static void DrawShape(const Shape& shape) {
     switch (shape.GetType()) {
         case Shape::kRectangle:
         case Shape::kLine: {
+            if (shape.rotation != 0) {
+                // Rotated rect: polygon path, corner radius ignored
+                short sw = static_cast<short>(shape.strokeWidth);
+                DrawRotatedRect(r, shape.rotation,
+                                shape.hasFill, shape.fillColor,
+                                shape.hasStroke, shape.strokeColor, sw);
+                break;
+            }
             if (shape.GetType() == Shape::kRectangle &&
                 static_cast<const RectShape&>(shape).cornerIndividual) {
                 const auto& rs = static_cast<const RectShape&>(shape);
@@ -647,16 +725,23 @@ static void DrawShape(const Shape& shape) {
             break;
         }
         case Shape::kEllipse:
-            if (shape.hasFill) {
-                RGBColor c = shape.fillColor; RGBForeColor(&c); PaintOval(&r);
-            }
-            if (shape.hasStroke) {
-                RGBColor c = shape.strokeColor; RGBForeColor(&c);
+            if (shape.rotation != 0) {
                 short sw = static_cast<short>(shape.strokeWidth);
-                Rect sr = r;
-                if (shape.strokeAlign == 2) { sr.top-=sw; sr.left-=sw; sr.bottom+=sw; sr.right+=sw; }
-                else if (shape.strokeAlign == 0) { short e=sw/2; sr.top-=e; sr.left-=e; sr.bottom+=e; sr.right+=e; }
-                PenSize(sw, sw); FrameOval(&sr); PenSize(1, 1);
+                DrawRotatedEllipse(r, shape.rotation,
+                                   shape.hasFill, shape.fillColor,
+                                   shape.hasStroke, shape.strokeColor, sw);
+            } else {
+                if (shape.hasFill) {
+                    RGBColor c = shape.fillColor; RGBForeColor(&c); PaintOval(&r);
+                }
+                if (shape.hasStroke) {
+                    RGBColor c = shape.strokeColor; RGBForeColor(&c);
+                    short sw = static_cast<short>(shape.strokeWidth);
+                    Rect sr = r;
+                    if (shape.strokeAlign == 2) { sr.top-=sw; sr.left-=sw; sr.bottom+=sw; sr.right+=sw; }
+                    else if (shape.strokeAlign == 0) { short e=sw/2; sr.top-=e; sr.left-=e; sr.bottom+=e; sr.right+=e; }
+                    PenSize(sw, sw); FrameOval(&sr); PenSize(1, 1);
+                }
             }
             break;
         case Shape::kText: {
@@ -1060,8 +1145,10 @@ static HitResult HitTestFrame(Frame* f, Point pt) {
                 if (res.found) return res;
             } else {
                 const auto& s = f->children[it->idx];
-                Rect sr = CanvasRect(s->bounds);
-                if (PtInRect(pt, &sr)) return { f, s.get(), true };
+                bool hit = (s->rotation != 0)
+                    ? HitTestRotated(s->bounds, s->rotation, pt)
+                    : PtInRect(pt, &CanvasRect(s->bounds)) != 0;
+                if (hit) return { f, s.get(), true };
             }
         }
     } else {
@@ -1071,8 +1158,11 @@ static HitResult HitTestFrame(Frame* f, Point pt) {
             if (res.found) return res;
         }
         for (auto it = f->children.rbegin(); it != f->children.rend(); ++it) {
-            Rect sr = CanvasRect((*it)->bounds);
-            if (PtInRect(pt, &sr)) return { f, it->get(), true };
+            const auto& s = *it;
+            bool hit = (s->rotation != 0)
+                ? HitTestRotated(s->bounds, s->rotation, pt)
+                : PtInRect(pt, &CanvasRect(s->bounds)) != 0;
+            if (hit) return { f, s.get(), true };
         }
     }
     return { f, nullptr, true };  // hit frame body
@@ -1479,8 +1569,10 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                 } else {
                     if (ref.idx < (int)gDocument->rootShapes.size()) {
                         Shape* s = gDocument->rootShapes[ref.idx].get();
-                        Rect r = CanvasRect(s->bounds);
-                        if (PtInRect(pt, &r)) { hitShape = s; hitFrame = nullptr; found = true; }
+                        bool hit = (s->rotation != 0)
+                            ? HitTestRotated(s->bounds, s->rotation, pt)
+                            : PtInRect(pt, &CanvasRect(s->bounds)) != 0;
+                        if (hit) { hitShape = s; hitFrame = nullptr; found = true; }
                     }
                 }
             }
@@ -1492,8 +1584,11 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
             }
             if (!found) {
                 for (auto it = gDocument->rootShapes.rbegin(); it != gDocument->rootShapes.rend(); ++it) {
-                    Rect r = CanvasRect((*it)->bounds);
-                    if (PtInRect(pt, &r)) { hitShape = it->get(); hitFrame = nullptr; found = true; break; }
+                    Shape* s = it->get();
+                    bool hit = (s->rotation != 0)
+                        ? HitTestRotated(s->bounds, s->rotation, pt)
+                        : PtInRect(pt, &CanvasRect(s->bounds)) != 0;
+                    if (hit) { hitShape = s; hitFrame = nullptr; found = true; break; }
                 }
             }
         }

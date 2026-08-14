@@ -42,6 +42,7 @@ public:
     UInt8       wSizing     = 0;
     UInt8       hSizing     = 0;
     UInt8       opacity     = 100;  // 0–100 percent
+    SInt16      rotation    = 0;    // degrees, 0–359 clockwise
 };
 
 class RectShape : public Shape {

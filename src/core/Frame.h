@@ -30,6 +30,7 @@ public:
     bool        locked          = false;
     bool        clipContent     = true;
     UInt8       opacity         = 100;  // 0–100 percent
+    SInt16      rotation        = 0;    // degrees, 0–359 clockwise (stored; frames not rendered rotated yet)
 
     // Auto Layout — how this frame arranges its children
     LayoutMode   layoutMode           = LayoutMode::None;
