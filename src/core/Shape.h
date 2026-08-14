@@ -41,6 +41,7 @@ public:
     // Per-child sizing within an Auto Layout frame: 0=Fixed, 2=Fill (matches SizingMode values)
     UInt8       wSizing     = 0;
     UInt8       hSizing     = 0;
+    UInt8       opacity     = 100;  // 0–100 percent
 };
 
 class RectShape : public Shape {

@@ -589,6 +589,12 @@ static short ScaleCornerRadius(SInt16 cr) {
 static void DrawShape(const Shape& shape) {
     if (!shape.visible) return;
     Rect r = CanvasRect(shape.bounds);
+    bool shapeOp = (shape.opacity < 100);
+    if (shapeOp) {
+        UInt16 w = static_cast<UInt16>((UInt32)shape.opacity * 65535 / 100);
+        RGBColor oc = { w, w, w };
+        OpColor(&oc); PenMode(blend);
+    }
     switch (shape.GetType()) {
         case Shape::kRectangle:
         case Shape::kLine: {
@@ -739,6 +745,7 @@ static void DrawShape(const Shape& shape) {
         }
         default: break;
     }
+    if (shapeOp) PenNormal();
 }
 
 // Forward-declare so DrawFrame can call itself recursively
@@ -769,10 +776,17 @@ static void DrawFrame(const Frame& frame) {
     }
 
     // Fill
+    bool frameOp = (frame.opacity < 100);
+    if (frameOp) {
+        UInt16 fw = static_cast<UInt16>((UInt32)frame.opacity * 65535 / 100);
+        RGBColor oc = { fw, fw, fw };
+        OpColor(&oc); PenMode(blend);
+    }
     RGBColor bg = frame.backgroundColor;
     RGBForeColor(&bg);
     if (fIndiv) ApplyRoundRectCorners(r, fitl, fitr, fibr, fibl, true);
     else if (fov > 0) PaintRoundRect(&r, fov, fov); else PaintRect(&r);
+    if (frameOp) PenNormal();
 
     // Draw children, optionally clipped and optionally in reverse z-order.
     auto drawChildren = [&]() {
@@ -811,6 +825,11 @@ static void DrawFrame(const Frame& frame) {
     }
 
     // Stroke or default thin border
+    if (frameOp) {
+        UInt16 fw = static_cast<UInt16>((UInt32)frame.opacity * 65535 / 100);
+        RGBColor oc = { fw, fw, fw };
+        OpColor(&oc); PenMode(blend);
+    }
     if (frame.hasStroke) {
         RGBColor c = frame.strokeColor; RGBForeColor(&c);
         short sw = static_cast<short>(frame.strokeWidth);
@@ -827,6 +846,7 @@ static void DrawFrame(const Frame& frame) {
         if (fIndiv) ApplyRoundRectCorners(r, fitl, fitr, fibr, fibl, false);
         else if (fov > 0) FrameRoundRect(&r, fov, fov); else FrameRect(&r);
     }
+    if (frameOp) PenNormal();
 
     // Name label — only on top-level frames (no parent)
     if (frame.parent == nullptr) {

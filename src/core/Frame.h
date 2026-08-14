@@ -29,6 +29,7 @@ public:
     bool        visible         = true;
     bool        locked          = false;
     bool        clipContent     = true;
+    UInt8       opacity         = 100;  // 0–100 percent
 
     // Auto Layout — how this frame arranges its children
     LayoutMode   layoutMode           = LayoutMode::None;

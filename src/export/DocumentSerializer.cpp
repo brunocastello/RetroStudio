@@ -29,7 +29,7 @@ static pascal void NavOpenEventProc(NavEventCallbackMessage msg, NavCBRecPtr, vo
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
 static const UInt32 kMagic   = 0x52535444;  // 'RSTD'
-static const UInt16 kVersion = 15;
+static const UInt16 kVersion = 16;
 
 // Folder Manager constants — defined here because Retro68 Carbon headers
 // don't always expose <Folders.h> constants via <Carbon.h>.
@@ -106,6 +106,7 @@ static void WriteShape(Writer& w, const Shape& s) {
     w.w8(s.strokeAlign);
     w.w8(s.wSizing);
     w.w8(s.hSizing);
+    w.w8(s.opacity);
     if (s.GetType() == Shape::kRectangle) {
         const auto& rs = static_cast<const RectShape&>(s);
         w.w16(static_cast<UInt16>(rs.cornerRadius));
@@ -141,6 +142,7 @@ static std::unique_ptr<Shape> ReadShape(Reader& r, UInt16 ver) {
     UInt8  sa       = r.r8();
     UInt8  wsz      = r.r8();
     UInt8  hsz      = r.r8();
+    UInt8  opac     = (ver >= 16) ? r.r8() : 100;
 
     std::unique_ptr<Shape> shape;
     if (type == Shape::kRectangle) {
@@ -179,6 +181,7 @@ static std::unique_ptr<Shape> ReadShape(Reader& r, UInt16 ver) {
     shape->strokeAlign = sa;
     shape->wSizing     = wsz;
     shape->hSizing     = hsz;
+    shape->opacity     = opac;
     shape->name        = r.rStr();
     return r.ok ? std::move(shape) : nullptr;
 }
@@ -219,6 +222,7 @@ static void WriteFrame(Writer& w, const Frame& f) {
     w.w8(f.cornerIndividual ? 1 : 0);
     w.w16(static_cast<UInt16>(f.cornerTL)); w.w16(static_cast<UInt16>(f.cornerTR));
     w.w16(static_cast<UInt16>(f.cornerBR)); w.w16(static_cast<UInt16>(f.cornerBL));
+    w.w8(f.opacity);
 
     // Interleaved child serialization preserving childOrder z-ordering.
     // If childOrder is empty (legacy), fall back to shapes-then-frames.
@@ -274,6 +278,7 @@ static std::unique_ptr<Frame> ReadFrame(Reader& r, Frame* parent, UInt16 ver) {
         f->cornerTL = static_cast<SInt16>(r.r16()); f->cornerTR = static_cast<SInt16>(r.r16());
         f->cornerBR = static_cast<SInt16>(r.r16()); f->cornerBL = static_cast<SInt16>(r.r16());
     }
+    if (ver >= 16) f->opacity = r.r8();
 
     // Interleaved child deserialization (v12+). Each entry: type byte (0=shape,1=frame)
     // followed by the serialized child. Rebuilds childOrder alongside typed vectors.
@@ -424,7 +429,7 @@ bool LoadDocument(Document*& doc) {
 
     UInt32 magic = 0; r.read(&magic, 4);
     UInt16 ver   = r.r16();
-    if (!r.ok || magic != kMagic || (ver != 12 && ver != 13 && ver != 14 && ver != 15)) { FSClose(refNum); return false; }
+    if (!r.ok || magic != kMagic || (ver != 12 && ver != 13 && ver != 14 && ver != 15 && ver != 16)) { FSClose(refNum); return false; }
 
     auto newDoc  = std::make_unique<Document>();
     newDoc->name = r.rStr();

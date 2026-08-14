@@ -77,6 +77,7 @@ static Rect sCornerTRRect             = {0,0,0,0};
 static Rect sCornerBRRect             = {0,0,0,0};
 static Rect sCornerBLRect             = {0,0,0,0};
 static Rect sCornerIndividualBtnRect  = {0,0,0,0};
+static Rect sOpacityRect              = {0,0,0,0};
 
 // Auto Layout controls (frame selected)
 static Rect sLayoutModeRect[3]       = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
@@ -107,7 +108,8 @@ static Rect sClipContentRect         = {0, 0, 0, 0};
 enum EditField { kNoField, kFieldX, kFieldY, kFieldW, kFieldH, kFieldStrokeWidth, kFieldFontSize, kFieldLayoutGap,
                  kFieldPadH, kFieldPadV, kFieldPadTop, kFieldPadRight, kFieldPadBottom, kFieldPadLeft,
                  kFieldCounterGap, kFieldCornerRadius,
-                 kFieldCornerTL, kFieldCornerTR, kFieldCornerBR, kFieldCornerBL };
+                 kFieldCornerTL, kFieldCornerTR, kFieldCornerBR, kFieldCornerBL,
+                 kFieldOpacity };
 static EditField sActiveField = kNoField;
 static char      sEditBuf[12] = {};
 static int       sEditLen     = 0;
@@ -517,7 +519,7 @@ void DrawInspectorPanel() {
     sShapeWFxRect = sShapeWFlRect = sShapeHFxRect = sShapeHFlRect = {0,0,0,0};
     sLayoutCounterGapRect = sLayoutCounterGapModeRect = {0,0,0,0};
     sCornerRadiusRect = sCornerTLRect = sCornerTRRect = sCornerBRRect = sCornerBLRect = {0,0,0,0};
-    sCornerIndividualBtnRect = {0,0,0,0};
+    sCornerIndividualBtnRect = sOpacityRect = {0,0,0,0};
 
     if (!gSelectedFrame && !gSelectedShape && gSelectedFrames.empty()) {
         SetOrigin(0, 0);
@@ -568,6 +570,15 @@ void DrawInspectorPanel() {
         RGBForeColor(&hint2); TextSize(9);
         PStrC("Click to change", ps2); MoveTo(48, static_cast<short>(y2 + 13)); DrawString(ps2);
         TextSize(11);
+        // Opacity field — right side of swatch row
+        {
+            UInt8 opV2 = gSelectedFrame->opacity;
+            RGBForeColor(&labelClr2); TextSize(9);
+            PStrC("%", ps2); MoveTo(static_cast<short>(cRight - 6), static_cast<short>(y2 + 13)); DrawString(ps2);
+            TextSize(11);
+            DrawNumField(static_cast<short>(cRight - 36), static_cast<short>(y2 + 13), 28,
+                         kFieldOpacity, static_cast<SInt32>(opV2), sOpacityRect);
+        }
         y2 = static_cast<short>(y2 + 26);
 
         // STROKE
@@ -995,6 +1006,16 @@ void DrawInspectorPanel() {
     RGBForeColor(&hint); TextSize(9);
     PStrC("Click to change", ps); MoveTo(48, static_cast<short>(y + 13)); DrawString(ps);
     TextSize(11);
+    // Opacity field — right side of swatch row
+    {
+        UInt8 opV = gSelectedShape ? gSelectedShape->opacity
+                  : (gSelectedFrame ? gSelectedFrame->opacity : 100);
+        RGBForeColor(&labelClr); TextSize(9);
+        PStrC("%", ps); MoveTo(static_cast<short>(cRight - 6), static_cast<short>(y + 13)); DrawString(ps);
+        TextSize(11);
+        DrawNumField(static_cast<short>(cRight - 36), static_cast<short>(y + 13), 28,
+                     kFieldOpacity, static_cast<SInt32>(opV), sOpacityRect);
+    }
     y = static_cast<short>(y + 26);
 
     // -------------------------------------------------------------- STROKE --
@@ -1612,6 +1633,10 @@ static void StartEditForField(EditField field) {
                 StartEdit(field, static_cast<RectShape&>(*gSelectedShape).cornerBL);
             else if (gSelectedFrame) StartEdit(field, gSelectedFrame->cornerBL);
             break;
+        case kFieldOpacity:
+            if (gSelectedShape)       StartEdit(field, static_cast<SInt32>(gSelectedShape->opacity));
+            else if (gSelectedFrame)  StartEdit(field, static_cast<SInt32>(gSelectedFrame->opacity));
+            break;
         case kFieldPadH:
             if (gSelectedFrame) {
                 std::string s = padCompactStr(gSelectedFrame->paddingLeft, gSelectedFrame->paddingRight);
@@ -1649,6 +1674,9 @@ static EditField TabToNextField(EditField cur, bool reverse) {
     bool hasStroke = gSelectedShape ? gSelectedShape->hasStroke
                                     : (gSelectedFrame ? gSelectedFrame->hasStroke : false);
     if (hasStroke) order.push_back(kFieldStrokeWidth);
+
+    // Opacity (all shape and frame types)
+    order.push_back(kFieldOpacity);
 
     // Corner radius (rect shapes and frames)
     bool isRectShape2 = (gSelectedShape && gSelectedShape->GetType() == Shape::kRectangle);
@@ -1926,6 +1954,23 @@ void ApplyInspectorEdit() {
             else                                       target = &gSelectedFrame->cornerBL;
         }
         if (target && *target != nv) { PushUndo(); *target = nv; changed = true; }
+    }
+    if (sActiveField == kFieldOpacity) {
+        if (val < 0) val = 0; if (val > 100) val = 100;
+        UInt8 nv = static_cast<UInt8>(val);
+        if (applyMultiFrame) {
+            bool any = false;
+            for (Frame* f : gSelectedFrames) if (f->opacity != nv) { any = true; break; }
+            if (any) { PushUndo(); for (Frame* f : gSelectedFrames) f->opacity = nv; changed = true; }
+        } else if (applyMulti) {
+            bool any = false;
+            for (Shape* s : gSelectedShapes) if (s->opacity != nv) { any = true; break; }
+            if (any) { PushUndo(); for (Shape* s : gSelectedShapes) s->opacity = nv; changed = true; }
+        } else if (gSelectedShape && gSelectedShape->opacity != nv) {
+            PushUndo(); gSelectedShape->opacity = nv; changed = true;
+        } else if (gSelectedFrame && gSelectedFrame->opacity != nv) {
+            PushUndo(); gSelectedFrame->opacity = nv; changed = true;
+        }
     }
     if (!applyMultiFrame && sActiveField == kFieldStrokeWidth) {
         if (val < 1) val = 1; if (val > 20) val = 20;
@@ -2502,6 +2547,11 @@ void HandleInspectorClick(Point localPt) {
             ? static_cast<RectShape&>(*gSelectedShape).cornerBL
             : (gSelectedFrame ? gSelectedFrame->cornerBL : 0);
         StartEdit(kFieldCornerBL, v); return;
+    }
+    if (PtInRect(localPt, &sOpacityRect)) {
+        UInt8 v = gSelectedShape ? gSelectedShape->opacity
+                : (gSelectedFrame ? gSelectedFrame->opacity : 100);
+        StartEdit(kFieldOpacity, static_cast<SInt32>(v)); return;
     }
 }
 
