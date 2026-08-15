@@ -31,8 +31,22 @@ int        gNextEllipseNum = 1;
 int        gNextTextNum    = 1;
 
 // ---- Cursor management -------------------------------------------------------
+// Helper: compute 8-connected dilation mask from a 16-row bitmap
+static void ComputeCursorMask(Cursor& cur, const unsigned short kData[16]) {
+    for (int i = 0; i < 16; ++i) {
+        unsigned short d  = kData[i];
+        unsigned short dN = (i > 0)  ? kData[i-1] : 0u;
+        unsigned short dS = (i < 15) ? kData[i+1] : 0u;
+        unsigned short m  = d | dN | dS
+            | static_cast<unsigned short>(d  << 1) | static_cast<unsigned short>(d  >> 1)
+            | static_cast<unsigned short>(dN << 1) | static_cast<unsigned short>(dN >> 1)
+            | static_cast<unsigned short>(dS << 1) | static_cast<unsigned short>(dS >> 1);
+        cur.data[i] = static_cast<short>(d);
+        cur.mask[i] = static_cast<short>(m);
+    }
+}
+
 // Rotate cursor: open ring (no bottom) + downward arrowhead.
-// Monochrome 16x16; hotspot at center (row 7, col 7).
 static bool   sRotateCursorInited = false;
 static Cursor sRotateCursor;
 
@@ -43,18 +57,28 @@ static void EnsureRotateCursor() {
         0x4004, 0x4004, 0x4004, 0x2008, 0x1010, 0x0000,
         0x07C0, 0x0380, 0x0100, 0x0000
     };
-    static const unsigned short kMask[16] = {
-        0x0100, 0x07C0, 0x1FF0, 0x3C78, 0x701C, 0xE00E,
-        0xE00E, 0xE00E, 0xE00E, 0x701C, 0x3838, 0x17D0,
-        0x0FE0, 0x07C0, 0x0380, 0x0380
-    };
-    for (int i = 0; i < 16; ++i) {
-        sRotateCursor.data[i] = static_cast<short>(kData[i]);
-        sRotateCursor.mask[i] = static_cast<short>(kMask[i]);
-    }
+    ComputeCursorMask(sRotateCursor, kData);
     sRotateCursor.hotSpot.v = 7;
     sRotateCursor.hotSpot.h = 7;
     sRotateCursorInited = true;
+}
+
+// Corner resize cursor: NW-SE diagonal double-headed arrow.
+static bool   sResizeCursorInited = false;
+static Cursor sResizeCursor;
+
+static void EnsureResizeCursor() {
+    if (sResizeCursorInited) return;
+    // NW arrowhead (top-left) + diagonal shaft + SE arrowhead (bottom-right)
+    static const unsigned short kData[16] = {
+        0xF000, 0x8000, 0xA000, 0x9000, 0x0800, 0x0400,
+        0x0200, 0x0100, 0x0080, 0x0040, 0x0020, 0x0012,
+        0x000A, 0x0002, 0x001E, 0x0000
+    };
+    ComputeCursorMask(sResizeCursor, kData);
+    sResizeCursor.hotSpot.v = 7;
+    sResizeCursor.hotSpot.h = 7;
+    sResizeCursorInited = true;
 }
 
 // In-memory clipboard
@@ -1036,9 +1060,8 @@ void UpdateCanvasCursor(Point globalPt) {
         if (ady < 0) ady = -ady;
         short dist = adx > ady ? adx : ady;  // Chebyshev distance
         if (dist <= kHW) {
-            // On the handle square → resize cursor (system crosshair)
-            CursHandle c = GetCursor(crossCursor);
-            if (c) SetCursor(*c); else InitCursor();
+            EnsureResizeCursor();
+            SetCursor(&sResizeCursor);
             return;
         }
         if (dist <= kHW + kRot) inRotateZone = true;
@@ -1056,8 +1079,8 @@ void UpdateCanvasCursor(Point globalPt) {
         if (adx < 0) adx = -adx;
         if (ady < 0) ady = -ady;
         if (adx <= kHW && ady <= kHW) {
-            CursHandle c = GetCursor(crossCursor);
-            if (c) SetCursor(*c); else InitCursor();
+            EnsureResizeCursor();
+            SetCursor(&sResizeCursor);
             return;
         }
     }
@@ -1493,26 +1516,72 @@ static std::unique_ptr<Frame> ExtractFrame(Frame* f) {
 // Returns the handle index (0-7) if pt lands on one of the 8 selection
 // handles drawn by DrawSelectionHighlight, or -1 if nothing selected / miss.
 // Handle order: 0=TL 1=TC 2=TR 3=MR 4=BR 5=BC 6=BL 7=ML
+// Populate hx[8]/hy[8] with the 8 handle positions for the current selection.
+// Order matches DrawSelectionHighlight: corners 0,2,4,6; edges 1,3,5,7.
+static bool ComputeSelectionHandles(short hx[8], short hy[8]) {
+    if (!gSelectedShape && !gSelectedFrame) return false;
+
+    if (gSelectedShape && gSelectedShape->rotation != 0) {
+        Rect r = CanvasRect(gSelectedShape->bounds);
+        double cx = (r.left + r.right) * 0.5, cy = (r.top + r.bottom) * 0.5;
+        double hw = (r.right - r.left) * 0.5, hh = (r.bottom - r.top) * 0.5;
+        double rad = gSelectedShape->rotation * 3.14159265358979323846 / 180.0;
+        double cosA = std::cos(rad), sinA = std::sin(rad);
+        double lx[4] = {-hw, hw, hw, -hw}, ly[4] = {-hh, -hh, hh, hh};
+        short px[4], py[4];
+        for (int i = 0; i < 4; ++i) {
+            px[i] = static_cast<short>(cx + lx[i]*cosA - ly[i]*sinA + 0.5);
+            py[i] = static_cast<short>(cy + lx[i]*sinA + ly[i]*cosA + 0.5);
+        }
+        for (int i = 0; i < 4; ++i) { hx[i] = px[i]; hy[i] = py[i]; }
+        hx[4]=(px[0]+px[1])/2; hy[4]=(py[0]+py[1])/2;
+        hx[5]=(px[1]+px[2])/2; hy[5]=(py[1]+py[2])/2;
+        hx[6]=(px[2]+px[3])/2; hy[6]=(py[2]+py[3])/2;
+        hx[7]=(px[3]+px[0])/2; hy[7]=(py[3]+py[0])/2;
+    } else {
+        Rect r = gSelectedShape ? CanvasRect(gSelectedShape->bounds)
+                                : CanvasRect(gSelectedFrame->bounds);
+        short cx = static_cast<short>((r.left + r.right) / 2);
+        short cy = static_cast<short>((r.top  + r.bottom) / 2);
+        hx[0]=r.left;  hy[0]=r.top;
+        hx[1]=cx;      hy[1]=r.top;
+        hx[2]=r.right; hy[2]=r.top;
+        hx[3]=r.right; hy[3]=cy;
+        hx[4]=r.right; hy[4]=r.bottom;
+        hx[5]=cx;      hy[5]=r.bottom;
+        hx[6]=r.left;  hy[6]=r.bottom;
+        hx[7]=r.left;  hy[7]=cy;
+    }
+    return true;
+}
+
 static int HitTestHandles(Point pt) {
-    if (!gSelectedFrame && !gSelectedShape) return -1;
-    Rect r = gSelectedShape
-        ? CanvasRect(gSelectedShape->bounds)
-        : CanvasRect(gSelectedFrame->bounds);
-
+    short hx[8], hy[8];
+    if (!ComputeSelectionHandles(hx, hy)) return -1;
     static const short kHW = 4;
-    short cx = static_cast<short>((r.left + r.right)  / 2);
-    short cy = static_cast<short>((r.top  + r.bottom) / 2);
-    const short hx[8] = { r.left, cx, r.right, r.right,  r.right,  cx,     r.left,  r.left };
-    const short hy[8] = { r.top,  r.top, r.top, cy,      r.bottom, r.bottom, r.bottom, cy   };
-
     for (int i = 0; i < 8; ++i) {
-        Rect h = {
-            static_cast<short>(hy[i] - kHW), static_cast<short>(hx[i] - kHW),
-            static_cast<short>(hy[i] + kHW), static_cast<short>(hx[i] + kHW)
-        };
-        if (PtInRect(pt, &h)) return i;
+        short adx = static_cast<short>(pt.h - hx[i]); if (adx < 0) adx = -adx;
+        short ady = static_cast<short>(pt.v - hy[i]); if (ady < 0) ady = -ady;
+        if (adx <= kHW && ady <= kHW) return i;
     }
     return -1;
+}
+
+// Returns true if pt is in the rotate zone (near a corner, outside the handle square).
+static bool HitTestRotateZone(Point pt) {
+    short hx[8], hy[8];
+    if (!ComputeSelectionHandles(hx, hy)) return false;
+    static const short kHW  = 4;
+    static const short kRot = 10;
+    static const int kCorner[4] = {0, 2, 4, 6};
+    for (int ci = 0; ci < 4; ++ci) {
+        int i = kCorner[ci];
+        short adx = static_cast<short>(pt.h - hx[i]); if (adx < 0) adx = -adx;
+        short ady = static_cast<short>(pt.v - hy[i]); if (ady < 0) ady = -ady;
+        short dist = adx > ady ? adx : ady;
+        if (dist > kHW && dist <= kHW + kRot) return true;
+    }
+    return false;
 }
 
 // Drag the selected object's bounds by moving only the edge(s) implied by
@@ -1671,6 +1740,45 @@ static void CollectBandShapes(Frame* frm, SInt32 l, SInt32 t, SInt32 r, SInt32 b
         CollectBandShapes(cf.get(), l, t, r, b, out);
 }
 
+// Rotate the selected shape/frame by dragging around its center.
+static void HandleRotateDrag(WindowRef win, Point startPt) {
+    SInt16* pRot = gSelectedShape ? &gSelectedShape->rotation
+                                  : (gSelectedFrame ? &gSelectedFrame->rotation : nullptr);
+    if (!pRot) return;
+
+    Bounds2* pB = gSelectedShape ? &gSelectedShape->bounds : &gSelectedFrame->bounds;
+    Rect r = CanvasRect(*pB);
+    double screenCX = (r.left + r.right)  * 0.5;
+    double screenCY = (r.top  + r.bottom) * 0.5;
+
+    double startAngle = std::atan2(static_cast<double>(startPt.v) - screenCY,
+                                   static_cast<double>(startPt.h) - screenCX)
+                        * 180.0 / 3.14159265358979323846;
+    SInt16 origRot = *pRot;
+    bool pushedUndo = false;
+
+    EnsureRotateCursor();
+    SetCursor(&sRotateCursor);
+
+    Point prev = startPt, curr = startPt;
+    while (Button()) {
+        GetMouse(&curr);
+        if (curr.h != prev.h || curr.v != prev.v) {
+            if (!pushedUndo) { PushUndo(); pushedUndo = true; }
+            double curAngle = std::atan2(static_cast<double>(curr.v) - screenCY,
+                                         static_cast<double>(curr.h) - screenCX)
+                              * 180.0 / 3.14159265358979323846;
+            double delta = curAngle - startAngle;
+            int newRotI = static_cast<int>(origRot + delta + 0.5);
+            *pRot = static_cast<SInt16>(((newRotI % 360) + 360) % 360);
+            RunDocumentLayout(gDocument);
+            DrawWindowContent(win);
+            prev = curr;
+        }
+    }
+    Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
+}
+
 // --------------------------------------------------------------------------
 // Select tool: resize handles → name labels → body hit-test → move + reparent
 // --------------------------------------------------------------------------
@@ -1682,7 +1790,15 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
     Point pt = startGlobal;
     GlobalToLocal(&pt);
 
-    // ---- 1. Resize handle (only when something is already selected) ----
+    // ---- 1a. Rotate zone (near corner, outside handle — checked before resize) ----
+    if (HitTestRotateZone(pt)) {
+        bool selLocked = gSelectedShape ? gSelectedShape->locked
+                                        : (gSelectedFrame ? gSelectedFrame->locked : false);
+        if (!selLocked) HandleRotateDrag(win, pt);
+        return;
+    }
+
+    // ---- 1b. Resize handle (on the handle square) ----
     int handleIdx = HitTestHandles(pt);
     if (handleIdx >= 0) {
         bool selLocked = gSelectedShape ? gSelectedShape->locked
