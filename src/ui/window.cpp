@@ -38,19 +38,19 @@ static Cursor sRotateCursor;
 
 static void EnsureRotateCursor() {
     if (sRotateCursorInited) return;
-    static const short kData[16] = {
+    static const unsigned short kData[16] = {
         0x0000, 0x0100, 0x0440, 0x1010, 0x2008, 0x4004,
         0x4004, 0x4004, 0x4004, 0x2008, 0x1010, 0x0000,
         0x07C0, 0x0380, 0x0100, 0x0000
     };
-    static const short kMask[16] = {
+    static const unsigned short kMask[16] = {
         0x0100, 0x07C0, 0x1FF0, 0x3C78, 0x701C, 0xE00E,
         0xE00E, 0xE00E, 0xE00E, 0x701C, 0x3838, 0x17D0,
         0x0FE0, 0x07C0, 0x0380, 0x0380
     };
     for (int i = 0; i < 16; ++i) {
-        sRotateCursor.data[i] = kData[i];
-        sRotateCursor.mask[i] = kMask[i];
+        sRotateCursor.data[i] = static_cast<short>(kData[i]);
+        sRotateCursor.mask[i] = static_cast<short>(kMask[i]);
     }
     sRotateCursor.hotSpot.v = 7;
     sRotateCursor.hotSpot.h = 7;
