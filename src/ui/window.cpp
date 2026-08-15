@@ -52,10 +52,12 @@ static Cursor sRotateCursor;
 
 static void EnsureRotateCursor() {
     if (sRotateCursorInited) return;
+    // Upper-half circle arc (9 o'clock → 12 → 3 o'clock), arrowhead at 3 o'clock pointing down
     static const unsigned short kData[16] = {
-        0x0000, 0x0100, 0x0440, 0x1010, 0x2008, 0x4004,
-        0x4004, 0x4004, 0x4004, 0x2008, 0x1010, 0x0000,
-        0x07C0, 0x0380, 0x0100, 0x0000
+        0x0000, 0x0000, 0x0100, 0x0820,
+        0x1010, 0x2008, 0x2008, 0x2008,
+        0x001C, 0x0008, 0x0000, 0x0000,
+        0x0000, 0x0000, 0x0000, 0x0000
     };
     ComputeCursorMask(sRotateCursor, kData);
     sRotateCursor.hotSpot.v = 7;
@@ -69,11 +71,11 @@ static Cursor sResizeCursor;
 
 static void EnsureResizeCursor() {
     if (sResizeCursorInited) return;
-    // NW arrowhead (top-left) + diagonal shaft + SE arrowhead (bottom-right)
+    // NE arrowhead (top-right) + diagonal shaft + SW arrowhead (bottom-left)
     static const unsigned short kData[16] = {
-        0xF000, 0x8000, 0xA000, 0x9000, 0x0800, 0x0400,
-        0x0200, 0x0100, 0x0080, 0x0040, 0x0020, 0x0012,
-        0x000A, 0x0002, 0x001E, 0x0000
+        0x000F, 0x0001, 0x0005, 0x0009, 0x0010, 0x0020,
+        0x0040, 0x0080, 0x0100, 0x0200, 0x0400, 0x4800,
+        0x5000, 0x4000, 0x7800, 0x0000
     };
     ComputeCursorMask(sResizeCursor, kData);
     sResizeCursor.hotSpot.v = 7;
