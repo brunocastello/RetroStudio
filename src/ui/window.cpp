@@ -950,6 +950,7 @@ static void DrawSelectionHighlight() {
     RGBColor white   = { 0xFFFF, 0xFFFF, 0xFFFF };
     static const short kHW = 4;
 
+    // Axis-aligned border + square handles at 8 positions
     auto drawHandles = [&](const Rect& r) {
         short cx = static_cast<short>((r.left + r.right)  / 2);
         short cy = static_cast<short>((r.top  + r.bottom) / 2);
@@ -965,15 +966,60 @@ static void DrawSelectionHighlight() {
         }
     };
 
-    // Draw border + handles for every item in each multi-select pool
     auto drawItem = [&](const Rect& r) {
         RGBForeColor(&selBlue);
         PenSize(2, 2); FrameRect(&r); PenSize(1, 1);
         drawHandles(r);
     };
 
-    for (Shape* s : gSelectedShapes)   drawItem(CanvasRect(s->bounds));
-    for (Frame* f : gSelectedFrames)   drawItem(CanvasRect(f->bounds));
+    // Rotated border + handles placed at rotated corner and edge-midpoint positions
+    auto drawRotatedItem = [&](const Bounds2& bounds, short angleDeg) {
+        Rect r = CanvasRect(bounds);
+        double cx = (r.left + r.right)  * 0.5;
+        double cy = (r.top  + r.bottom) * 0.5;
+        double hw = (r.right  - r.left) * 0.5;
+        double hh = (r.bottom - r.top)  * 0.5;
+        double rad = angleDeg * 3.14159265358979323846 / 180.0;
+        double cosA = std::cos(rad), sinA = std::sin(rad);
+
+        double lx[4] = { -hw,  hw,  hw, -hw };
+        double ly[4] = { -hh, -hh,  hh,  hh };
+        short px[4], py[4];
+        for (int i = 0; i < 4; ++i) {
+            px[i] = static_cast<short>(cx + lx[i]*cosA - ly[i]*sinA + 0.5);
+            py[i] = static_cast<short>(cy + lx[i]*sinA + ly[i]*cosA + 0.5);
+        }
+
+        // Rotated border
+        RGBForeColor(&selBlue);
+        PenSize(2, 2);
+        MoveTo(px[0], py[0]);
+        LineTo(px[1], py[1]); LineTo(px[2], py[2]);
+        LineTo(px[3], py[3]); LineTo(px[0], py[0]);
+        PenSize(1, 1);
+
+        // 8 handle positions: 4 corners then 4 edge midpoints
+        short hpx[8], hpy[8];
+        for (int i = 0; i < 4; ++i) { hpx[i] = px[i]; hpy[i] = py[i]; }
+        hpx[4] = static_cast<short>((px[0]+px[1])/2); hpy[4] = static_cast<short>((py[0]+py[1])/2);
+        hpx[5] = static_cast<short>((px[1]+px[2])/2); hpy[5] = static_cast<short>((py[1]+py[2])/2);
+        hpx[6] = static_cast<short>((px[2]+px[3])/2); hpy[6] = static_cast<short>((py[2]+py[3])/2);
+        hpx[7] = static_cast<short>((px[3]+px[0])/2); hpy[7] = static_cast<short>((py[3]+py[0])/2);
+        for (int i = 0; i < 8; ++i) {
+            Rect h = {
+                static_cast<short>(hpy[i]-kHW), static_cast<short>(hpx[i]-kHW),
+                static_cast<short>(hpy[i]+kHW), static_cast<short>(hpx[i]+kHW)
+            };
+            RGBForeColor(&white); PaintRect(&h);
+            RGBForeColor(&selBlue); FrameRect(&h);
+        }
+    };
+
+    for (Shape* s : gSelectedShapes) {
+        if (s->rotation != 0) drawRotatedItem(s->bounds, s->rotation);
+        else                  drawItem(CanvasRect(s->bounds));
+    }
+    for (Frame* f : gSelectedFrames) drawItem(CanvasRect(f->bounds));
 
     // Primary single-select item (skip if already drawn as part of multi-select)
     bool drawnAsShape = gSelectedShape &&
@@ -983,9 +1029,13 @@ static void DrawSelectionHighlight() {
 
     if (!drawnAsShape && !drawnAsFrame) {
         if (!gSelectedShape && !gSelectedFrame) { PenNormal(); return; }
-        Rect r = gSelectedShape ? CanvasRect(gSelectedShape->bounds)
-                                : CanvasRect(gSelectedFrame->bounds);
-        drawItem(r);
+        if (gSelectedShape && gSelectedShape->rotation != 0) {
+            drawRotatedItem(gSelectedShape->bounds, gSelectedShape->rotation);
+        } else {
+            Rect r = gSelectedShape ? CanvasRect(gSelectedShape->bounds)
+                                    : CanvasRect(gSelectedFrame->bounds);
+            drawItem(r);
+        }
     }
 
     PenNormal();
