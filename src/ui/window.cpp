@@ -30,6 +30,33 @@ int        gNextRectNum    = 1;
 int        gNextEllipseNum = 1;
 int        gNextTextNum    = 1;
 
+// ---- Cursor management -------------------------------------------------------
+// Rotate cursor: open ring (no bottom) + downward arrowhead.
+// Monochrome 16x16; hotspot at center (row 7, col 7).
+static bool   sRotateCursorInited = false;
+static Cursor sRotateCursor;
+
+static void EnsureRotateCursor() {
+    if (sRotateCursorInited) return;
+    static const short kData[16] = {
+        0x0000, 0x0100, 0x0440, 0x1010, 0x2008, 0x4004,
+        0x4004, 0x4004, 0x4004, 0x2008, 0x1010, 0x0000,
+        0x07C0, 0x0380, 0x0100, 0x0000
+    };
+    static const short kMask[16] = {
+        0x0100, 0x07C0, 0x1FF0, 0x3C78, 0x701C, 0xE00E,
+        0xE00E, 0xE00E, 0xE00E, 0x701C, 0x3838, 0x17D0,
+        0x0FE0, 0x07C0, 0x0380, 0x0380
+    };
+    for (int i = 0; i < 16; ++i) {
+        sRotateCursor.data[i] = kData[i];
+        sRotateCursor.mask[i] = kMask[i];
+    }
+    sRotateCursor.hotSpot.v = 7;
+    sRotateCursor.hotSpot.h = 7;
+    sRotateCursorInited = true;
+}
+
 // In-memory clipboard
 static std::vector<std::unique_ptr<Frame>> sClipFrames;
 static std::vector<std::unique_ptr<Shape>> sClipShapes;
@@ -943,6 +970,99 @@ static void DrawFrame(const Frame& frame) {
         DrawString(pn);
         TextSize(12);
     }
+}
+
+void UpdateCanvasCursor(Point globalPt) {
+    static const short kHW  = 4;   // handle half-width (must match DrawSelectionHighlight)
+    static const short kRot = 10;  // extra px beyond handle for rotate zone
+
+    // Only for the select tool with a single selection over the canvas
+    if (gActiveTool != Tool::Select || !gMainWindow) { InitCursor(); return; }
+    bool hasSingle = (gSelectedShape && gSelectedShapes.size() <= 1 && gSelectedFrames.empty())
+                  || (gSelectedFrame && gSelectedFrames.size() <= 1 && !gSelectedShape
+                      && gSelectedShapes.empty());
+    if (!hasSingle) { InitCursor(); return; }
+
+    WindowRef hitWin = nullptr;
+    short part = FindWindow(globalPt, &hitWin);
+    if (hitWin != gMainWindow || part != inContent) { InitCursor(); return; }
+
+    Point localPt = globalPt;
+    SetPortWindowPort(gMainWindow);
+    GlobalToLocal(&localPt);
+
+    // Compute 8 handle positions (same logic as DrawSelectionHighlight)
+    short hx[8], hy[8];
+    if (gSelectedShape && gSelectedShape->rotation != 0) {
+        Rect r = CanvasRect(gSelectedShape->bounds);
+        double cx = (r.left + r.right) * 0.5, cy = (r.top + r.bottom) * 0.5;
+        double hw = (r.right - r.left) * 0.5, hh = (r.bottom - r.top) * 0.5;
+        double rad = gSelectedShape->rotation * 3.14159265358979323846 / 180.0;
+        double cosA = std::cos(rad), sinA = std::sin(rad);
+        double lx[4] = {-hw, hw, hw, -hw}, ly[4] = {-hh, -hh, hh, hh};
+        short px[4], py[4];
+        for (int i = 0; i < 4; ++i) {
+            px[i] = static_cast<short>(cx + lx[i]*cosA - ly[i]*sinA + 0.5);
+            py[i] = static_cast<short>(cy + lx[i]*sinA + ly[i]*cosA + 0.5);
+        }
+        for (int i = 0; i < 4; ++i) { hx[i] = px[i]; hy[i] = py[i]; }
+        hx[4]=(px[0]+px[1])/2; hy[4]=(py[0]+py[1])/2;
+        hx[5]=(px[1]+px[2])/2; hy[5]=(py[1]+py[2])/2;
+        hx[6]=(px[2]+px[3])/2; hy[6]=(py[2]+py[3])/2;
+        hx[7]=(px[3]+px[0])/2; hy[7]=(py[3]+py[0])/2;
+    } else {
+        Rect r = gSelectedShape ? CanvasRect(gSelectedShape->bounds)
+                                : CanvasRect(gSelectedFrame->bounds);
+        short cx = static_cast<short>((r.left + r.right) / 2);
+        short cy = static_cast<short>((r.top  + r.bottom) / 2);
+        hx[0]=r.left;  hy[0]=r.top;
+        hx[1]=cx;      hy[1]=r.top;
+        hx[2]=r.right; hy[2]=r.top;
+        hx[3]=r.right; hy[3]=cy;
+        hx[4]=r.right; hy[4]=r.bottom;
+        hx[5]=cx;      hy[5]=r.bottom;
+        hx[6]=r.left;  hy[6]=r.bottom;
+        hx[7]=r.left;  hy[7]=cy;
+    }
+
+    // Corner handles: indices 0,2,4,6 — inner rect = resize, outer ring = rotate
+    static const int kCorner[4] = {0, 2, 4, 6};
+    bool inRotateZone = false;
+    for (int ci = 0; ci < 4; ++ci) {
+        int i = kCorner[ci];
+        short adx = static_cast<short>(localPt.h - hx[i]);
+        short ady = static_cast<short>(localPt.v - hy[i]);
+        if (adx < 0) adx = -adx;
+        if (ady < 0) ady = -ady;
+        short dist = adx > ady ? adx : ady;  // Chebyshev distance
+        if (dist <= kHW) {
+            // On the handle square → resize cursor (system crosshair)
+            CursHandle c = GetCursor(crossCursor);
+            if (c) SetCursor(*c); else InitCursor();
+            return;
+        }
+        if (dist <= kHW + kRot) inRotateZone = true;
+    }
+    if (inRotateZone) {
+        EnsureRotateCursor();
+        SetCursor(&sRotateCursor);
+        return;
+    }
+
+    // Edge handles: indices 1,3,5,7 → resize cursor
+    for (int i = 1; i < 8; i += 2) {
+        short adx = static_cast<short>(localPt.h - hx[i]);
+        short ady = static_cast<short>(localPt.v - hy[i]);
+        if (adx < 0) adx = -adx;
+        if (ady < 0) ady = -ady;
+        if (adx <= kHW && ady <= kHW) {
+            CursHandle c = GetCursor(crossCursor);
+            if (c) SetCursor(*c); else InitCursor();
+            return;
+        }
+    }
+
+    InitCursor();
 }
 
 static void DrawSelectionHighlight() {

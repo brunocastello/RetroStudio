@@ -43,6 +43,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers = 0);
 void HandleCanvasPan(WindowRef win, Point startGlobal);
 void HandleMenuCommand(long menuResult);
 void HandleWindowGrow(WindowRef win, Point where);
+void UpdateCanvasCursor(Point globalPt);  // call on nullEvent to update cursor over canvas
 void StepZoom(int direction);   // +1 = zoom in, -1 = zoom out
 void ZoomToFit();
 void DeleteSelected();          // Delete/Backspace — removes selected shape or frame

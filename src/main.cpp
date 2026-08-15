@@ -27,7 +27,13 @@ int main(int argc, char* argv[]) {
     static Point  sLastClickWhere = { 0, 0 };
 
     while (!gQuitFlag) {
-        if (WaitNextEvent(everyEvent, &event, 15, nullptr)) {
+        bool gotEvent = WaitNextEvent(everyEvent, &event, 15, nullptr);
+        if (!gotEvent) {
+            // nullEvent: update cursor based on mouse position
+            Point mousePt; GetMouse(&mousePt); SetPortWindowPort(gMainWindow); LocalToGlobal(&mousePt);
+            UpdateCanvasCursor(mousePt);
+        }
+        if (gotEvent) {
             switch (event.what) {
 
                 case mouseDown: {
@@ -104,6 +110,7 @@ int main(int argc, char* argv[]) {
                                         RefreshLayersPanel();
                                         RefreshInspector();
                                         RefreshAutoLayoutSettingsPanel();
+                                        UpdateCanvasCursor(event.where);
                                         break;
                                     case Tool::Frame:
                                     case Tool::Rectangle:
