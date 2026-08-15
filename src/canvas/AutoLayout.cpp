@@ -1,5 +1,6 @@
 #include "AutoLayout.h"
 #include <algorithm>
+#include <cmath>
 
 // Shape being drag-sorted (single-select) — excluded from layout.
 extern Shape* gLayoutDragShape;
@@ -20,6 +21,10 @@ struct LayoutItem {
     SInt32  xtraW    = 0;   // stroke width added to primary/secondary measurement
     SInt32  xtraH    = 0;   // (only non-zero when f->strokesInLayout and hasStroke)
     SInt32  baseline = 0;   // distance from bounds top to text baseline; 0 = non-text
+    SInt32  effW     = 0;   // AABB width for rotated shapes (0 = use *w)
+    SInt32  effH     = 0;   // AABB height for rotated shapes (0 = use *h)
+    SInt32  xOff     = 0;   // x correction after layout: (aabbW - w) / 2 for rotated
+    SInt32  yOff     = 0;   // y correction after layout: (aabbH - h) / 2 for rotated
 };
 
 static void RunFrameLayout(Frame* f) {
@@ -73,6 +78,16 @@ static void RunFrameLayout(Frame* f) {
                     it.baseline = static_cast<SInt32>(
                         static_cast<TextShape*>(s.get())->fontSize) * 3 / 4;
                 }
+                if (s->rotation != 0) {
+                    double rad  = s->rotation * 3.14159265358979323846 / 180.0;
+                    double cosA = std::abs(std::cos(rad));
+                    double sinA = std::abs(std::sin(rad));
+                    SInt32 aw   = static_cast<SInt32>(s->bounds.w * cosA + s->bounds.h * sinA + 0.5);
+                    SInt32 ah   = static_cast<SInt32>(s->bounds.w * sinA + s->bounds.h * cosA + 0.5);
+                    it.effW = aw; it.effH = ah;
+                    it.xOff = (aw - static_cast<SInt32>(s->bounds.w)) / 2;
+                    it.yOff = (ah - static_cast<SInt32>(s->bounds.h)) / 2;
+                }
                 items.push_back(it);
             }
         }
@@ -94,6 +109,16 @@ static void RunFrameLayout(Frame* f) {
             if (f->alignTextBaseline && s->GetType() == Shape::kText) {
                 it.baseline = static_cast<SInt32>(
                     static_cast<TextShape*>(s.get())->fontSize) * 3 / 4;
+            }
+            if (s->rotation != 0) {
+                double rad  = s->rotation * 3.14159265358979323846 / 180.0;
+                double cosA = std::abs(std::cos(rad));
+                double sinA = std::abs(std::sin(rad));
+                SInt32 aw   = static_cast<SInt32>(s->bounds.w * cosA + s->bounds.h * sinA + 0.5);
+                SInt32 ah   = static_cast<SInt32>(s->bounds.w * sinA + s->bounds.h * cosA + 0.5);
+                it.effW = aw; it.effH = ah;
+                it.xOff = (aw - static_cast<SInt32>(s->bounds.w)) / 2;
+                it.yOff = (ah - static_cast<SInt32>(s->bounds.h)) / 2;
             }
             items.push_back(it);
         }
@@ -136,11 +161,14 @@ static void RunFrameLayout(Frame* f) {
     SInt32 originSec = isHoriz ? f->bounds.y : f->bounds.x;
 
     // Effective primary/secondary size including stroke extras.
+    // For rotated shapes, effW/effH hold the AABB dimensions.
     auto ePri = [&](const LayoutItem& it) -> SInt32 {
-        return (isHoriz ? *it.w : *it.h) + (isHoriz ? it.xtraW : it.xtraH);
+        SInt32 base = isHoriz ? (it.effW ? it.effW : *it.w) : (it.effH ? it.effH : *it.h);
+        return base + (isHoriz ? it.xtraW : it.xtraH);
     };
     auto eSec = [&](const LayoutItem& it) -> SInt32 {
-        return (isHoriz ? *it.h : *it.w) + (isHoriz ? it.xtraH : it.xtraW);
+        SInt32 base = isHoriz ? (it.effH ? it.effH : *it.h) : (it.effW ? it.effW : *it.w);
+        return base + (isHoriz ? it.xtraH : it.xtraW);
     };
 
     // Baseline post-pass (H layout only): shift text items so baselines align.
@@ -281,6 +309,8 @@ static void RunFrameLayout(Frame* f) {
             lineSecOff += ln.crossMax + counterGap;
         }
 
+        for (auto& it : items) { if (it.xOff || it.yOff) { *it.x += it.xOff; *it.y += it.yOff; } }
+
         if (isHoriz && f->heightSizing == SizingMode::Hug) {
             SInt32 h = totalCross + padSec1 + padSec2; f->bounds.h = (h > 0) ? h : 1;
         } else if (!isHoriz && f->widthSizing == SizingMode::Hug) {
@@ -372,6 +402,8 @@ static void RunFrameLayout(Frame* f) {
 
         pos += priSz + actualGap;
     }
+
+    for (auto& it : items) { if (it.xOff || it.yOff) { *it.x += it.xOff; *it.y += it.yOff; } }
 
     // Baseline alignment post-pass (H layout only).
     {

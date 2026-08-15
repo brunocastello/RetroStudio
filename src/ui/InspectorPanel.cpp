@@ -615,16 +615,6 @@ void DrawInspectorPanel() {
             DrawNumField(96, static_cast<short>(y2 + 12), 40, kFieldCornerRadius,
                          static_cast<SInt32>(mfCr), sCornerRadiusRect);
             y2 = static_cast<short>(y2 + 22);
-            // Rotation row
-            {
-                SInt16 rotV2 = gSelectedFrame->rotation;
-                RGBForeColor(&labelClr2); TextSize(9);
-                PStrC("\xB0", ps2); MoveTo(6, static_cast<short>(y2 + 12)); DrawString(ps2);
-                TextSize(11);
-                DrawNumField(18, static_cast<short>(y2 + 12), 36, kFieldRotation,
-                             static_cast<SInt32>(rotV2), sRotationRect);
-                y2 = static_cast<short>(y2 + 22);
-            }
         }
 
         // POSITION — X/Y show gSelectedFrame; editing applies delta to all
@@ -638,6 +628,17 @@ void DrawInspectorPanel() {
         DrawNumField(106, static_cast<short>(y2+12), 62, kFieldY,
                      gSelectedFrame->bounds.y, sFieldYRect);
         y2 = static_cast<short>(y2 + 22);
+
+        // Rotation (°) in POSITION section
+        {
+            SInt16 rotV2 = gSelectedFrame->rotation;
+            RGBForeColor(&labelClr2); TextSize(9);
+            PStrC("\xB0", ps2); MoveTo(6, static_cast<short>(y2 + 12)); DrawString(ps2);
+            TextSize(11);
+            DrawNumField(18, static_cast<short>(y2 + 12), 36, kFieldRotation,
+                         static_cast<SInt32>(rotV2), sRotationRect);
+            y2 = static_cast<short>(y2 + 22);
+        }
 
         // SIZE — W/H set the same value on all frames
         y2 = DrawSectionHeader(y2, "SIZE", portRect);
@@ -1238,17 +1239,6 @@ void DrawInspectorPanel() {
             sCornerRadiusRect = {0,0,0,0};
             y = static_cast<short>(y + 22);
         }
-        // Rotation row (all shapes and frames)
-        {
-            SInt16 rotV = gSelectedShape ? gSelectedShape->rotation
-                        : (gSelectedFrame ? gSelectedFrame->rotation : 0);
-            RGBForeColor(&labelClr); TextSize(9);
-            PStrC("\xB0", ps); MoveTo(6, static_cast<short>(y + 12)); DrawString(ps);
-            TextSize(11);
-            DrawNumField(18, static_cast<short>(y + 12), 36, kFieldRotation,
-                         static_cast<SInt32>(rotV), sRotationRect);
-            y = static_cast<short>(y + 22);
-        }
     }
 
     // ---------------------------------------------------------- LAYOUT --
@@ -1507,6 +1497,18 @@ void DrawInspectorPanel() {
 
     y = static_cast<short>(y + 22);
 
+    // Rotation (°) in POSITION section, matching Figma layout
+    {
+        SInt16 rotV = gSelectedShape ? gSelectedShape->rotation
+                    : (gSelectedFrame ? gSelectedFrame->rotation : 0);
+        RGBForeColor(&labelClr); TextSize(9);
+        PStrC("\xB0", ps); MoveTo(6, static_cast<short>(y + 12)); DrawString(ps);
+        TextSize(11);
+        DrawNumField(18, static_cast<short>(y + 12), 36, kFieldRotation,
+                     static_cast<SInt32>(rotV), sRotationRect);
+        y = static_cast<short>(y + 22);
+    }
+
     // -------------------------------------------------------------- SIZE --
     y = DrawSectionHeader(y, "SIZE", portRect);
     y = static_cast<short>(y + 5);
@@ -1718,9 +1720,8 @@ static EditField TabToNextField(EditField cur, bool reverse) {
                                     : (gSelectedFrame ? gSelectedFrame->hasStroke : false);
     if (hasStroke) order.push_back(kFieldStrokeWidth);
 
-    // Opacity + Rotation (all shape and frame types)
+    // Opacity (all shape and frame types)
     order.push_back(kFieldOpacity);
-    order.push_back(kFieldRotation);
 
     // Corner radius (rect shapes and frames)
     bool isRectShape2 = (gSelectedShape && gSelectedShape->GetType() == Shape::kRectangle);
@@ -1751,9 +1752,10 @@ static EditField TabToNextField(EditField cur, bool reverse) {
         }
     }
 
-    // Position
+    // Position + Rotation
     order.push_back(kFieldX);
     order.push_back(kFieldY);
+    order.push_back(kFieldRotation);
 
     // Size — always in tab order (typing auto-switches Hug/Fill frames to Fixed)
     order.push_back(kFieldW);
