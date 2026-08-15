@@ -188,8 +188,11 @@ static void RunFrameLayout(Frame* f) {
     if (f->layoutWrap) {
         struct WrapLine { std::vector<int> indices; SInt32 crossMax = 0; };
 
+        bool hugPri = isHoriz ? (f->widthSizing  == SizingMode::Hug)
+                               : (f->heightSizing == SizingMode::Hug);
         SInt32 available = framePri - padPri1 - padPri2;
         if (available < 1) available = 1;
+        if (hugPri) available = 0x7FFFFFFF;  // primary hugs: never wrap, grow to fit
 
         std::vector<WrapLine> lines;
         WrapLine cur;
@@ -239,6 +242,7 @@ static void RunFrameLayout(Frame* f) {
             }
         }
 
+        SInt32 maxLineSpan = 0;
         for (auto& ln : lines) {
             int nL = static_cast<int>(ln.indices.size());
 
@@ -277,6 +281,7 @@ static void RunFrameLayout(Frame* f) {
                 lineGap = (rem > 0) ? rem / (nL - 1) : 0;
             }
             SInt32 lineSpan = lineContent + (nL > 1 ? lineGap * (nL - 1) : 0);
+            if (lineSpan > maxLineSpan) maxLineSpan = lineSpan;
 
             SInt32 pos = padPri1;
             switch (f->primaryAlign) {
@@ -311,6 +316,12 @@ static void RunFrameLayout(Frame* f) {
 
         for (auto& it : items) { if (it.xOff || it.yOff) { *it.x += it.xOff; *it.y += it.yOff; } }
 
+        // Primary hug (matches Figma: wrap+Hug behaves like no-wrap+Hug on primary axis)
+        if (hugPri) {
+            SInt32 newPri = maxLineSpan + padPri1 + padPri2; if (newPri < 1) newPri = 1;
+            if (isHoriz) f->bounds.w = newPri; else f->bounds.h = newPri;
+        }
+        // Secondary hug
         if (isHoriz && f->heightSizing == SizingMode::Hug) {
             SInt32 h = totalCross + padSec1 + padSec2; f->bounds.h = (h > 0) ? h : 1;
         } else if (!isHoriz && f->widthSizing == SizingMode::Hug) {

@@ -2361,8 +2361,21 @@ void HandleInspectorClick(Point localPt) {
             if (PtInRect(localPt, &sLayoutModeRect[i])) {
                 PushUndo();
                 LayoutMode nm = static_cast<LayoutMode>(i);
-                if (isMultiFrame) { for (Frame* f : gSelectedFrames) f->layoutMode = nm; }
-                else              { lf->layoutMode = nm; }
+                if (isMultiFrame) {
+                    for (Frame* f : gSelectedFrames) {
+                        if (nm != LayoutMode::None && f->layoutMode == LayoutMode::None) {
+                            f->widthSizing  = SizingMode::Hug;
+                            f->heightSizing = SizingMode::Hug;
+                        }
+                        f->layoutMode = nm;
+                    }
+                } else {
+                    if (nm != LayoutMode::None && lf->layoutMode == LayoutMode::None) {
+                        lf->widthSizing  = SizingMode::Hug;
+                        lf->heightSizing = SizingMode::Hug;
+                    }
+                    lf->layoutMode = nm;
+                }
                 InvalidateInspector();
                 if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
                 return;
