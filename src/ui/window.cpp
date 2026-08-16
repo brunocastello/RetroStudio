@@ -48,7 +48,7 @@ static void ComputeCursorMask(Cursor& cur, const unsigned short kData[16]) {
 
 // Handle geometry shared by cursor selection and hit-testing.
 static const short kHandleHW   = 4;   // handle square half-width (grab target)
-static const short kRotateZone = 18;  // extra px beyond handle for rotate zone (was 10 — too thin to regrab)
+static const short kRotateZone = 30;  // extra px beyond handle for rotate zone (was 10, then 18 — still too thin to regrab)
 
 // ---- Direction-accurate resize cursors: EW, NS, and both diagonals ----
 // (double-headed arrows; source bitmaps below, NWSE derived from NESW by mirroring)
