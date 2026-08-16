@@ -1660,47 +1660,7 @@ void DrawWindowContent(WindowRef win) {
     SetPortWindowPort(win);
     Rect portRect;
     GetWindowPortBounds(win, &portRect);
-    short w = static_cast<short>(portRect.right - portRect.left);
-    short h = static_cast<short>(portRect.bottom - portRect.top);
-
-    // Double-buffer: draw into an offscreen GWorld the size of the content
-    // area, then blit it to the window in one shot. Drawing straight to the
-    // window erases to the canvas background first, which flashes visibly
-    // whenever a redraw is slow enough to notice — rotated text (per-pixel
-    // compositing) and rotated rounded corners (polygon + region rebuilds)
-    // both are. Buffer is reused across calls, only reallocated on resize.
-    static GWorldPtr sCanvasBuf  = nullptr;
-    static short     sCanvasBufW = 0, sCanvasBufH = 0;
-    if (sCanvasBuf && (sCanvasBufW != w || sCanvasBufH != h)) {
-        DisposeGWorld(sCanvasBuf);
-        sCanvasBuf = nullptr;
-    }
-    if (!sCanvasBuf && w > 0 && h > 0) {
-        Rect bufBounds = {0, 0, h, w};
-        if (NewGWorld(&sCanvasBuf, 32, &bufBounds, nullptr, nullptr, 0) == noErr) {
-            sCanvasBufW = w; sCanvasBufH = h;
-        }
-    }
-
-    if (sCanvasBuf) {
-        GrafPtr savedPort; GetPort(&savedPort);
-        SetGWorld(reinterpret_cast<CGrafPtr>(sCanvasBuf), nullptr);
-        PixMapHandle pm = GetGWorldPixMap(sCanvasBuf);
-        LockPixels(pm);
-
-        Rect localBounds = {0, 0, h, w};
-        DrawCanvasInto(localBounds);
-
-        UnlockPixels(pm);
-        SetPort(savedPort);
-
-        SetPortWindowPort(win);
-        CopyBits(GetPortBitMapForCopyBits(reinterpret_cast<CGrafPtr>(sCanvasBuf)),
-                 GetPortBitMapForCopyBits(GetWindowPort(win)),
-                 &localBounds, &portRect, srcCopy, nullptr);
-    } else {
-        DrawCanvasInto(portRect);  // low-memory fallback: direct draw, may flicker
-    }
+    DrawCanvasInto(portRect);
 }
 
 // --------------------------------------------------------------------------
