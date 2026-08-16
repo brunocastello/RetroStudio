@@ -3028,7 +3028,7 @@ static Shape* HitTestAnyShapeBodyAt(Point pt) {
 // If `pushUndoOnCommit` is false, the caller is responsible for having already
 // pushed an undo snapshot (used when creating a brand-new shape, so "type text
 // then click away" is one undo step, not two).
-static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit = true) {
+static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit) {
     if (!ts || ts->locked) return;
     gEditingTextShape = ts;
 
