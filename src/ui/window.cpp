@@ -1130,10 +1130,27 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                         setTextDrawState();
                         drawLines(gwRect);
 
+                        // Read pixels via direct pointer access rather than GetCPixel:
+                        // this buffer was explicitly requested at 32-bit depth above, so
+                        // the pixel format is known (classic 32-bit chunky: byte0 pad,
+                        // byte1 R, byte2 G, byte3 B) regardless of the screen's own
+                        // depth — avoids a Toolbox trap call per pixel, which is the
+                        // dominant cost of rotated-text rendering (visible as flicker
+                        // during a live rotate drag, since nothing here touches the
+                        // shared screen palette or blits cross-depth, this is safe).
                         std::vector<RGBColor> srcBuf(static_cast<size_t>(w) * h);
-                        for (short sy = 0; sy < h; ++sy)
-                            for (short sx = 0; sx < w; ++sx)
-                                GetCPixel(sx, sy, &srcBuf[static_cast<size_t>(sy)*w + sx]);
+                        Ptr baseAddr = GetPixBaseAddr(pm);
+                        SInt32 rowBytes = (**pm).rowBytes & 0x3FFF;
+                        for (short sy = 0; sy < h; ++sy) {
+                            UInt8* row = reinterpret_cast<UInt8*>(baseAddr + sy * rowBytes);
+                            for (short sx = 0; sx < w; ++sx) {
+                                UInt8* px = row + sx * 4;
+                                RGBColor& c = srcBuf[static_cast<size_t>(sy)*w + sx];
+                                c.red   = static_cast<UInt16>(px[1] * 0x0101);
+                                c.green = static_cast<UInt16>(px[2] * 0x0101);
+                                c.blue  = static_cast<UInt16>(px[3] * 0x0101);
+                            }
+                        }
                         UnlockPixels(pm);
                         SetPort(savedPort);
                         DisposeGWorld(gw);
@@ -1181,6 +1198,85 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
         default: break;
     }
     if (shapeOp) PenNormal();
+}
+
+// Renders a short single-line label rotated by `chain` (e.g. childChain from
+// DrawFrame — the frame's own rotation about its own center, prepended to
+// its ambient) so it visually rotates WITH the frame instead of staying
+// horizontal. `localRect` is the label's unrotated bounding rect in the same
+// local (pre-rotation) coordinate space `chain` was built from. Same
+// offscreen-buffer + per-pixel composite technique as rotated text shapes
+// (QuickDraw has no native rotated-text primitive), scoped to one short
+// string — no wrapping/alignment needed. Read/write technique verified safe:
+// buffer is 32-bit (known, fixed format, read via direct pointer access) and
+// separate from the screen's own depth; the only screen-touching call is
+// SetCPixel, which never touches the shared palette.
+static void DrawRotatedLabel(Str255 pstr, const Rect& localRect, const RotChain& chain, RGBColor color) {
+    short w = static_cast<short>(localRect.right - localRect.left);
+    short h = static_cast<short>(localRect.bottom - localRect.top);
+    if (w <= 0 || h <= 0) return;
+
+    Rect gwRect; gwRect.top = 0; gwRect.left = 0; gwRect.bottom = h; gwRect.right = w;
+    GWorldPtr gw = nullptr;
+    if (NewGWorld(&gw, 32, &gwRect, nullptr, nullptr, 0) != noErr || !gw) return;
+
+    GrafPtr savedPort; GetPort(&savedPort);
+    SetGWorld(reinterpret_cast<CGrafPtr>(gw), nullptr);
+    PixMapHandle pm = GetGWorldPixMap(gw);
+    LockPixels(pm);
+
+    RGBColor sentinel = {0x2222, 0x4444, 0x6666};
+    if (color.red == sentinel.red && color.green == sentinel.green && color.blue == sentinel.blue)
+        sentinel = RGBColor{0x6666, 0x2222, 0x4444};
+
+    RGBColor bgc = sentinel; RGBBackColor(&bgc);
+    EraseRect(&gwRect);
+    RGBColor fc = color; RGBForeColor(&fc);
+    TextFont(0); TextSize(10); TextFace(0);
+    MoveTo(0, static_cast<short>(h - 2));
+    DrawString(pstr);
+
+    std::vector<RGBColor> srcBuf(static_cast<size_t>(w) * h);
+    Ptr baseAddr = GetPixBaseAddr(pm);
+    SInt32 rowBytes = (**pm).rowBytes & 0x3FFF;
+    for (short sy = 0; sy < h; ++sy) {
+        UInt8* row = reinterpret_cast<UInt8*>(baseAddr + sy * rowBytes);
+        for (short sx = 0; sx < w; ++sx) {
+            UInt8* px = row + sx * 4;
+            RGBColor& c = srcBuf[static_cast<size_t>(sy)*w + sx];
+            c.red   = static_cast<UInt16>(px[1] * 0x0101);
+            c.green = static_cast<UInt16>(px[2] * 0x0101);
+            c.blue  = static_cast<UInt16>(px[3] * 0x0101);
+        }
+    }
+    UnlockPixels(pm);
+    SetPort(savedPort);
+    DisposeGWorld(gw);
+
+    double lx0 = localRect.left, ly0 = localRect.top;
+    double minX = 1e18, maxX = -1e18, minY = 1e18, maxY = -1e18;
+    double cornersLoc[4][2] = { {0,0}, {(double)w,0}, {(double)w,(double)h}, {0,(double)h} };
+    for (int i = 0; i < 4; ++i) {
+        double fx, fy;
+        ApplyRotChain(chain, lx0 + cornersLoc[i][0], ly0 + cornersLoc[i][1], fx, fy);
+        if (fx < minX) minX = fx; if (fx > maxX) maxX = fx;
+        if (fy < minY) minY = fy; if (fy > maxY) maxY = fy;
+    }
+    short dLeft = static_cast<short>(minX - 1), dRight = static_cast<short>(maxX + 1);
+    short dTop  = static_cast<short>(minY - 1), dBottom = static_cast<short>(maxY + 1);
+
+    for (short dy = dTop; dy <= dBottom; ++dy) {
+        for (short dx = dLeft; dx <= dRight; ++dx) {
+            double ox, oy;
+            ApplyRotChainInverse(chain, dx, dy, ox, oy);
+            short sx = static_cast<short>(ox - lx0), sy = static_cast<short>(oy - ly0);
+            if (sx < 0 || sx >= w || sy < 0 || sy >= h) continue;
+            const RGBColor& px = srcBuf[static_cast<size_t>(sy)*w + sx];
+            if (px.red == sentinel.red && px.green == sentinel.green && px.blue == sentinel.blue) continue;
+            RGBColor pxCopy = px;
+            SetCPixel(dx, dy, &pxCopy);
+        }
+    }
 }
 
 // Forward-declare so DrawFrame can call itself recursively
@@ -1330,20 +1426,26 @@ static void DrawFrame(const Frame& frame, const RotChain& ambient) {
     if (framePoly) KillPoly(framePoly);
 
     // Name label — only on top-level frames (no parent). Top-level frames are
-    // always drawn with an empty incoming `ambient`, so only the frame's own
-    // rotation (if any) needs to be applied to the label anchor.
+    // always drawn with an empty incoming `ambient`, so `childChain` here is
+    // just the frame's own rotation about its own center.
     if (frame.parent == nullptr) {
         RGBColor lc = { 0x4444, 0x4444, 0x4444 };
-        RGBForeColor(&lc);
-        TextSize(10);
         Str255 pn; ToPStr(frame.name, pn);
         if (anyRotation) {
-            MoveTo(static_cast<short>(corners[0].h), static_cast<short>(corners[0].v - 5));
+            TextFont(0); TextSize(10); TextFace(0);
+            short strW = StringWidth(pn);
+            Rect localRect = {
+                static_cast<short>(r.top - 5 - 12), r.left,
+                static_cast<short>(r.top - 5),      static_cast<short>(r.left + strW)
+            };
+            DrawRotatedLabel(pn, localRect, childChain, lc);
         } else {
+            RGBForeColor(&lc);
+            TextSize(10);
             MoveTo(r.left, static_cast<short>(r.top - 5));
+            DrawString(pn);
+            TextSize(12);
         }
-        DrawString(pn);
-        TextSize(12);
     }
 }
 
