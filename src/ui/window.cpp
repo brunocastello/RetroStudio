@@ -1351,6 +1351,7 @@ static void DrawFrame(const Frame& frame, const RotChain& ambient) {
 static bool ComputeSelectionHandles(short hx[8], short hy[8]);
 static double SelectedOwnRotation();
 static RotChain SelectedAmbientChain();
+static short EffectiveRotateZone(const short hx[8], const short hy[8], int cornerIdx);
 
 void UpdateCanvasCursor(Point globalPt) {
     // Only for the select tool with a single selection over the canvas
@@ -1390,7 +1391,7 @@ void UpdateCanvasCursor(Point globalPt) {
             SetCursor(GetResizeCursor(HandleBucket(i, shapeRot)));
             return;
         }
-        if (dist <= kHandleHW + kRotateZone) rotateCorner = i;
+        if (dist <= kHandleHW + EffectiveRotateZone(hx, hy, i)) rotateCorner = i;
     }
     if (rotateCorner >= 0) {
         SetCursor(GetRotateCursor(HandleBucket(rotateCorner, shapeRot)));
@@ -1971,6 +1972,24 @@ static int HitTestHandles(Point pt) {
     return -1;
 }
 
+// Caps the rotate-zone reach for corner `cornerIdx` so it never swallows the
+// hit-zone of either adjacent edge-mid handle. Without this, on small shapes
+// (short text boxes especially) the rotate zone can extend past an edge
+// handle entirely, making that handle unreachable except by zooming in.
+static short EffectiveRotateZone(const short hx[8], const short hy[8], int cornerIdx) {
+    int adj[2] = { (cornerIdx + 1) % 8, (cornerIdx + 7) % 8 };
+    short minDist = 32767;
+    for (int a : adj) {
+        short adx = static_cast<short>(hx[cornerIdx] - hx[a]); if (adx < 0) adx = -adx;
+        short ady = static_cast<short>(hy[cornerIdx] - hy[a]); if (ady < 0) ady = -ady;
+        short dist = adx > ady ? adx : ady;
+        if (dist < minDist) minDist = dist;
+    }
+    short cap = static_cast<short>(minDist - kHandleHW - 2);
+    if (cap < 4) cap = 4;
+    return (cap < kRotateZone) ? cap : kRotateZone;
+}
+
 // Returns the corner handle index (0,2,4,6) if pt is in that corner's rotate zone
 // (near the corner, outside the handle square), or -1 if not in any rotate zone.
 static int HitTestRotateZone(Point pt) {
@@ -1982,7 +2001,8 @@ static int HitTestRotateZone(Point pt) {
         short adx = static_cast<short>(pt.h - hx[i]); if (adx < 0) adx = -adx;
         short ady = static_cast<short>(pt.v - hy[i]); if (ady < 0) ady = -ady;
         short dist = adx > ady ? adx : ady;
-        if (dist > kHandleHW && dist <= kHandleHW + kRotateZone) return i;
+        short zone = EffectiveRotateZone(hx, hy, i);
+        if (dist > kHandleHW && dist <= kHandleHW + zone) return i;
     }
     return -1;
 }
@@ -2028,7 +2048,31 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     while (Button()) {
         GetMouse(&curr);
         if (curr.h != prev.h || curr.v != prev.v) {
-            if (!pushedUndo) { PushUndo(); pushedUndo = true; }
+            if (!pushedUndo) {
+                PushUndo();
+                pushedUndo = true;
+
+                // Text sizing mode must switch right as the drag starts, not
+                // after it ends: DrawWindowContent re-derives bounds from the
+                // CURRENT sizing mode every frame (UpdateTextShapeBounds), so
+                // while the shape is still Auto Width it fights every frame
+                // of the drag back to its hugged size — the first drag looks
+                // like it does nothing until the mode actually switches.
+                // Matches Figma: touching height (alone or via a corner,
+                // which touches both) always fixes it; touching only width
+                // while Auto Width switches to Auto Height (width becomes
+                // fixed, height keeps hugging wrapped content) instead.
+                if (gSelectedShape && gSelectedShape->GetType() == Shape::kText) {
+                    TextShape* ts = static_cast<TextShape*>(gSelectedShape);
+                    bool widthChanged  = bL[hi] || bR[hi];
+                    bool heightChanged = bT[hi] || bB[hi];
+                    if (heightChanged) {
+                        ts->textSizing = TextSizing::Fixed;
+                    } else if (widthChanged && ts->textSizing == TextSizing::AutoWidth) {
+                        ts->textSizing = TextSizing::AutoHeight;
+                    }
+                }
+            }
 
             // Total mouse delta from drag start, in canvas units.
             double dCanvasX = static_cast<double>(curr.h - startPt.h) * 100.0 / gCanvasZoom;
@@ -2074,23 +2118,6 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
 
             DrawWindowContent(win);
             prev = curr;
-        }
-    }
-
-    // Text sizing mode auto-switches based on which dimension was manually
-    // resized, matching Figma: touching height (alone or via a corner, which
-    // touches both) always fixes it; touching only width while Auto Width
-    // switches to Auto Height (width now fixed, height still hugs wrapped
-    // content) instead. Auto Height/Fixed stay as they are on a width-only
-    // resize since width is already the user-controlled dimension there.
-    if (pushedUndo && gSelectedShape && gSelectedShape->GetType() == Shape::kText) {
-        TextShape* ts = static_cast<TextShape*>(gSelectedShape);
-        bool widthChanged  = bL[hi] || bR[hi];
-        bool heightChanged = bT[hi] || bB[hi];
-        if (heightChanged) {
-            ts->textSizing = TextSizing::Fixed;
-        } else if (widthChanged && ts->textSizing == TextSizing::AutoWidth) {
-            ts->textSizing = TextSizing::AutoHeight;
         }
     }
 
