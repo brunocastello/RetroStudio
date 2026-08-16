@@ -30,6 +30,11 @@ int        gNextRectNum    = 1;
 int        gNextEllipseNum = 1;
 int        gNextTextNum    = 1;
 
+// Non-null while a text shape is being edited in place (EditTextInPlace) —
+// DrawShape skips rendering it normally so the live TextEdit overlay shows
+// through instead.
+static TextShape* gEditingTextShape = nullptr;
+
 // ---- Cursor management -------------------------------------------------------
 // Helper: compute 8-connected dilation mask from a 16-row bitmap
 static void ComputeCursorMask(Cursor& cur, const unsigned short kData[16]) {
@@ -837,8 +842,64 @@ static bool PtInLocalRect(const Bounds2& bounds, Point pt, const RotChain& ambie
     return PtInRect(p, &r);
 }
 
+// Traces a (possibly per-corner) rounded-rect boundary as a closed point path:
+// TL arc -> top edge -> TR arc -> right edge -> BR arc -> bottom edge -> BL arc
+// -> left edge -> (back to start). Radii of 0 collapse an arc to its single
+// corner point, so this also covers the plain sharp-corner case. Each point is
+// rotated by the shape/frame's own rotation around its own local center, then
+// carried through `ambient` (enclosing rotated frames, if any).
+static std::vector<Point> TraceRoundedRectPoints(const Rect& r, short tl, short tr, short br, short bl,
+                                                   double angleDeg, const RotChain& ambient) {
+    short x = r.left, y = r.top;
+    short w = static_cast<short>(r.right - r.left);
+    short h = static_cast<short>(r.bottom - r.top);
+    short maxR = static_cast<short>((w < h ? w : h) / 2);
+    if (tl > maxR) tl = maxR; if (tr > maxR) tr = maxR;
+    if (br > maxR) br = maxR; if (bl > maxR) bl = maxR;
+    if (tl < 0) tl = 0; if (tr < 0) tr = 0; if (br < 0) br = 0; if (bl < 0) bl = 0;
+
+    double cx0 = (r.left + r.right) * 0.5, cy0 = (r.top + r.bottom) * 0.5;
+    double rad = angleDeg * 3.14159265358979323846 / 180.0;
+    double cosA = std::cos(rad), sinA = std::sin(rad);
+
+    std::vector<Point> out;
+    auto addPoint = [&](double lx, double ly) {
+        double dx = lx - cx0, dy = ly - cy0;
+        double ox = cx0 + dx*cosA - dy*sinA;
+        double oy = cy0 + dx*sinA + dy*cosA;
+        double fx, fy;
+        ApplyRotChain(ambient, ox, oy, fx, fy);
+        out.push_back(ToQDPoint(fx, fy));
+    };
+    auto addArc = [&](double ccx, double ccy, double radius, double a0Deg, double a1Deg) {
+        if (radius <= 0) { addPoint(ccx, ccy); return; }
+        const int steps = 8;
+        for (int i = 0; i <= steps; ++i) {
+            double a = (a0Deg + (a1Deg - a0Deg) * i / steps) * 3.14159265358979323846 / 180.0;
+            addPoint(ccx + radius*std::cos(a), ccy + radius*std::sin(a));
+        }
+    };
+
+    addArc(x+tl,   y+tl,   tl, 180, 270);
+    addArc(x+w-tr, y+tr,   tr, 270, 360);
+    addArc(x+w-br, y+h-br, br, 0,   90);
+    addArc(x+bl,   y+h-bl, bl, 90,  180);
+    return out;
+}
+
+// Traces `pts` via MoveTo/LineTo (closing back to the first point) — shared by
+// callers that need the same path both as a fillable/strokeable PolyHandle and
+// as an OpenRgn/CloseRgn clip region.
+static void TracePointPath(const std::vector<Point>& pts) {
+    if (pts.empty()) return;
+    MoveTo(pts[0].h, pts[0].v);
+    for (size_t i = 1; i < pts.size(); ++i) LineTo(pts[i].h, pts[i].v);
+    LineTo(pts[0].h, pts[0].v);
+}
+
 static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
     if (!shape.visible) return;
+    if (gEditingTextShape && &shape == static_cast<const Shape*>(gEditingTextShape)) return;
     Rect r = CanvasRect(shape.bounds);
     bool anyRotation = (shape.rotation != 0) || !ambient.empty();
     bool shapeOp = (shape.opacity < 100);
@@ -852,11 +913,32 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
         case Shape::kLine: {
             if (anyRotation) {
                 // Rotated rect (own rotation and/or inherited from a rotated
-                // ancestor frame): polygon path, corner radius ignored.
+                // ancestor frame): polygon path, corners rounded via TraceRoundedRectPoints.
                 short sw = static_cast<short>(shape.strokeWidth);
-                DrawRotatedRect(r, shape.rotation,
-                                shape.hasFill, shape.fillColor,
-                                shape.hasStroke, shape.strokeColor, sw, ambient);
+                short rtl = 0, rtr = 0, rbr = 0, rbl = 0;
+                if (shape.GetType() == Shape::kRectangle) {
+                    const auto& rs = static_cast<const RectShape&>(shape);
+                    if (rs.cornerIndividual) {
+                        rtl = ScaleCornerRadius(rs.cornerTL); rtr = ScaleCornerRadius(rs.cornerTR);
+                        rbr = ScaleCornerRadius(rs.cornerBR); rbl = ScaleCornerRadius(rs.cornerBL);
+                    } else {
+                        short uniform = ScaleCornerRadius(rs.cornerRadius);
+                        rtl = rtr = rbr = rbl = uniform;
+                    }
+                }
+                if (rtl || rtr || rbr || rbl) {
+                    std::vector<Point> pts = TraceRoundedRectPoints(r, rtl, rtr, rbr, rbl, shape.rotation, ambient);
+                    PolyHandle poly = OpenPoly();
+                    TracePointPath(pts);
+                    ClosePoly();
+                    if (shape.hasFill)   { RGBColor c = shape.fillColor;   RGBForeColor(&c); PaintPoly(poly); }
+                    if (shape.hasStroke) { RGBColor c = shape.strokeColor; RGBForeColor(&c); PenSize(sw,sw); FramePoly(poly); PenSize(1,1); }
+                    KillPoly(poly);
+                } else {
+                    DrawRotatedRect(r, shape.rotation,
+                                    shape.hasFill, shape.fillColor,
+                                    shape.hasStroke, shape.strokeColor, sw, ambient);
+                }
                 break;
             }
             if (shape.GetType() == Shape::kRectangle &&
@@ -929,19 +1011,6 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
             break;
         case Shape::kText: {
             const TextShape& t = static_cast<const TextShape&>(shape);
-            // QuickDraw can't rotate glyphs, so text never spins with its own
-            // rotation or an ancestor frame's — but it must still track a rotated
-            // ancestor's position, or it'd render detached from its container.
-            // Re-center the (unrotated) text box on its ambient-transformed center.
-            if (!ambient.empty()) {
-                double cx0 = (r.left + r.right) * 0.5, cy0 = (r.top + r.bottom) * 0.5;
-                double fcx, fcy;
-                ApplyRotChain(ambient, cx0, cy0, fcx, fcy);
-                short dx = static_cast<short>((fcx - cx0) + (fcx >= cx0 ? 0.5 : -0.5));
-                short dy = static_cast<short>((fcy - cy0) + (fcy >= cy0 ? 0.5 : -0.5));
-                r.left = static_cast<short>(r.left + dx); r.right  = static_cast<short>(r.right  + dx);
-                r.top  = static_cast<short>(r.top  + dy); r.bottom = static_cast<short>(r.bottom + dy);
-            }
             short scaledSize = static_cast<short>(SInt32(t.fontSize) * gCanvasZoom / 100);
             if (scaledSize < 4)   scaledSize = 4;
             if (scaledSize > 127) scaledSize = 127;
@@ -955,31 +1024,39 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                 }
                 GetFNum(fname, &fontID);
             }
-            TextFont(fontID); TextSize(scaledSize);
-
-            // Stroke renders as QuickDraw outline on glyphs (backColor=fill, foreColor=stroke)
-            // so the outline follows letter shapes rather than a bounding rectangle.
-            if (shape.hasStroke) {
-                RGBColor fc = shape.hasFill ? shape.fillColor : RGBColor{0xFFFF,0xFFFF,0xFFFF};
-                RGBBackColor(&fc);
-                RGBColor sc = shape.strokeColor; RGBForeColor(&sc);
-                TextFace(static_cast<short>(t.fontFace | 8));  // QuickDraw outline bit
-            } else if (shape.hasFill) {
-                RGBColor tc = shape.fillColor; RGBForeColor(&tc);
-                RGBColor wh = {0xFFFF,0xFFFF,0xFFFF}; RGBBackColor(&wh);
-                TextFace(t.fontFace);
-            } else {
-                TextFont(0); TextSize(12); break;  // nothing to draw
-            }
+            if (!shape.hasStroke && !shape.hasFill) { break; }  // nothing to draw
 
             const std::string& str = t.text;
             short lineH = static_cast<short>(SInt32(scaledSize) * t.lineHeight / 100);
             if (lineH < 1) lineH = 1;
-            short drawY   = static_cast<short>(r.top + scaledSize);
-            short boxW    = static_cast<short>(r.right - r.left);
-            short lsxPx   = static_cast<short>(SInt32(t.letterSpacing) * gCanvasZoom / 100);
+            short lsxPx = static_cast<short>(SInt32(t.letterSpacing) * gCanvasZoom / 100);
 
-            if (!str.empty()) {
+            // Sets the current port's font/face/color state for text drawing. Must be
+            // re-called after switching ports (offscreen GWorld path below), since
+            // that state lives on the GrafPort, not globally.
+            auto setTextDrawState = [&]() {
+                TextFont(fontID); TextSize(scaledSize);
+                // Stroke renders as QuickDraw outline on glyphs (backColor=fill,
+                // foreColor=stroke) so the outline follows letter shapes rather than
+                // a bounding rectangle.
+                if (shape.hasStroke) {
+                    RGBColor fc = shape.hasFill ? shape.fillColor : RGBColor{0xFFFF,0xFFFF,0xFFFF};
+                    RGBBackColor(&fc);
+                    RGBColor sc = shape.strokeColor; RGBForeColor(&sc);
+                    TextFace(static_cast<short>(t.fontFace | 8));  // QuickDraw outline bit
+                } else {
+                    RGBColor tc = shape.fillColor; RGBForeColor(&tc);
+                    RGBColor wh = {0xFFFF,0xFFFF,0xFFFF}; RGBBackColor(&wh);
+                    TextFace(t.fontFace);
+                }
+            };
+
+            // Draws all lines into the current port at `rect` (font/color state
+            // must already be set via setTextDrawState).
+            auto drawLines = [&](Rect rect) {
+                if (str.empty()) return;
+                short drawY = static_cast<short>(rect.top + scaledSize);
+                short boxW  = static_cast<short>(rect.right - rect.left);
                 size_t pos = 0;
                 do {
                     size_t nl  = str.find('\n', pos);
@@ -1000,9 +1077,9 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                         }
                         // Alignment → start X
                         short sx;
-                        if (t.textAlign == 1)      sx = static_cast<short>(r.left + (boxW - lw) / 2);
-                        else if (t.textAlign == 2) sx = static_cast<short>(r.right - lw);
-                        else                       sx = r.left;
+                        if (t.textAlign == 1)      sx = static_cast<short>(rect.left + (boxW - lw) / 2);
+                        else if (t.textAlign == 2) sx = static_cast<short>(rect.right - lw);
+                        else                       sx = rect.left;
                         // Draw line
                         if (lsxPx == 0) {
                             MoveTo(sx, drawY); DrawString(pline);
@@ -1019,6 +1096,83 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                     pos   = nl + 1;
                     drawY = static_cast<short>(drawY + lineH);
                 } while (pos < str.size());
+            };
+
+            if (!anyRotation) {
+                setTextDrawState();
+                drawLines(r);
+            } else {
+                // QuickDraw can't rotate glyphs directly: render into an offscreen
+                // GWorld at local (0,0), cache its pixels, then rotate+composite onto
+                // the destination pixel by pixel (nearest-neighbor), skipping the
+                // untouched sentinel background so whatever's behind the text shows
+                // through — matches how the unrotated path never paints outside the
+                // glyph cells DrawString itself touches.
+                short w = static_cast<short>(r.right - r.left), h = static_cast<short>(r.bottom - r.top);
+                if (w > 0 && h > 0) {
+                    Rect gwRect; gwRect.top = 0; gwRect.left = 0; gwRect.bottom = h; gwRect.right = w;
+                    GWorldPtr gw = nullptr;
+                    if (NewGWorld(&gw, 32, &gwRect, nullptr, nullptr, 0) == noErr && gw) {
+                        GrafPtr savedPort; GetPort(&savedPort);
+                        SetGWorld(reinterpret_cast<CGrafPtr>(gw), nullptr);
+                        PixMapHandle pm = GetGWorldPixMap(gw);
+                        LockPixels(pm);
+
+                        RGBColor sentinel = {0x2222, 0x4444, 0x6666};
+                        bool clash = (shape.hasFill && shape.fillColor.red == sentinel.red
+                                      && shape.fillColor.green == sentinel.green && shape.fillColor.blue == sentinel.blue)
+                                  || (shape.hasStroke && shape.strokeColor.red == sentinel.red
+                                      && shape.strokeColor.green == sentinel.green && shape.strokeColor.blue == sentinel.blue);
+                        if (clash) sentinel = RGBColor{0x6666, 0x2222, 0x4444};
+
+                        RGBColor bgc = sentinel; RGBBackColor(&bgc);
+                        EraseRect(&gwRect);
+                        setTextDrawState();
+                        drawLines(gwRect);
+
+                        std::vector<RGBColor> srcBuf(static_cast<size_t>(w) * h);
+                        for (short sy = 0; sy < h; ++sy)
+                            for (short sx = 0; sx < w; ++sx)
+                                GetCPixel(sx, sy, &srcBuf[static_cast<size_t>(sy)*w + sx]);
+                        UnlockPixels(pm);
+                        SetPort(savedPort);
+                        DisposeGWorld(gw);
+
+                        // Rotated (own + ambient) bounding box in screen space, then
+                        // inverse-map each destination pixel back into the source buffer.
+                        double cx0 = (r.left + r.right) * 0.5, cy0 = (r.top + r.bottom) * 0.5;
+                        double rad = shape.rotation * 3.14159265358979323846 / 180.0;
+                        double cosA = std::cos(rad), sinA = std::sin(rad);
+                        double hw = w * 0.5, hh = h * 0.5;
+                        double cornerLx[4] = { -hw, hw, hw, -hw }, cornerLy[4] = { -hh, -hh, hh, hh };
+                        double minX=1e18, maxX=-1e18, minY=1e18, maxY=-1e18;
+                        for (int i = 0; i < 4; ++i) {
+                            double ox = cx0 + cornerLx[i]*cosA - cornerLy[i]*sinA;
+                            double oy = cy0 + cornerLx[i]*sinA + cornerLy[i]*cosA;
+                            double fx, fy; ApplyRotChain(ambient, ox, oy, fx, fy);
+                            if (fx<minX) minX=fx; if (fx>maxX) maxX=fx;
+                            if (fy<minY) minY=fy; if (fy>maxY) maxY=fy;
+                        }
+                        short dLeft = static_cast<short>(minX - 1), dRight = static_cast<short>(maxX + 1);
+                        short dTop  = static_cast<short>(minY - 1), dBottom = static_cast<short>(maxY + 1);
+
+                        for (short dy = dTop; dy <= dBottom; ++dy) {
+                            for (short dx = dLeft; dx <= dRight; ++dx) {
+                                double ox, oy;
+                                ApplyRotChainInverse(ambient, dx, dy, ox, oy);
+                                double ldx = ox - cx0, ldy = oy - cy0;
+                                double lx =  ldx*cosA + ldy*sinA;
+                                double ly = -ldx*sinA + ldy*cosA;
+                                short sx = static_cast<short>(lx + hw), sy = static_cast<short>(ly + hh);
+                                if (sx < 0 || sx >= w || sy < 0 || sy >= h) continue;
+                                const RGBColor& px = srcBuf[static_cast<size_t>(sy)*w + sx];
+                                if (px.red == sentinel.red && px.green == sentinel.green && px.blue == sentinel.blue) continue;
+                                RGBColor pxCopy = px;
+                                SetCPixel(dx, dy, &pxCopy);
+                            }
+                        }
+                    }
+                }
             }
             TextFace(0); TextSize(12); TextFont(0);
             RGBColor wh = {0xFFFF,0xFFFF,0xFFFF}; RGBBackColor(&wh);
@@ -1032,34 +1186,13 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
 // Forward-declare so DrawFrame can call itself recursively
 static void DrawFrame(const Frame& frame, const RotChain& ambient = {});
 
-// Compute the frame's own-rotated 4 corners (TL,TR,BR,BL) around its own local
-// center, then carry them through `ambient` to final screen points.
-static void RotatedFrameCorners(const Rect& r, short angleDeg, const RotChain& ambient, Point out[4]) {
-    double cx = (r.left + r.right) * 0.5, cy = (r.top + r.bottom) * 0.5;
-    double hw = (r.right - r.left) * 0.5, hh = (r.bottom - r.top) * 0.5;
-    double rad = angleDeg * 3.14159265358979323846 / 180.0;
-    double cosA = std::cos(rad), sinA = std::sin(rad);
-    double lx[4] = { -hw,  hw,  hw, -hw };
-    double ly[4] = { -hh, -hh,  hh,  hh };
-    for (int i = 0; i < 4; ++i) {
-        double px = cx + lx[i]*cosA - ly[i]*sinA;
-        double py = cy + lx[i]*sinA + ly[i]*cosA;
-        double fx, fy;
-        ApplyRotChain(ambient, px, py, fx, fy);
-        out[i] = ToQDPoint(fx, fy);
-    }
-}
-
 static void DrawFrame(const Frame& frame, const RotChain& ambient) {
     if (!frame.visible) return;
     Rect r = CanvasRect(frame.bounds);
     bool anyRotation = (frame.rotation != 0) || !ambient.empty();
 
     // Compute corner rendering params — individual per-corner or uniform.
-    // Rounded corners are dropped whenever the frame is rotated (by itself or
-    // by an ancestor), matching the same simplification individually-rotated
-    // shapes already use (DrawRotatedRect/DrawRotatedEllipse).
-    bool fIndiv = frame.cornerIndividual && !anyRotation;
+    bool fIndiv = frame.cornerIndividual;
     short fitl = 0, fitr = 0, fibr = 0, fibl = 0;
     short fov = 0;
     if (fIndiv) {
@@ -1067,7 +1200,7 @@ static void DrawFrame(const Frame& frame, const RotChain& ambient) {
         fitr = ScaleCornerRadius(frame.cornerTR);
         fibr = ScaleCornerRadius(frame.cornerBR);
         fibl = ScaleCornerRadius(frame.cornerBL);
-    } else if (!anyRotation) {
+    } else {
         SInt32 fovL = (frame.cornerRadius > 0)
                       ? (SInt32(frame.cornerRadius) * 2 * gCanvasZoom / 100) : 0;
         if (fovL > 32767) fovL = 32767;
@@ -1078,14 +1211,14 @@ static void DrawFrame(const Frame& frame, const RotChain& ambient) {
           short mx=static_cast<short>(rw<rh?rw:rh); if(fov>mx) fov=mx; }
     }
 
-    Point corners[4];
+    std::vector<Point> corners;
     PolyHandle framePoly = nullptr;
     if (anyRotation) {
-        RotatedFrameCorners(r, frame.rotation, ambient, corners);
+        short rtl = fIndiv ? fitl : fov, rtr = fIndiv ? fitr : fov;
+        short rbr = fIndiv ? fibr : fov, rbl = fIndiv ? fibl : fov;
+        corners = TraceRoundedRectPoints(r, rtl, rtr, rbr, rbl, frame.rotation, ambient);
         framePoly = OpenPoly();
-        MoveTo(corners[0].h, corners[0].v);
-        LineTo(corners[1].h, corners[1].v); LineTo(corners[2].h, corners[2].v);
-        LineTo(corners[3].h, corners[3].v); LineTo(corners[0].h, corners[0].v);
+        TracePointPath(corners);
         ClosePoly();
     }
 
@@ -1147,9 +1280,7 @@ static void DrawFrame(const Frame& frame, const RotChain& ambient) {
         if (anyRotation) {
             RgnHandle newClip = NewRgn();
             OpenRgn();
-            MoveTo(corners[0].h, corners[0].v);
-            LineTo(corners[1].h, corners[1].v); LineTo(corners[2].h, corners[2].v);
-            LineTo(corners[3].h, corners[3].v); LineTo(corners[0].h, corners[0].v);
+            TracePointPath(corners);
             CloseRgn(newClip);
             SetClip(newClip);
             DisposeRgn(newClip);
@@ -2086,6 +2217,9 @@ static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
     Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
 }
 
+// Forward declaration — full definition lives further down, near HandleTextPlace.
+static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit = true);
+
 // --------------------------------------------------------------------------
 // Select tool: resize handles → name labels → body hit-test → move + reparent
 // --------------------------------------------------------------------------
@@ -2304,24 +2438,37 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         gSelectedShape = hitShape;
     }
 
-    // ---- Double-click: rename the hit object ----
+    // ---- Double-click: edit text content, or rename the hit object ----
     if (found && gIsDoubleClick) {
         // Determine which object's name to edit.
         // Priority: shape label > frame label > any body hit
         std::string* targetName = nullptr;
+        bool isLabelHit = false;
 
         // Check shape labels across all frames first
         for (auto it = gDocument->frames.begin(); it != gDocument->frames.end() && !targetName; ++it) {
             Shape* sl = HitTestShapeLabel(it->get(), pt);
-            if (sl) { targetName = &sl->name; }
+            if (sl) { targetName = &sl->name; isLabelHit = true; }
         }
         // Check frame labels
         if (!targetName) {
             for (auto it = gDocument->frames.begin(); it != gDocument->frames.end() && !targetName; ++it) {
                 Frame* fl = HitTestFrameLabel(it->get(), pt);
-                if (fl) { targetName = &fl->name; }
+                if (fl) { targetName = &fl->name; isLabelHit = true; }
             }
         }
+
+        // A double-click on a text shape's BODY (not its name label) edits its
+        // on-canvas text content instead of renaming its layer name.
+        if (!isLabelHit && gSelectedShape && gSelectedShape->GetType() == Shape::kText
+            && !gSelectedShape->locked) {
+            EditTextInPlace(win, static_cast<TextShape*>(gSelectedShape));
+            gIsDoubleClick = false;
+            RefreshLayersPanel();
+            RefreshInspector();
+            return;
+        }
+
         // Fall back to whatever body was hit
         if (!targetName) {
             if (gSelectedShape) targetName = &gSelectedShape->name;
@@ -2841,42 +2988,206 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
 }
 
 // --------------------------------------------------------------------------
-// Text placement: click-to-place with inline TENew popup
+// Text placement + in-canvas text editing (TENew overlay directly on the
+// canvas, matching Figma's V-tool-double-click / T-tool-click-to-edit)
 // --------------------------------------------------------------------------
 
+// Topmost shape body (any type) under `pt`, searching frame contents first
+// (deepest/topmost within each) and root-level items, or nullptr for none.
+static Shape* HitTestAnyShapeBodyAt(Point pt) {
+    if (!gDocument->rootChildOrder.empty()) {
+        for (auto it = gDocument->rootChildOrder.rbegin(); it != gDocument->rootChildOrder.rend(); ++it) {
+            if (it->isFrame) {
+                HitResult res = HitTestFrame(gDocument->frames[it->idx].get(), pt);
+                if (res.found) return res.shape;  // may be nullptr (hit frame body, not a shape)
+            } else {
+                Shape* s = gDocument->rootShapes[it->idx].get();
+                bool hit = (s->rotation != 0) ? HitTestRotated(s->bounds, s->rotation, pt)
+                                               : PtInLocalRect(s->bounds, pt, {});
+                if (hit) return s;
+            }
+        }
+    } else {
+        for (auto it = gDocument->frames.rbegin(); it != gDocument->frames.rend(); ++it) {
+            HitResult res = HitTestFrame(it->get(), pt);
+            if (res.found) return res.shape;
+        }
+        for (auto it = gDocument->rootShapes.rbegin(); it != gDocument->rootShapes.rend(); ++it) {
+            Shape* s = it->get();
+            bool hit = (s->rotation != 0) ? HitTestRotated(s->bounds, s->rotation, pt)
+                                           : PtInLocalRect(s->bounds, pt, {});
+            if (hit) return s;
+        }
+    }
+    return nullptr;
+}
+
+// Edits `ts`'s text content in place, as a TextEdit overlay drawn directly on
+// the canvas at the shape's current (unrotated — TE can't rotate either)
+// screen rect. Blocks until the user clicks elsewhere or presses Enter/Escape.
+// If `pushUndoOnCommit` is false, the caller is responsible for having already
+// pushed an undo snapshot (used when creating a brand-new shape, so "type text
+// then click away" is one undo step, not two).
+static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit = true) {
+    if (!ts || ts->locked) return;
+    gEditingTextShape = ts;
+
+    SetPortWindowPort(win);
+    Rect editR = CanvasRect(ts->bounds);
+
+    short fontID = 0;
+    if (!ts->fontFamily.empty()) {
+        Str255 fname; fname[0] = 0;
+        for (size_t i = 0; i < ts->fontFamily.size() && i < 63; ++i) {
+            fname[i+1] = static_cast<unsigned char>(ts->fontFamily[i]); fname[0]++;
+        }
+        GetFNum(fname, &fontID);
+    }
+    short scaledSize = static_cast<short>(SInt32(ts->fontSize) * gCanvasZoom / 100);
+    if (scaledSize < 4) scaledSize = 4;
+    if (scaledSize > 127) scaledSize = 127;
+    auto applyFont = [&]() { TextFont(fontID); TextSize(scaledSize); TextFace(ts->fontFace); };
+    applyFont();
+
+    Rect viewR = editR;
+    TEHandle teh = TENew(&viewR, &viewR);
+    if (!teh) { gEditingTextShape = nullptr; return; }
+
+    // TE uses CR (\r) for line breaks; our stored text uses LF (\n).
+    std::string teText = ts->text;
+    for (char& c : teText) if (c == '\n') c = '\r';
+    if (!teText.empty())
+        TESetText(const_cast<Ptr>(teText.c_str()), static_cast<long>(teText.size()), teh);
+    TESetSelect(0, static_cast<long>((*teh)->teLength), teh);
+    TEActivate(teh);
+
+    RGBColor white = {0xFFFF,0xFFFF,0xFFFF}, black = {0,0,0}, blue = {0x1177,0x55AA,0xFFFF};
+    auto redraw = [&]() {
+        DrawWindowContent(win);   // full canvas, minus `ts` (skipped by DrawShape while editing)
+        SetPortWindowPort(win);
+        RGBBackColor(&white); RGBForeColor(&black);
+        EraseRect(&editR);
+        applyFont();
+        TEUpdate(&editR, teh);
+        RGBForeColor(&blue); FrameRect(&editR);
+    };
+    redraw();
+
+    while (Button()) {}  // wait out the click/double-click that triggered this
+
+    bool done = false, confirmed = false;
+    EventRecord evt;
+    while (!done) {
+        bool got = WaitNextEvent(everyEvent, &evt, 3, nullptr);
+        if (got) {
+            switch (evt.what) {
+                case keyDown: case autoKey: {
+                    char c = static_cast<char>(evt.message & charCodeMask);
+                    if (c == 0x03 || c == 0x1B) {   // Enter or Escape: commit and exit
+                        confirmed = true; done = true;
+                    } else {
+                        SetPortWindowPort(win); applyFont();
+                        TEKey(c, teh);
+                        redraw();
+                    }
+                    break;
+                }
+                case mouseDown: {
+                    WindowRef hitWin; short part = FindWindow(evt.where, &hitWin);
+                    Point local = evt.where;
+                    SetPortWindowPort(win); GlobalToLocal(&local);
+                    if (hitWin != win || part != inContent || !PtInRect(local, &editR)) {
+                        confirmed = true; done = true;  // click elsewhere commits
+                    } else {
+                        applyFont();
+                        TEClick(local, (evt.modifiers & shiftKey) != 0, teh);
+                    }
+                    break;
+                }
+                case updateEvt: {
+                    WindowRef updWin = reinterpret_cast<WindowRef>(evt.message);
+                    if (updWin == win) { BeginUpdate(win); redraw(); EndUpdate(win); }
+                    break;
+                }
+                default: break;
+            }
+        } else {
+            SetPortWindowPort(win); applyFont();
+            TEIdle(teh);
+        }
+    }
+
+    if (confirmed) {
+        Handle h = (*teh)->hText; long len = (*teh)->teLength;
+        std::string newText;
+        if (h && len > 0) {
+            HLock(h);
+            newText.assign(reinterpret_cast<char*>(*h), static_cast<size_t>(len));
+            HUnlock(h);
+        }
+        for (char& c : newText) if (c == '\r') c = '\n';
+        if (newText != ts->text) {
+            if (pushUndoOnCommit) PushUndo();
+            ts->text = newText;
+        }
+    }
+
+    TEDispose(teh);
+    gEditingTextShape = nullptr;
+
+    UpdateTextShapeBounds(*ts);
+    RunDocumentLayout(gDocument);
+    Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
+}
+
 static void HandleTextPlace(WindowRef win, Point localPt, Point globalPt) {
-    std::string text = ShowRenameDialog("", globalPt);
-    if (text.empty()) return;
+    (void)globalPt;
+    Shape* existing = HitTestAnyShapeBodyAt(localPt);
+    if (existing && existing->GetType() == Shape::kText && !existing->locked) {
+        gSelectedShapes.clear(); gSelectedFrames.clear();
+        gSelectedShape = existing;
+        gSelectedFrame = LocateShapeParent(existing);
+        EditTextInPlace(win, static_cast<TextShape*>(existing));
+        return;
+    }
 
     PushUndo();
     Point cPt = ScreenToCanvas(localPt);
 
-    auto t       = std::make_unique<TextShape>();
+    auto tOwned  = std::make_unique<TextShape>();
+    TextShape* t = tOwned.get();
     t->name      = "Text " + istr(gNextTextNum++);
-    t->text      = text;
+    t->text      = "";
     t->fontSize  = 14;
     t->fontFace  = 0;
-    SInt32 tw = static_cast<SInt32>(text.size()) * 7 + 16;
-    if (tw < 40) tw = 40;
-    t->bounds    = { cPt.h, cPt.v, tw, 20 };
+    t->bounds    = { cPt.h, cPt.v, 100, 20 };
     t->fillColor = { 0, 0, 0 };  // black text color
     t->hasFill   = true;
     t->hasStroke = false;
 
     Frame* target  = DeepestFrameAt(localPt);
-    gSelectedShape = t.get();
+    gSelectedShapes.clear(); gSelectedFrames.clear();
+    gSelectedShape = t;
     gSelectedFrame = target;
     if (target) {
         target->childOrder.push_back({ false, (int)target->children.size() });
-        target->children.push_back(std::move(t));
+        target->children.push_back(std::move(tOwned));
     } else {
         RootOrderInsert(0, false, (int)gDocument->rootShapes.size());
-        gDocument->rootShapes.push_back(std::move(t));
+        gDocument->rootShapes.push_back(std::move(tOwned));
     }
 
     Rect portRect;
     GetWindowPortBounds(win, &portRect);
     InvalWindowRect(win, &portRect);
+
+    EditTextInPlace(win, t, /*pushUndoOnCommit=*/false);
+
+    if (t->text.empty()) {
+        // Nothing typed — remove the placeholder, matching click-away-discards.
+        gSelectedShape = t;
+        DeleteSelected();
+    }
 }
 
 // --------------------------------------------------------------------------
