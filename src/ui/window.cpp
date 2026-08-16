@@ -1214,8 +1214,12 @@ static void DrawFrame(const Frame& frame, const RotChain& ambient) {
     std::vector<Point> corners;
     PolyHandle framePoly = nullptr;
     if (anyRotation) {
-        short rtl = fIndiv ? fitl : fov, rtr = fIndiv ? fitr : fov;
-        short rbr = fIndiv ? fibr : fov, rbl = fIndiv ? fibl : fov;
+        // TraceRoundedRectPoints wants a RADIUS per corner; fov above is a
+        // DIAMETER (PaintRoundRect's own convention, ×2 the radius) — reusing
+        // it directly here would render the rotated radius twice too large.
+        short runiform = fIndiv ? 0 : ScaleCornerRadius(frame.cornerRadius);
+        short rtl = fIndiv ? fitl : runiform, rtr = fIndiv ? fitr : runiform;
+        short rbr = fIndiv ? fibr : runiform, rbl = fIndiv ? fibl : runiform;
         corners = TraceRoundedRectPoints(r, rtl, rtr, rbr, rbl, frame.rotation, ambient);
         framePoly = OpenPoly();
         TracePointPath(corners);
@@ -1602,20 +1606,16 @@ static void UpdateAllTextShapeBounds(Document* doc) {
         UpdateTextShapeBoundsInFrame(*f);
 }
 
-void DrawWindowContent(WindowRef win) {
-    // Update text shape bounds first (auto-sizing), then run layout.
-    UpdateAllTextShapeBounds(gDocument);
-    RunDocumentLayout(gDocument);
-
-    SetPortWindowPort(win);
-    Rect portRect;
-    GetWindowPortBounds(win, &portRect);
-
+// Draws the full canvas (background + frames/shapes + selection) into whatever
+// port is currently active, erasing `eraseRect` first. Factored out of
+// DrawWindowContent so it can target either the offscreen double-buffer or,
+// as a low-memory fallback, the window directly.
+static void DrawCanvasInto(const Rect& eraseRect) {
     RGBColor canvasBg = { 0xDDDD, 0xDDDD, 0xDDDD };
     RGBBackColor(&canvasBg);
     RGBColor black = { 0, 0, 0 };
     RGBForeColor(&black);
-    EraseRect(&portRect);
+    EraseRect(&eraseRect);
 
     if (gDocument) {
         // Render root-level items in rootChildOrder z-order.
@@ -1650,6 +1650,57 @@ void DrawWindowContent(WindowRef win) {
     RGBColor white = { 0xFFFF, 0xFFFF, 0xFFFF };
     RGBForeColor(&black);
     RGBBackColor(&white);
+}
+
+void DrawWindowContent(WindowRef win) {
+    // Update text shape bounds first (auto-sizing), then run layout.
+    UpdateAllTextShapeBounds(gDocument);
+    RunDocumentLayout(gDocument);
+
+    SetPortWindowPort(win);
+    Rect portRect;
+    GetWindowPortBounds(win, &portRect);
+    short w = static_cast<short>(portRect.right - portRect.left);
+    short h = static_cast<short>(portRect.bottom - portRect.top);
+
+    // Double-buffer: draw into an offscreen GWorld the size of the content
+    // area, then blit it to the window in one shot. Drawing straight to the
+    // window erases to the canvas background first, which flashes visibly
+    // whenever a redraw is slow enough to notice — rotated text (per-pixel
+    // compositing) and rotated rounded corners (polygon + region rebuilds)
+    // both are. Buffer is reused across calls, only reallocated on resize.
+    static GWorldPtr sCanvasBuf  = nullptr;
+    static short     sCanvasBufW = 0, sCanvasBufH = 0;
+    if (sCanvasBuf && (sCanvasBufW != w || sCanvasBufH != h)) {
+        DisposeGWorld(sCanvasBuf);
+        sCanvasBuf = nullptr;
+    }
+    if (!sCanvasBuf && w > 0 && h > 0) {
+        Rect bufBounds = {0, 0, h, w};
+        if (NewGWorld(&sCanvasBuf, 32, &bufBounds, nullptr, nullptr, 0) == noErr) {
+            sCanvasBufW = w; sCanvasBufH = h;
+        }
+    }
+
+    if (sCanvasBuf) {
+        GrafPtr savedPort; GetPort(&savedPort);
+        SetGWorld(reinterpret_cast<CGrafPtr>(sCanvasBuf), nullptr);
+        PixMapHandle pm = GetGWorldPixMap(sCanvasBuf);
+        LockPixels(pm);
+
+        Rect localBounds = {0, 0, h, w};
+        DrawCanvasInto(localBounds);
+
+        UnlockPixels(pm);
+        SetPort(savedPort);
+
+        SetPortWindowPort(win);
+        CopyBits(GetPortBitMapForCopyBits(reinterpret_cast<CGrafPtr>(sCanvasBuf)),
+                 GetPortBitMapForCopyBits(GetWindowPort(win)),
+                 &localBounds, &portRect, srcCopy, nullptr);
+    } else {
+        DrawCanvasInto(portRect);  // low-memory fallback: direct draw, may flicker
+    }
 }
 
 // --------------------------------------------------------------------------
