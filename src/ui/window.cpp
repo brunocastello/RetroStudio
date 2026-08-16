@@ -696,11 +696,57 @@ static short ScaleCornerRadius(SInt16 cr) {
     return static_cast<short>(v);
 }
 
-// Rotate 4 rect corners and draw as a filled/stroked polygon.
-// angleDeg is clockwise in screen coordinates (Y-down).
+// ---- Ancestor rotation chain -------------------------------------------------
+// A frame's rotation must carry its whole subtree along as a rigid body. Bounds
+// are always stored "local" (as if every ancestor frame had rotation 0); a
+// RotStep records one ancestor's own rotation + its screen-space center (both
+// computed from ITS local bounds, i.e. before that ancestor's own step is
+// applied). A RotChain is the ordered list of such steps from the immediate
+// parent's own rotation (applied first) up through the root (applied last) —
+// exactly mirroring nested "rotate around my own center" transforms.
+struct RotStep { double angleDeg; double cx, cy; };
+using RotChain = std::vector<RotStep>;
+
+static void ApplyRotChain(const RotChain& chain, double x, double y, double& ox, double& oy) {
+    ox = x; oy = y;
+    for (const auto& step : chain) {
+        if (step.angleDeg == 0.0) continue;
+        double rad = step.angleDeg * 3.14159265358979323846 / 180.0;
+        double ca = std::cos(rad), sa = std::sin(rad);
+        double dx = ox - step.cx, dy = oy - step.cy;
+        ox = step.cx + dx*ca - dy*sa;
+        oy = step.cy + dx*sa + dy*ca;
+    }
+}
+
+// Inverse of ApplyRotChain: maps a final screen point back into the local space
+// the chain was built from (steps undone in reverse order).
+static void ApplyRotChainInverse(const RotChain& chain, double x, double y, double& ox, double& oy) {
+    ox = x; oy = y;
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+        if (it->angleDeg == 0.0) continue;
+        double rad = -it->angleDeg * 3.14159265358979323846 / 180.0;
+        double ca = std::cos(rad), sa = std::sin(rad);
+        double dx = ox - it->cx, dy = oy - it->cy;
+        ox = it->cx + dx*ca - dy*sa;
+        oy = it->cy + dx*sa + dy*ca;
+    }
+}
+
+static Point ToQDPoint(double x, double y) {
+    Point p;
+    p.h = static_cast<short>(x + (x >= 0 ? 0.5 : -0.5));
+    p.v = static_cast<short>(y + (y >= 0 ? 0.5 : -0.5));
+    return p;
+}
+
+// Rotate 4 rect corners around their own center by angleDeg, then carry them
+// through `ambient` (the enclosing rotated frames, if any), and draw as a
+// filled/stroked polygon. angleDeg is clockwise in screen coords (Y-down).
 static void DrawRotatedRect(const Rect& r, short angleDeg,
                              bool doFill, const RGBColor& fillC,
-                             bool doStroke, const RGBColor& strokeC, short sw) {
+                             bool doStroke, const RGBColor& strokeC, short sw,
+                             const RotChain& ambient = {}) {
     double cx = (r.left + r.right)  * 0.5;
     double cy = (r.top  + r.bottom) * 0.5;
     double hw = (r.right  - r.left) * 0.5;
@@ -712,8 +758,11 @@ static void DrawRotatedRect(const Rect& r, short angleDeg,
     double ly[4] = { -hh, -hh,  hh,  hh };
     Point pts[4];
     for (int i = 0; i < 4; ++i) {
-        pts[i].h = static_cast<short>(cx + lx[i]*cosA - ly[i]*sinA + 0.5);
-        pts[i].v = static_cast<short>(cy + lx[i]*sinA + ly[i]*cosA + 0.5);
+        double px = cx + lx[i]*cosA - ly[i]*sinA;
+        double py = cy + lx[i]*sinA + ly[i]*cosA;
+        double fx, fy;
+        ApplyRotChain(ambient, px, py, fx, fy);
+        pts[i] = ToQDPoint(fx, fy);
     }
     PolyHandle poly = OpenPoly();
     MoveTo(pts[0].h, pts[0].v);
@@ -725,10 +774,11 @@ static void DrawRotatedRect(const Rect& r, short angleDeg,
     KillPoly(poly);
 }
 
-// Approximate a rotated ellipse as a 36-gon polygon.
+// Approximate a rotated ellipse as a 36-gon polygon, then carry it through `ambient`.
 static void DrawRotatedEllipse(const Rect& r, short angleDeg,
                                 bool doFill, const RGBColor& fillC,
-                                bool doStroke, const RGBColor& strokeC, short sw) {
+                                bool doStroke, const RGBColor& strokeC, short sw,
+                                const RotChain& ambient = {}) {
     double cx = (r.left + r.right)  * 0.5;
     double cy = (r.top  + r.bottom) * 0.5;
     double hw = (r.right  - r.left) * 0.5;
@@ -741,9 +791,12 @@ static void DrawRotatedEllipse(const Rect& r, short angleDeg,
         double t   = 2.0 * 3.14159265358979323846 * i / N;
         double ex  = hw * std::cos(t);
         double ey  = hh * std::sin(t);
-        short ph   = static_cast<short>(cx + ex*cosR - ey*sinR + 0.5);
-        short pv   = static_cast<short>(cy + ex*sinR + ey*cosR + 0.5);
-        if (i == 0) MoveTo(ph, pv); else LineTo(ph, pv);
+        double px  = cx + ex*cosR - ey*sinR;
+        double py  = cy + ex*sinR + ey*cosR;
+        double fx, fy;
+        ApplyRotChain(ambient, px, py, fx, fy);
+        Point p = ToQDPoint(fx, fy);
+        if (i == 0) MoveTo(p.h, p.v); else LineTo(p.h, p.v);
     }
     ClosePoly();
     if (doFill)   { RGBColor c = fillC;   RGBForeColor(&c); PaintPoly(poly); }
@@ -751,23 +804,43 @@ static void DrawRotatedEllipse(const Rect& r, short angleDeg,
     KillPoly(poly);
 }
 
-// Returns true if screen point `pt` is inside `bounds` rotated by `angleDeg` clockwise.
-static bool HitTestRotated(const Bounds2& bounds, short angleDeg, Point pt) {
+// Returns true if screen point `pt` is inside `bounds` rotated by `angleDeg`
+// clockwise, after first un-rotating `pt` through `ambient` (enclosing rotated
+// frames, if any) so it lands in the same local space `bounds` is expressed in.
+static bool HitTestRotated(const Bounds2& bounds, short angleDeg, Point pt,
+                            const RotChain& ambient = {}) {
+    double lx0, ly0;
+    ApplyRotChainInverse(ambient, pt.h, pt.v, lx0, ly0);
     Rect r = CanvasRect(bounds);
     double cx = (r.left + r.right)  * 0.5;
     double cy = (r.top  + r.bottom) * 0.5;
     double hw = (r.right  - r.left) * 0.5;
     double hh = (r.bottom - r.top)  * 0.5;
     double rad = -angleDeg * 3.14159265358979323846 / 180.0;  // inverse rotation
-    double dx = pt.h - cx, dy = pt.v - cy;
+    double dx = lx0 - cx, dy = ly0 - cy;
     double rx = dx * std::cos(rad) - dy * std::sin(rad);
     double ry = dx * std::sin(rad) + dy * std::cos(rad);
     return (rx >= -hw && rx <= hw && ry >= -hh && ry <= hh);
 }
 
-static void DrawShape(const Shape& shape) {
+// Axis-aligned bounds check in local space, after un-rotating `pt` through `ambient`.
+static bool PtInLocalRect(const Bounds2& bounds, Point pt, const RotChain& ambient) {
+    if (ambient.empty()) {
+        Rect r = CanvasRect(bounds);
+        Point p = pt;
+        return PtInRect(p, &r);
+    }
+    double lx, ly;
+    ApplyRotChainInverse(ambient, pt.h, pt.v, lx, ly);
+    Rect r = CanvasRect(bounds);
+    Point p = ToQDPoint(lx, ly);
+    return PtInRect(p, &r);
+}
+
+static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
     if (!shape.visible) return;
     Rect r = CanvasRect(shape.bounds);
+    bool anyRotation = (shape.rotation != 0) || !ambient.empty();
     bool shapeOp = (shape.opacity < 100);
     if (shapeOp) {
         UInt16 w = static_cast<UInt16>((UInt32)shape.opacity * 65535 / 100);
@@ -777,12 +850,13 @@ static void DrawShape(const Shape& shape) {
     switch (shape.GetType()) {
         case Shape::kRectangle:
         case Shape::kLine: {
-            if (shape.rotation != 0) {
-                // Rotated rect: polygon path, corner radius ignored
+            if (anyRotation) {
+                // Rotated rect (own rotation and/or inherited from a rotated
+                // ancestor frame): polygon path, corner radius ignored.
                 short sw = static_cast<short>(shape.strokeWidth);
                 DrawRotatedRect(r, shape.rotation,
                                 shape.hasFill, shape.fillColor,
-                                shape.hasStroke, shape.strokeColor, sw);
+                                shape.hasStroke, shape.strokeColor, sw, ambient);
                 break;
             }
             if (shape.GetType() == Shape::kRectangle &&
@@ -834,11 +908,11 @@ static void DrawShape(const Shape& shape) {
             break;
         }
         case Shape::kEllipse:
-            if (shape.rotation != 0) {
+            if (anyRotation) {
                 short sw = static_cast<short>(shape.strokeWidth);
                 DrawRotatedEllipse(r, shape.rotation,
                                    shape.hasFill, shape.fillColor,
-                                   shape.hasStroke, shape.strokeColor, sw);
+                                   shape.hasStroke, shape.strokeColor, sw, ambient);
             } else {
                 if (shape.hasFill) {
                     RGBColor c = shape.fillColor; RGBForeColor(&c); PaintOval(&r);
@@ -855,6 +929,19 @@ static void DrawShape(const Shape& shape) {
             break;
         case Shape::kText: {
             const TextShape& t = static_cast<const TextShape&>(shape);
+            // QuickDraw can't rotate glyphs, so text never spins with its own
+            // rotation or an ancestor frame's — but it must still track a rotated
+            // ancestor's position, or it'd render detached from its container.
+            // Re-center the (unrotated) text box on its ambient-transformed center.
+            if (!ambient.empty()) {
+                double cx0 = (r.left + r.right) * 0.5, cy0 = (r.top + r.bottom) * 0.5;
+                double fcx, fcy;
+                ApplyRotChain(ambient, cx0, cy0, fcx, fcy);
+                short dx = static_cast<short>((fcx - cx0) + (fcx >= cx0 ? 0.5 : -0.5));
+                short dy = static_cast<short>((fcy - cy0) + (fcy >= cy0 ? 0.5 : -0.5));
+                r.left = static_cast<short>(r.left + dx); r.right  = static_cast<short>(r.right  + dx);
+                r.top  = static_cast<short>(r.top  + dy); r.bottom = static_cast<short>(r.bottom + dy);
+            }
             short scaledSize = static_cast<short>(SInt32(t.fontSize) * gCanvasZoom / 100);
             if (scaledSize < 4)   scaledSize = 4;
             if (scaledSize > 127) scaledSize = 127;
@@ -943,14 +1030,36 @@ static void DrawShape(const Shape& shape) {
 }
 
 // Forward-declare so DrawFrame can call itself recursively
-static void DrawFrame(const Frame& frame);
+static void DrawFrame(const Frame& frame, const RotChain& ambient = {});
 
-static void DrawFrame(const Frame& frame) {
+// Compute the frame's own-rotated 4 corners (TL,TR,BR,BL) around its own local
+// center, then carry them through `ambient` to final screen points.
+static void RotatedFrameCorners(const Rect& r, short angleDeg, const RotChain& ambient, Point out[4]) {
+    double cx = (r.left + r.right) * 0.5, cy = (r.top + r.bottom) * 0.5;
+    double hw = (r.right - r.left) * 0.5, hh = (r.bottom - r.top) * 0.5;
+    double rad = angleDeg * 3.14159265358979323846 / 180.0;
+    double cosA = std::cos(rad), sinA = std::sin(rad);
+    double lx[4] = { -hw,  hw,  hw, -hw };
+    double ly[4] = { -hh, -hh,  hh,  hh };
+    for (int i = 0; i < 4; ++i) {
+        double px = cx + lx[i]*cosA - ly[i]*sinA;
+        double py = cy + lx[i]*sinA + ly[i]*cosA;
+        double fx, fy;
+        ApplyRotChain(ambient, px, py, fx, fy);
+        out[i] = ToQDPoint(fx, fy);
+    }
+}
+
+static void DrawFrame(const Frame& frame, const RotChain& ambient) {
     if (!frame.visible) return;
     Rect r = CanvasRect(frame.bounds);
+    bool anyRotation = (frame.rotation != 0) || !ambient.empty();
 
-    // Compute corner rendering params — individual per-corner or uniform
-    bool fIndiv = frame.cornerIndividual;
+    // Compute corner rendering params — individual per-corner or uniform.
+    // Rounded corners are dropped whenever the frame is rotated (by itself or
+    // by an ancestor), matching the same simplification individually-rotated
+    // shapes already use (DrawRotatedRect/DrawRotatedEllipse).
+    bool fIndiv = frame.cornerIndividual && !anyRotation;
     short fitl = 0, fitr = 0, fibr = 0, fibl = 0;
     short fov = 0;
     if (fIndiv) {
@@ -958,7 +1067,7 @@ static void DrawFrame(const Frame& frame) {
         fitr = ScaleCornerRadius(frame.cornerTR);
         fibr = ScaleCornerRadius(frame.cornerBR);
         fibl = ScaleCornerRadius(frame.cornerBL);
-    } else {
+    } else if (!anyRotation) {
         SInt32 fovL = (frame.cornerRadius > 0)
                       ? (SInt32(frame.cornerRadius) * 2 * gCanvasZoom / 100) : 0;
         if (fovL > 32767) fovL = 32767;
@@ -967,6 +1076,17 @@ static void DrawFrame(const Frame& frame) {
         // Clamp oval to rect dimensions — Figma caps effective radius at min(w,h)/2.
         { short rw=static_cast<short>(r.right-r.left), rh=static_cast<short>(r.bottom-r.top);
           short mx=static_cast<short>(rw<rh?rw:rh); if(fov>mx) fov=mx; }
+    }
+
+    Point corners[4];
+    PolyHandle framePoly = nullptr;
+    if (anyRotation) {
+        RotatedFrameCorners(r, frame.rotation, ambient, corners);
+        framePoly = OpenPoly();
+        MoveTo(corners[0].h, corners[0].v);
+        LineTo(corners[1].h, corners[1].v); LineTo(corners[2].h, corners[2].v);
+        LineTo(corners[3].h, corners[3].v); LineTo(corners[0].h, corners[0].v);
+        ClosePoly();
     }
 
     // Fill
@@ -978,31 +1098,45 @@ static void DrawFrame(const Frame& frame) {
     }
     RGBColor bg = frame.backgroundColor;
     RGBForeColor(&bg);
-    if (fIndiv) ApplyRoundRectCorners(r, fitl, fitr, fibr, fibl, true);
-    else if (fov > 0) PaintRoundRect(&r, fov, fov); else PaintRect(&r);
+    if (anyRotation)      PaintPoly(framePoly);
+    else if (fIndiv)      ApplyRoundRectCorners(r, fitl, fitr, fibr, fibl, true);
+    else if (fov > 0)     PaintRoundRect(&r, fov, fov);
+    else                  PaintRect(&r);
     if (frameOp) PenNormal();
+
+    // Ambient transform to hand down to this frame's own children: this
+    // frame's own rotation (about its own local center) is applied first
+    // (innermost — children are local to this frame), then whatever ancestor
+    // chain came in, in its existing order. Chain order is always
+    // [nearest ancestor ... root]; a step must be prepended here, not appended.
+    RotChain childChain;
+    if (frame.rotation != 0) {
+        double cx = (r.left + r.right) * 0.5, cy = (r.top + r.bottom) * 0.5;
+        childChain.push_back({ static_cast<double>(frame.rotation), cx, cy });
+    }
+    childChain.insert(childChain.end(), ambient.begin(), ambient.end());
 
     // Draw children, optionally clipped and optionally in reverse z-order.
     auto drawChildren = [&]() {
         if (frame.childOrder.empty()) {
             // Legacy / newly-created frames without explicit childOrder: shapes first, then frames
             if (frame.canvasStackReverse) {
-                for (auto it = frame.children.rbegin();    it != frame.children.rend();    ++it) DrawShape(**it);
-                for (auto it = frame.childFrames.rbegin(); it != frame.childFrames.rend(); ++it) DrawFrame(**it);
+                for (auto it = frame.children.rbegin();    it != frame.children.rend();    ++it) DrawShape(**it, childChain);
+                for (auto it = frame.childFrames.rbegin(); it != frame.childFrames.rend(); ++it) DrawFrame(**it, childChain);
             } else {
-                for (const auto& s  : frame.children)    DrawShape(*s);
-                for (const auto& cf : frame.childFrames)  DrawFrame(*cf);
+                for (const auto& s  : frame.children)    DrawShape(*s, childChain);
+                for (const auto& cf : frame.childFrames)  DrawFrame(*cf, childChain);
             }
         } else {
             if (frame.canvasStackReverse) {
                 for (auto it = frame.childOrder.rbegin(); it != frame.childOrder.rend(); ++it) {
-                    if (it->isFrame) DrawFrame(*frame.childFrames[it->idx]);
-                    else             DrawShape(*frame.children[it->idx]);
+                    if (it->isFrame) DrawFrame(*frame.childFrames[it->idx], childChain);
+                    else             DrawShape(*frame.children[it->idx], childChain);
                 }
             } else {
                 for (const auto& cr : frame.childOrder) {
-                    if (cr.isFrame) DrawFrame(*frame.childFrames[cr.idx]);
-                    else            DrawShape(*frame.children[cr.idx]);
+                    if (cr.isFrame) DrawFrame(*frame.childFrames[cr.idx], childChain);
+                    else            DrawShape(*frame.children[cr.idx], childChain);
                 }
             }
         }
@@ -1010,7 +1144,18 @@ static void DrawFrame(const Frame& frame) {
     if (frame.clipContent) {
         RgnHandle savedClip = NewRgn();
         GetClip(savedClip);
-        ClipRect(&r);
+        if (anyRotation) {
+            RgnHandle newClip = NewRgn();
+            OpenRgn();
+            MoveTo(corners[0].h, corners[0].v);
+            LineTo(corners[1].h, corners[1].v); LineTo(corners[2].h, corners[2].v);
+            LineTo(corners[3].h, corners[3].v); LineTo(corners[0].h, corners[0].v);
+            CloseRgn(newClip);
+            SetClip(newClip);
+            DisposeRgn(newClip);
+        } else {
+            ClipRect(&r);
+        }
         drawChildren();
         SetClip(savedClip);
         DisposeRgn(savedClip);
@@ -1027,32 +1172,50 @@ static void DrawFrame(const Frame& frame) {
     if (frame.hasStroke) {
         RGBColor c = frame.strokeColor; RGBForeColor(&c);
         short sw = static_cast<short>(frame.strokeWidth);
-        Rect sr = r;
-        if (frame.strokeAlign == 2) { sr.top-=sw; sr.left-=sw; sr.bottom+=sw; sr.right+=sw; }
-        else if (frame.strokeAlign == 0) { short e=sw/2; sr.top-=e; sr.left-=e; sr.bottom+=e; sr.right+=e; }
         PenSize(sw, sw);
-        if (fIndiv) ApplyRoundRectCorners(sr, fitl, fitr, fibr, fibl, false);
-        else if (fov > 0) FrameRoundRect(&sr, fov, fov); else FrameRect(&sr);
+        if (anyRotation) {
+            FramePoly(framePoly);
+        } else {
+            Rect sr = r;
+            if (frame.strokeAlign == 2) { sr.top-=sw; sr.left-=sw; sr.bottom+=sw; sr.right+=sw; }
+            else if (frame.strokeAlign == 0) { short e=sw/2; sr.top-=e; sr.left-=e; sr.bottom+=e; sr.right+=e; }
+            if (fIndiv) ApplyRoundRectCorners(sr, fitl, fitr, fibr, fibl, false);
+            else if (fov > 0) FrameRoundRect(&sr, fov, fov); else FrameRect(&sr);
+        }
         PenSize(1, 1);
     } else {
         RGBColor border = { 0xBBBB, 0xBBBB, 0xBBBB };
         RGBForeColor(&border);
-        if (fIndiv) ApplyRoundRectCorners(r, fitl, fitr, fibr, fibl, false);
-        else if (fov > 0) FrameRoundRect(&r, fov, fov); else FrameRect(&r);
+        if (anyRotation)      FramePoly(framePoly);
+        else if (fIndiv)      ApplyRoundRectCorners(r, fitl, fitr, fibr, fibl, false);
+        else if (fov > 0)     FrameRoundRect(&r, fov, fov);
+        else                  FrameRect(&r);
     }
     if (frameOp) PenNormal();
+    if (framePoly) KillPoly(framePoly);
 
-    // Name label — only on top-level frames (no parent)
+    // Name label — only on top-level frames (no parent). Top-level frames are
+    // always drawn with an empty incoming `ambient`, so only the frame's own
+    // rotation (if any) needs to be applied to the label anchor.
     if (frame.parent == nullptr) {
         RGBColor lc = { 0x4444, 0x4444, 0x4444 };
         RGBForeColor(&lc);
         TextSize(10);
         Str255 pn; ToPStr(frame.name, pn);
-        MoveTo(r.left, static_cast<short>(r.top - 5));
+        if (anyRotation) {
+            MoveTo(static_cast<short>(corners[0].h), static_cast<short>(corners[0].v - 5));
+        } else {
+            MoveTo(r.left, static_cast<short>(r.top - 5));
+        }
         DrawString(pn);
         TextSize(12);
     }
 }
+
+// Forward declarations — full definitions live further down, near HitTestHandles.
+static bool ComputeSelectionHandles(short hx[8], short hy[8]);
+static double SelectedOwnRotation();
+static RotChain SelectedAmbientChain();
 
 void UpdateCanvasCursor(Point globalPt) {
     // Only for the select tool with a single selection over the canvas
@@ -1070,50 +1233,13 @@ void UpdateCanvasCursor(Point globalPt) {
     SetPortWindowPort(gMainWindow);
     GlobalToLocal(&localPt);
 
-    // Compute 8 handle positions (same logic as DrawSelectionHighlight)
     short hx[8], hy[8];
-    if (gSelectedShape && gSelectedShape->rotation != 0) {
-        Rect r = CanvasRect(gSelectedShape->bounds);
-        double cx = (r.left + r.right) * 0.5, cy = (r.top + r.bottom) * 0.5;
-        double hw = (r.right - r.left) * 0.5, hh = (r.bottom - r.top) * 0.5;
-        double rad = gSelectedShape->rotation * 3.14159265358979323846 / 180.0;
-        double cosA = std::cos(rad), sinA = std::sin(rad);
-        double lx[4] = {-hw, hw, hw, -hw}, ly[4] = {-hh, -hh, hh, hh};
-        short px[4], py[4];
-        for (int i = 0; i < 4; ++i) {
-            px[i] = static_cast<short>(cx + lx[i]*cosA - ly[i]*sinA + 0.5);
-            py[i] = static_cast<short>(cy + lx[i]*sinA + ly[i]*cosA + 0.5);
-        }
-        // Interleave corners (px[0..3] = TL,TR,BR,BL) with edge midpoints so the
-        // index convention matches the unrotated branch below: 0=TL,1=N,2=TR,3=E,
-        // 4=BR,5=S,6=BL,7=W. (A flat 0..3=corners,4..7=mids layout here would put
-        // TR/BL at indices 1/3 — outside the {0,2,4,6} corner set used elsewhere —
-        // making those two corners' rotate zone unreachable once rotated.)
-        hx[0]=px[0];              hy[0]=py[0];
-        hx[1]=(px[0]+px[1])/2;    hy[1]=(py[0]+py[1])/2;
-        hx[2]=px[1];              hy[2]=py[1];
-        hx[3]=(px[1]+px[2])/2;    hy[3]=(py[1]+py[2])/2;
-        hx[4]=px[2];              hy[4]=py[2];
-        hx[5]=(px[2]+px[3])/2;    hy[5]=(py[2]+py[3])/2;
-        hx[6]=px[3];              hy[6]=py[3];
-        hx[7]=(px[3]+px[0])/2;    hy[7]=(py[3]+py[0])/2;
-    } else {
-        Rect r = gSelectedShape ? CanvasRect(gSelectedShape->bounds)
-                                : CanvasRect(gSelectedFrame->bounds);
-        short cx = static_cast<short>((r.left + r.right) / 2);
-        short cy = static_cast<short>((r.top  + r.bottom) / 2);
-        hx[0]=r.left;  hy[0]=r.top;
-        hx[1]=cx;      hy[1]=r.top;
-        hx[2]=r.right; hy[2]=r.top;
-        hx[3]=r.right; hy[3]=cy;
-        hx[4]=r.right; hy[4]=r.bottom;
-        hx[5]=cx;      hy[5]=r.bottom;
-        hx[6]=r.left;  hy[6]=r.bottom;
-        hx[7]=r.left;  hy[7]=cy;
-    }
+    if (!ComputeSelectionHandles(hx, hy)) { InitCursor(); return; }
 
-    double shapeRot = (gSelectedShape && gSelectedShape->rotation != 0)
-                     ? gSelectedShape->rotation : 0.0;
+    // Net rotation (own + every rotated ancestor) picks which of the 8/4 preset
+    // cursor bitmaps looks right — matches HandleBucket's screen-angle convention.
+    double shapeRot = SelectedOwnRotation();
+    for (const auto& step : SelectedAmbientChain()) shapeRot += step.angleDeg;
 
     // Corner handles: indices 0,2,4,6 — inner rect = resize, outer ring = rotate
     static const int kCorner[4] = {0, 2, 4, 6};
@@ -1151,6 +1277,10 @@ void UpdateCanvasCursor(Point globalPt) {
     InitCursor();
 }
 
+// Forward declarations — full definitions live further down, near ComputeSelectionHandles.
+static Frame* LocateShapeParent(Shape* s);
+static RotChain AncestorChainFor(Frame* startFrame);
+
 static void DrawSelectionHighlight() {
     RGBColor selBlue = { 0x1177, 0x55AA, 0xFFFF };
     RGBColor white   = { 0xFFFF, 0xFFFF, 0xFFFF };
@@ -1178,8 +1308,10 @@ static void DrawSelectionHighlight() {
         drawHandles(r);
     };
 
-    // Rotated border + handles placed at rotated corner and edge-midpoint positions
-    auto drawRotatedItem = [&](const Bounds2& bounds, short angleDeg) {
+    // Rotated border + handles placed at rotated corner and edge-midpoint positions.
+    // `angleDeg` is the object's own rotation; `ambient` carries it through any
+    // rotated ancestor frames, same convention as DrawFrame/ComputeSelectionHandles.
+    auto drawRotatedItem = [&](const Bounds2& bounds, double angleDeg, const RotChain& ambient) {
         Rect r = CanvasRect(bounds);
         double cx = (r.left + r.right)  * 0.5;
         double cy = (r.top  + r.bottom) * 0.5;
@@ -1192,8 +1324,12 @@ static void DrawSelectionHighlight() {
         double ly[4] = { -hh, -hh,  hh,  hh };
         short px[4], py[4];
         for (int i = 0; i < 4; ++i) {
-            px[i] = static_cast<short>(cx + lx[i]*cosA - ly[i]*sinA + 0.5);
-            py[i] = static_cast<short>(cy + lx[i]*sinA + ly[i]*cosA + 0.5);
+            double ox = cx + lx[i]*cosA - ly[i]*sinA;
+            double oy = cy + lx[i]*sinA + ly[i]*cosA;
+            double fx, fy;
+            ApplyRotChain(ambient, ox, oy, fx, fy);
+            Point p = ToQDPoint(fx, fy);
+            px[i] = p.h; py[i] = p.v;
         }
 
         // Rotated border
@@ -1226,10 +1362,15 @@ static void DrawSelectionHighlight() {
     };
 
     for (Shape* s : gSelectedShapes) {
-        if (s->rotation != 0) drawRotatedItem(s->bounds, s->rotation);
-        else                  drawItem(CanvasRect(s->bounds));
+        RotChain ambient = AncestorChainFor(LocateShapeParent(s));
+        if (s->rotation != 0 || !ambient.empty()) drawRotatedItem(s->bounds, s->rotation, ambient);
+        else                                      drawItem(CanvasRect(s->bounds));
     }
-    for (Frame* f : gSelectedFrames) drawItem(CanvasRect(f->bounds));
+    for (Frame* f : gSelectedFrames) {
+        RotChain ambient = AncestorChainFor(f->parent);
+        if (f->rotation != 0 || !ambient.empty()) drawRotatedItem(f->bounds, f->rotation, ambient);
+        else                                      drawItem(CanvasRect(f->bounds));
+    }
 
     // Primary single-select item (skip if already drawn as part of multi-select)
     bool drawnAsShape = gSelectedShape &&
@@ -1239,8 +1380,11 @@ static void DrawSelectionHighlight() {
 
     if (!drawnAsShape && !drawnAsFrame) {
         if (!gSelectedShape && !gSelectedFrame) { PenNormal(); return; }
-        if (gSelectedShape && gSelectedShape->rotation != 0) {
-            drawRotatedItem(gSelectedShape->bounds, gSelectedShape->rotation);
+        double ownRot = SelectedOwnRotation();
+        RotChain ambient = SelectedAmbientChain();
+        if (ownRot != 0.0 || !ambient.empty()) {
+            const Bounds2& bounds = gSelectedShape ? gSelectedShape->bounds : gSelectedFrame->bounds;
+            drawRotatedItem(bounds, ownRot, ambient);
         } else {
             Rect r = gSelectedShape ? CanvasRect(gSelectedShape->bounds)
                                     : CanvasRect(gSelectedFrame->bounds);
@@ -1392,38 +1536,45 @@ static void MoveFrameTree(Frame* f, SInt32 dx, SInt32 dy) {
 // Hit-test result from recursive search
 struct HitResult { Frame* frame = nullptr; Shape* shape = nullptr; bool found = false; };
 
-// Recursively search inside `f`. Returns deepest match.
-static HitResult HitTestFrame(Frame* f, Point pt) {
+// Recursively search inside `f`. Returns deepest match. `ambient` is the
+// rotation chain accumulated from f's ancestors (empty if f is top-level or
+// no ancestor is rotated) — see RotChain / DrawFrame for the convention.
+static HitResult HitTestFrame(Frame* f, Point pt, const RotChain& ambient = {}) {
+    if (!PtInLocalRect(f->bounds, pt, ambient)) return {};
+
     Rect r = CanvasRect(f->bounds);
-    if (!PtInRect(pt, &r)) return {};
+    RotChain childChain;
+    if (f->rotation != 0) {
+        double cx = (r.left + r.right) * 0.5, cy = (r.top + r.bottom) * 0.5;
+        childChain.push_back({ static_cast<double>(f->rotation), cx, cy });
+    }
+    childChain.insert(childChain.end(), ambient.begin(), ambient.end());
 
     if (!f->childOrder.empty()) {
         // Iterate in reverse childOrder (topmost first for correct z-order hit-testing)
         for (auto it = f->childOrder.rbegin(); it != f->childOrder.rend(); ++it) {
             if (it->isFrame) {
-                HitResult res = HitTestFrame(f->childFrames[it->idx].get(), pt);
+                HitResult res = HitTestFrame(f->childFrames[it->idx].get(), pt, childChain);
                 if (res.found) return res;
             } else {
                 const auto& s = f->children[it->idx];
-                Rect sr1 = CanvasRect(s->bounds);
                 bool hit = (s->rotation != 0)
-                    ? HitTestRotated(s->bounds, s->rotation, pt)
-                    : PtInRect(pt, &sr1) != 0;
+                    ? HitTestRotated(s->bounds, s->rotation, pt, childChain)
+                    : PtInLocalRect(s->bounds, pt, childChain);
                 if (hit) return { f, s.get(), true };
             }
         }
     } else {
         // Legacy fallback: child frames then shapes (both in reverse for topmost-first)
         for (auto it = f->childFrames.rbegin(); it != f->childFrames.rend(); ++it) {
-            HitResult res = HitTestFrame(it->get(), pt);
+            HitResult res = HitTestFrame(it->get(), pt, childChain);
             if (res.found) return res;
         }
         for (auto it = f->children.rbegin(); it != f->children.rend(); ++it) {
             const auto& s = *it;
-            Rect sr2 = CanvasRect(s->bounds);
             bool hit = (s->rotation != 0)
-                ? HitTestRotated(s->bounds, s->rotation, pt)
-                : PtInRect(pt, &sr2) != 0;
+                ? HitTestRotated(s->bounds, s->rotation, pt, childChain)
+                : PtInLocalRect(s->bounds, pt, childChain);
             if (hit) return { f, s.get(), true };
         }
     }
@@ -1580,6 +1731,35 @@ static std::unique_ptr<Frame> ExtractFrame(Frame* f) {
 // Resize handle hit-test + drag
 // --------------------------------------------------------------------------
 
+// Walks upward from `startFrame` through Frame::parent, collecting each
+// rotated ancestor's (angle, own local screen center) in [nearest...root]
+// order — the RotChain convention used throughout rendering/hit-testing.
+static RotChain AncestorChainFor(Frame* startFrame) {
+    RotChain chain;
+    for (Frame* f = startFrame; f != nullptr; f = f->parent) {
+        if (f->rotation != 0) {
+            Rect r = CanvasRect(f->bounds);
+            double cx = (r.left + r.right) * 0.5, cy = (r.top + r.bottom) * 0.5;
+            chain.push_back({ static_cast<double>(f->rotation), cx, cy });
+        }
+    }
+    return chain;
+}
+
+// Ancestor rotation chain for whichever single object is currently selected
+// (empty if nothing selected, or nothing above it is rotated).
+static RotChain SelectedAmbientChain() {
+    if (gSelectedShape) return AncestorChainFor(LocateShapeParent(gSelectedShape));
+    if (gSelectedFrame) return AncestorChainFor(gSelectedFrame->parent);
+    return {};
+}
+
+static double SelectedOwnRotation() {
+    if (gSelectedShape) return static_cast<double>(gSelectedShape->rotation);
+    if (gSelectedFrame)  return static_cast<double>(gSelectedFrame->rotation);
+    return 0.0;
+}
+
 // Returns the handle index (0-7) if pt lands on one of the 8 selection
 // handles drawn by DrawSelectionHighlight, or -1 if nothing selected / miss.
 // Handle order: 0=TL 1=TC 2=TR 3=MR 4=BR 5=BC 6=BL 7=ML
@@ -1588,17 +1768,25 @@ static std::unique_ptr<Frame> ExtractFrame(Frame* f) {
 static bool ComputeSelectionHandles(short hx[8], short hy[8]) {
     if (!gSelectedShape && !gSelectedFrame) return false;
 
-    if (gSelectedShape && gSelectedShape->rotation != 0) {
-        Rect r = CanvasRect(gSelectedShape->bounds);
+    double ownRot = SelectedOwnRotation();
+    RotChain ambient = SelectedAmbientChain();
+
+    if (ownRot != 0.0 || !ambient.empty()) {
+        Rect r = gSelectedShape ? CanvasRect(gSelectedShape->bounds)
+                                : CanvasRect(gSelectedFrame->bounds);
         double cx = (r.left + r.right) * 0.5, cy = (r.top + r.bottom) * 0.5;
         double hw = (r.right - r.left) * 0.5, hh = (r.bottom - r.top) * 0.5;
-        double rad = gSelectedShape->rotation * 3.14159265358979323846 / 180.0;
+        double rad = ownRot * 3.14159265358979323846 / 180.0;
         double cosA = std::cos(rad), sinA = std::sin(rad);
         double lx[4] = {-hw, hw, hw, -hw}, ly[4] = {-hh, -hh, hh, hh};
         short px[4], py[4];
         for (int i = 0; i < 4; ++i) {
-            px[i] = static_cast<short>(cx + lx[i]*cosA - ly[i]*sinA + 0.5);
-            py[i] = static_cast<short>(cy + lx[i]*sinA + ly[i]*cosA + 0.5);
+            double ox = cx + lx[i]*cosA - ly[i]*sinA;
+            double oy = cy + lx[i]*sinA + ly[i]*cosA;
+            double fx, fy;
+            ApplyRotChain(ambient, ox, oy, fx, fy);
+            Point p = ToQDPoint(fx, fy);
+            px[i] = p.h; py[i] = p.v;
         }
         // Interleave corners (px[0..3] = TL,TR,BR,BL) with edge midpoints so the
         // index convention matches the unrotated branch below: 0=TL,1=N,2=TR,3=E,
@@ -1670,16 +1858,24 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     Bounds2* b = gSelectedShape
         ? &gSelectedShape->bounds
         : &gSelectedFrame->bounds;
-    // Frames don't render rotated, so only a shape's own rotation affects this drag.
-    double rotDeg = gSelectedShape ? static_cast<double>(gSelectedShape->rotation) : 0.0;
+    // Own rotation matters for keeping the opposite handle visually anchored
+    // (that math is entirely local, see below); the mouse, though, moves in
+    // true screen space, so un-rotating its delta needs the NET rotation —
+    // own rotation plus every rotated ancestor frame above it.
+    double ownRotDeg = SelectedOwnRotation();
+    double ambientRotDeg = 0.0;
+    for (const auto& step : SelectedAmbientChain()) ambientRotDeg += step.angleDeg;
+    double netRotDeg = ownRotDeg + ambientRotDeg;
 
     static const SInt32 kMin = 10;
     bool isCorner   = (hi == 0 || hi == 2 || hi == 4 || hi == 6);
     Bounds2 origB   = *b;   // snapshot for absolute delta calculation
     double origHalfW = origB.w * 0.5, origHalfH = origB.h * 0.5;
     double origCenterX = origB.x + origHalfW, origCenterY = origB.y + origHalfH;
-    double rad = rotDeg * 3.14159265358979323846 / 180.0;
-    double cosT = std::cos(rad), sinT = std::sin(rad);
+    double netRad = netRotDeg * 3.14159265358979323846 / 180.0;
+    double netCosT = std::cos(netRad), netSinT = std::sin(netRad);
+    double ownRad = ownRotDeg * 3.14159265358979323846 / 180.0;
+    double ownCosT = std::cos(ownRad), ownSinT = std::sin(ownRad);
     // Anchor sign: the side NOT being dragged (0 on an axis this handle doesn't touch).
     int signX = bL[hi] ? 1 : (bR[hi] ? -1 : 0);
     int signY = bT[hi] ? 1 : (bB[hi] ? -1 : 0);
@@ -1697,10 +1893,11 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
             double dCanvasY = static_cast<double>(curr.v - startPt.v) * 100.0 / gCanvasZoom;
 
             // Un-rotate into the shape's own local axes: dragging along a rotated
-            // edge/corner should change local width/height, not screen x/y directly
-            // (same rotation convention as ComputeSelectionHandles, inverted).
-            double localDX =  dCanvasX * cosT + dCanvasY * sinT;
-            double localDY = -dCanvasX * sinT + dCanvasY * cosT;
+            // edge/corner should change local width/height, not screen x/y directly.
+            // Uses the NET (own + ancestor) rotation since the mouse moves in
+            // true screen space, past every rotated frame this object sits in.
+            double localDX =  dCanvasX * netCosT + dCanvasY * netSinT;
+            double localDY = -dCanvasX * netSinT + dCanvasY * netCosT;
 
             double newW = origB.w, newH = origB.h;
             if (bL[hi]) newW = origB.w - localDX;
@@ -1718,11 +1915,14 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
 
             // Keep the handle opposite the dragged one fixed on screen: solve for the
             // new center that leaves that anchor point's rotated position unchanged.
+            // Purely local math (bounds.x/y live in local/pre-ambient space, and any
+            // enclosing ambient rotation is constant during this drag), so it only
+            // needs the object's OWN rotation, not the net one used above.
             double halfW = newW * 0.5, halfH = newH * 0.5;
             double dLocalX = signX * (origHalfW - halfW);
             double dLocalY = signY * (origHalfH - halfH);
-            double newCenterX = origCenterX + (dLocalX * cosT - dLocalY * sinT);
-            double newCenterY = origCenterY + (dLocalX * sinT + dLocalY * cosT);
+            double newCenterX = origCenterX + (dLocalX * ownCosT - dLocalY * ownSinT);
+            double newCenterY = origCenterY + (dLocalX * ownSinT + dLocalY * ownCosT);
 
             double newX = newCenterX - halfW, newY = newCenterY - halfH;
             b->w = static_cast<SInt32>(newW + (newW >= 0 ? 0.5 : -0.5));
@@ -1848,8 +2048,13 @@ static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
 
     Bounds2* pB = gSelectedShape ? &gSelectedShape->bounds : &gSelectedFrame->bounds;
     Rect r = CanvasRect(*pB);
-    double screenCX = (r.left + r.right)  * 0.5;
-    double screenCY = (r.top  + r.bottom) * 0.5;
+    // True screen-space pivot: the object's own local center carried through any
+    // rotated ancestor frames (a rigid rotation preserves angles, so once the
+    // pivot is right, mouse-angle delta maps 1:1 onto the object's own rotation
+    // regardless of ambient rotation).
+    RotChain ambient = SelectedAmbientChain();
+    double screenCX, screenCY;
+    ApplyRotChain(ambient, (r.left + r.right) * 0.5, (r.top + r.bottom) * 0.5, screenCX, screenCY);
 
     double startAngle = std::atan2(static_cast<double>(startPt.v) - screenCY,
                                    static_cast<double>(startPt.h) - screenCX)
@@ -1857,8 +2062,9 @@ static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
     SInt16 origRot = *pRot;
     bool pushedUndo = false;
 
-    // Only shapes render rotated (frames don't), so only shapes affect cursor orientation.
-    SetCursor(GetRotateCursor(HandleBucket(cornerIdx, gSelectedShape ? origRot : 0.0)));
+    double ambientRotDeg = 0.0;
+    for (const auto& step : ambient) ambientRotDeg += step.angleDeg;
+    SetCursor(GetRotateCursor(HandleBucket(cornerIdx, origRot + ambientRotDeg)));
 
     Point prev = startPt, curr = startPt;
     while (Button()) {
@@ -1871,7 +2077,7 @@ static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
             double delta = curAngle - startAngle;
             int newRotI = static_cast<int>(origRot + delta + 0.5);
             *pRot = static_cast<SInt16>(((newRotI % 360) + 360) % 360);
-            SetCursor(GetRotateCursor(HandleBucket(cornerIdx, gSelectedShape ? *pRot : 0.0)));
+            SetCursor(GetRotateCursor(HandleBucket(cornerIdx, *pRot + ambientRotDeg)));
             RunDocumentLayout(gDocument);
             DrawWindowContent(win);
             prev = curr;
