@@ -1670,10 +1670,20 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     Bounds2* b = gSelectedShape
         ? &gSelectedShape->bounds
         : &gSelectedFrame->bounds;
+    // Frames don't render rotated, so only a shape's own rotation affects this drag.
+    double rotDeg = gSelectedShape ? static_cast<double>(gSelectedShape->rotation) : 0.0;
 
     static const SInt32 kMin = 10;
     bool isCorner   = (hi == 0 || hi == 2 || hi == 4 || hi == 6);
     Bounds2 origB   = *b;   // snapshot for absolute delta calculation
+    double origHalfW = origB.w * 0.5, origHalfH = origB.h * 0.5;
+    double origCenterX = origB.x + origHalfW, origCenterY = origB.y + origHalfH;
+    double rad = rotDeg * 3.14159265358979323846 / 180.0;
+    double cosT = std::cos(rad), sinT = std::sin(rad);
+    // Anchor sign: the side NOT being dragged (0 on an axis this handle doesn't touch).
+    int signX = bL[hi] ? 1 : (bR[hi] ? -1 : 0);
+    int signY = bT[hi] ? 1 : (bB[hi] ? -1 : 0);
+
     Point prev = startPt, curr = startPt;
     bool pushedUndo = false;
 
@@ -1682,26 +1692,43 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
         if (curr.h != prev.h || curr.v != prev.v) {
             if (!pushedUndo) { PushUndo(); pushedUndo = true; }
 
-            // Compute total delta from drag start (avoids AR accumulation error)
-            SInt32 totalDX = SInt32(curr.h - startPt.h) * 100 / gCanvasZoom;
-            SInt32 totalDY = SInt32(curr.v - startPt.v) * 100 / gCanvasZoom;
+            // Total mouse delta from drag start, in canvas units.
+            double dCanvasX = static_cast<double>(curr.h - startPt.h) * 100.0 / gCanvasZoom;
+            double dCanvasY = static_cast<double>(curr.v - startPt.v) * 100.0 / gCanvasZoom;
 
-            *b = origB;
-            if (bL[hi]) { b->x = origB.x + totalDX; b->w = origB.w - totalDX; }
-            if (bT[hi]) { b->y = origB.y + totalDY; b->h = origB.h - totalDY; }
-            if (bR[hi])   b->w = origB.w + totalDX;
-            if (bB[hi])   b->h = origB.h + totalDY;
+            // Un-rotate into the shape's own local axes: dragging along a rotated
+            // edge/corner should change local width/height, not screen x/y directly
+            // (same rotation convention as ComputeSelectionHandles, inverted).
+            double localDX =  dCanvasX * cosT + dCanvasY * sinT;
+            double localDY = -dCanvasX * sinT + dCanvasY * cosT;
+
+            double newW = origB.w, newH = origB.h;
+            if (bL[hi]) newW = origB.w - localDX;
+            if (bR[hi]) newW = origB.w + localDX;
+            if (bT[hi]) newH = origB.h - localDY;
+            if (bB[hi]) newH = origB.h + localDY;
 
             // Aspect ratio lock: inspector button OR Shift held at drag start
             bool lockAR = isCorner && (IsAspectLocked() || (startMods & shiftKey));
-            if (lockAR && origB.w > 0 && origB.h > 0) {
-                SInt32 newH = b->w * origB.h / origB.w;
-                if (bT[hi]) { SInt32 bot = origB.y + origB.h; b->h = newH; b->y = bot - newH; }
-                else          b->h = newH;
-            }
+            if (lockAR && origB.w > 0 && origB.h > 0)
+                newH = newW * origB.h / origB.w;
 
-            if (b->w < kMin) { if (bL[hi]) b->x += (b->w - kMin); b->w = kMin; }
-            if (b->h < kMin) { if (bT[hi]) b->y += (b->h - kMin); b->h = kMin; }
+            if (newW < kMin) newW = kMin;
+            if (newH < kMin) newH = kMin;
+
+            // Keep the handle opposite the dragged one fixed on screen: solve for the
+            // new center that leaves that anchor point's rotated position unchanged.
+            double halfW = newW * 0.5, halfH = newH * 0.5;
+            double dLocalX = signX * (origHalfW - halfW);
+            double dLocalY = signY * (origHalfH - halfH);
+            double newCenterX = origCenterX + (dLocalX * cosT - dLocalY * sinT);
+            double newCenterY = origCenterY + (dLocalX * sinT + dLocalY * cosT);
+
+            double newX = newCenterX - halfW, newY = newCenterY - halfH;
+            b->w = static_cast<SInt32>(newW + (newW >= 0 ? 0.5 : -0.5));
+            b->h = static_cast<SInt32>(newH + (newH >= 0 ? 0.5 : -0.5));
+            b->x = static_cast<SInt32>(newX + (newX >= 0 ? 0.5 : -0.5));
+            b->y = static_cast<SInt32>(newY + (newY >= 0 ? 0.5 : -0.5));
 
             DrawWindowContent(win);
             prev = curr;
