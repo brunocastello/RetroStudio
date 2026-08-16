@@ -2076,6 +2076,24 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
             prev = curr;
         }
     }
+
+    // Text sizing mode auto-switches based on which dimension was manually
+    // resized, matching Figma: touching height (alone or via a corner, which
+    // touches both) always fixes it; touching only width while Auto Width
+    // switches to Auto Height (width now fixed, height still hugs wrapped
+    // content) instead. Auto Height/Fixed stay as they are on a width-only
+    // resize since width is already the user-controlled dimension there.
+    if (pushedUndo && gSelectedShape && gSelectedShape->GetType() == Shape::kText) {
+        TextShape* ts = static_cast<TextShape*>(gSelectedShape);
+        bool widthChanged  = bL[hi] || bR[hi];
+        bool heightChanged = bT[hi] || bB[hi];
+        if (heightChanged) {
+            ts->textSizing = TextSizing::Fixed;
+        } else if (widthChanged && ts->textSizing == TextSizing::AutoWidth) {
+            ts->textSizing = TextSizing::AutoHeight;
+        }
+    }
+
     Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
 }
 
