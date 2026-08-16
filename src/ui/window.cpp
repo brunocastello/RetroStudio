@@ -46,41 +46,97 @@ static void ComputeCursorMask(Cursor& cur, const unsigned short kData[16]) {
     }
 }
 
-// Rotate cursor: open ring (no bottom) + downward arrowhead.
-static bool   sRotateCursorInited = false;
-static Cursor sRotateCursor;
+// Handle geometry shared by cursor selection and hit-testing.
+static const short kHandleHW   = 4;   // handle square half-width (grab target)
+static const short kRotateZone = 18;  // extra px beyond handle for rotate zone (was 10 — too thin to regrab)
 
-static void EnsureRotateCursor() {
-    if (sRotateCursorInited) return;
-    // Upper-half circle arc (9 o'clock → 12 → 3 o'clock), arrowhead at 3 o'clock pointing down
-    static const unsigned short kData[16] = {
-        0x0000, 0x0000, 0x0100, 0x0820,
-        0x1010, 0x2008, 0x2008, 0x2008,
-        0x001C, 0x0008, 0x0000, 0x0000,
-        0x0000, 0x0000, 0x0000, 0x0000
-    };
-    ComputeCursorMask(sRotateCursor, kData);
-    sRotateCursor.hotSpot.v = 7;
-    sRotateCursor.hotSpot.h = 7;
-    sRotateCursorInited = true;
+// ---- Direction-accurate resize cursors: EW, NS, and both diagonals ----
+// (double-headed arrows; source bitmaps below, NWSE derived from NESW by mirroring)
+static const unsigned short kResizeNESW[16] = {
+    0x000F, 0x0001, 0x0005, 0x0009, 0x0010, 0x0020,
+    0x0040, 0x0080, 0x0100, 0x0200, 0x0400, 0x4800,
+    0x5000, 0x4000, 0x7800, 0x0000
+};
+static const unsigned short kResizeNWSE[16] = {
+    0xF000, 0x8000, 0xA000, 0x9000, 0x0800, 0x0400,
+    0x0200, 0x0100, 0x0080, 0x0040, 0x0020, 0x0012,
+    0x000A, 0x0002, 0x001E, 0x0000
+};
+static const unsigned short kResizeEW[16] = {
+    0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x1002,
+    0x3003, 0x7FFF, 0x7FFF, 0x3003, 0x1002, 0x0000,
+    0x0000, 0x0000, 0x0000, 0x0000
+};
+static const unsigned short kResizeNS[16] = {
+    0x0000, 0x0180, 0x03C0, 0x07E0, 0x0180, 0x0180,
+    0x0180, 0x0180, 0x0180, 0x0180, 0x0180, 0x0180,
+    0x0180, 0x0180, 0x07E0, 0x03C0
+};
+// Indexed by direction family (bucket % 4): 0=E/W, 1=SE/NW, 2=S/N, 3=SW/NE
+static const unsigned short* const kResizeFamilies[4] = {
+    kResizeEW, kResizeNWSE, kResizeNS, kResizeNESW
+};
+static bool   sResizeCursorInited[4] = { false, false, false, false };
+static Cursor sResizeCursor[4];
+
+// ---- Direction-accurate rotate cursors: 8 buckets, 45 deg apart ----
+// bucket 0=E, 1=SE, 2=S, 3=SW, 4=W, 5=NW, 6=N, 7=NE (screen angle = bucket*45 deg,
+// where 0 deg = +x/east, 90 deg = +y/south — matches atan2(dy,dx) used for rotation drag)
+static const unsigned short kRotateData[8][16] = {
+    /*E */ { 0x0000, 0x0040, 0x00E0, 0x00F0, 0x0018, 0x0008, 0x0008, 0x0008,
+              0x0008, 0x0008, 0x0018, 0x00F0, 0x00E0, 0x0040, 0x0000, 0x0000 },
+    /*SE*/ { 0x0000, 0x0000, 0x0000, 0x0000, 0x0008, 0x0018, 0x0008, 0x0008,
+              0x0008, 0x0008, 0x0018, 0x0430, 0x0FE0, 0x0000, 0x0000, 0x0000 },
+    /*S */ { 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
+              0x3018, 0x701C, 0x3018, 0x1830, 0x0FE0, 0x0000, 0x0000, 0x0000 },
+    /*SW*/ { 0x0000, 0x0000, 0x0000, 0x0000, 0x2000, 0x3000, 0x2000, 0x2000,
+              0x2000, 0x2000, 0x3000, 0x1840, 0x0FE0, 0x0000, 0x0000, 0x0000 },
+    /*W */ { 0x0000, 0x0400, 0x0E00, 0x1E00, 0x3000, 0x2000, 0x2000, 0x2000,
+              0x2000, 0x2000, 0x3000, 0x1E00, 0x0E00, 0x0400, 0x0000, 0x0000 },
+    /*NW*/ { 0x0000, 0x0000, 0x0FE0, 0x1840, 0x3000, 0x2000, 0x2000, 0x2000,
+              0x2000, 0x3000, 0x2000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000 },
+    /*N */ { 0x0000, 0x0000, 0x0FE0, 0x1830, 0x3018, 0x701C, 0x3018, 0x0000,
+              0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000 },
+    /*NE*/ { 0x0000, 0x0000, 0x0FE0, 0x0430, 0x0018, 0x0008, 0x0008, 0x0008,
+              0x0008, 0x0018, 0x0008, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000 },
+};
+static bool   sRotateCursorInited[8] = { false,false,false,false,false,false,false,false };
+static Cursor sRotateCursor[8];
+
+// Maps a screen-space angle (deg, atan2 convention) to one of 8 cursor buckets 45 deg apart.
+static int AngleToBucket(double angleDeg) {
+    angleDeg = std::fmod(angleDeg, 360.0);
+    if (angleDeg < 0) angleDeg += 360.0;
+    return static_cast<int>(angleDeg / 45.0 + 0.5) % 8;
 }
 
-// Corner resize cursor: NW-SE diagonal double-headed arrow.
-static bool   sResizeCursorInited = false;
-static Cursor sResizeCursor;
+// handleIdx: 0=TL,1=N,2=TR,3=E,4=BR,5=S,6=BL,7=W (unrotated). shapeRotationDeg
+// is the selected shape's current rotation (0 for frames/unrotated shapes).
+static int HandleBucket(int handleIdx, double shapeRotationDeg) {
+    double baseAngle = handleIdx * 45.0 + 225.0;
+    return AngleToBucket(baseAngle + shapeRotationDeg);
+}
 
-static void EnsureResizeCursor() {
-    if (sResizeCursorInited) return;
-    // NE arrowhead (top-right) + diagonal shaft + SW arrowhead (bottom-left)
-    static const unsigned short kData[16] = {
-        0x000F, 0x0001, 0x0005, 0x0009, 0x0010, 0x0020,
-        0x0040, 0x0080, 0x0100, 0x0200, 0x0400, 0x4800,
-        0x5000, 0x4000, 0x7800, 0x0000
-    };
-    ComputeCursorMask(sResizeCursor, kData);
-    sResizeCursor.hotSpot.v = 7;
-    sResizeCursor.hotSpot.h = 7;
-    sResizeCursorInited = true;
+static Cursor* GetResizeCursor(int bucket) {
+    int family = bucket % 4;
+    if (!sResizeCursorInited[family]) {
+        ComputeCursorMask(sResizeCursor[family], kResizeFamilies[family]);
+        sResizeCursor[family].hotSpot.v = 7;
+        sResizeCursor[family].hotSpot.h = 7;
+        sResizeCursorInited[family] = true;
+    }
+    return &sResizeCursor[family];
+}
+
+static Cursor* GetRotateCursor(int bucket) {
+    bucket = ((bucket % 8) + 8) % 8;
+    if (!sRotateCursorInited[bucket]) {
+        ComputeCursorMask(sRotateCursor[bucket], kRotateData[bucket]);
+        sRotateCursor[bucket].hotSpot.v = 7;
+        sRotateCursor[bucket].hotSpot.h = 7;
+        sRotateCursorInited[bucket] = true;
+    }
+    return &sRotateCursor[bucket];
 }
 
 // In-memory clipboard
@@ -999,9 +1055,6 @@ static void DrawFrame(const Frame& frame) {
 }
 
 void UpdateCanvasCursor(Point globalPt) {
-    static const short kHW  = 4;   // handle half-width (must match DrawSelectionHighlight)
-    static const short kRot = 10;  // extra px beyond handle for rotate zone
-
     // Only for the select tool with a single selection over the canvas
     if (gActiveTool != Tool::Select || !gMainWindow) { InitCursor(); return; }
     bool hasSingle = (gSelectedShape && gSelectedShapes.size() <= 1 && gSelectedFrames.empty())
@@ -1051,9 +1104,12 @@ void UpdateCanvasCursor(Point globalPt) {
         hx[7]=r.left;  hy[7]=cy;
     }
 
+    double shapeRot = (gSelectedShape && gSelectedShape->rotation != 0)
+                     ? gSelectedShape->rotation : 0.0;
+
     // Corner handles: indices 0,2,4,6 — inner rect = resize, outer ring = rotate
     static const int kCorner[4] = {0, 2, 4, 6};
-    bool inRotateZone = false;
+    int rotateCorner = -1;
     for (int ci = 0; ci < 4; ++ci) {
         int i = kCorner[ci];
         short adx = static_cast<short>(localPt.h - hx[i]);
@@ -1061,16 +1117,14 @@ void UpdateCanvasCursor(Point globalPt) {
         if (adx < 0) adx = -adx;
         if (ady < 0) ady = -ady;
         short dist = adx > ady ? adx : ady;  // Chebyshev distance
-        if (dist <= kHW) {
-            EnsureResizeCursor();
-            SetCursor(&sResizeCursor);
+        if (dist <= kHandleHW) {
+            SetCursor(GetResizeCursor(HandleBucket(i, shapeRot)));
             return;
         }
-        if (dist <= kHW + kRot) inRotateZone = true;
+        if (dist <= kHandleHW + kRotateZone) rotateCorner = i;
     }
-    if (inRotateZone) {
-        EnsureRotateCursor();
-        SetCursor(&sRotateCursor);
+    if (rotateCorner >= 0) {
+        SetCursor(GetRotateCursor(HandleBucket(rotateCorner, shapeRot)));
         return;
     }
 
@@ -1080,9 +1134,8 @@ void UpdateCanvasCursor(Point globalPt) {
         short ady = static_cast<short>(localPt.v - hy[i]);
         if (adx < 0) adx = -adx;
         if (ady < 0) ady = -ady;
-        if (adx <= kHW && ady <= kHW) {
-            EnsureResizeCursor();
-            SetCursor(&sResizeCursor);
+        if (adx <= kHandleHW && ady <= kHandleHW) {
+            SetCursor(GetResizeCursor(HandleBucket(i, shapeRot)));
             return;
         }
     }
@@ -1560,30 +1613,28 @@ static bool ComputeSelectionHandles(short hx[8], short hy[8]) {
 static int HitTestHandles(Point pt) {
     short hx[8], hy[8];
     if (!ComputeSelectionHandles(hx, hy)) return -1;
-    static const short kHW = 4;
     for (int i = 0; i < 8; ++i) {
         short adx = static_cast<short>(pt.h - hx[i]); if (adx < 0) adx = -adx;
         short ady = static_cast<short>(pt.v - hy[i]); if (ady < 0) ady = -ady;
-        if (adx <= kHW && ady <= kHW) return i;
+        if (adx <= kHandleHW && ady <= kHandleHW) return i;
     }
     return -1;
 }
 
-// Returns true if pt is in the rotate zone (near a corner, outside the handle square).
-static bool HitTestRotateZone(Point pt) {
+// Returns the corner handle index (0,2,4,6) if pt is in that corner's rotate zone
+// (near the corner, outside the handle square), or -1 if not in any rotate zone.
+static int HitTestRotateZone(Point pt) {
     short hx[8], hy[8];
-    if (!ComputeSelectionHandles(hx, hy)) return false;
-    static const short kHW  = 4;
-    static const short kRot = 10;
+    if (!ComputeSelectionHandles(hx, hy)) return -1;
     static const int kCorner[4] = {0, 2, 4, 6};
     for (int ci = 0; ci < 4; ++ci) {
         int i = kCorner[ci];
         short adx = static_cast<short>(pt.h - hx[i]); if (adx < 0) adx = -adx;
         short ady = static_cast<short>(pt.v - hy[i]); if (ady < 0) ady = -ady;
         short dist = adx > ady ? adx : ady;
-        if (dist > kHW && dist <= kHW + kRot) return true;
+        if (dist > kHandleHW && dist <= kHandleHW + kRotateZone) return i;
     }
-    return false;
+    return -1;
 }
 
 // Drag the selected object's bounds by moving only the edge(s) implied by
@@ -1743,7 +1794,7 @@ static void CollectBandShapes(Frame* frm, SInt32 l, SInt32 t, SInt32 r, SInt32 b
 }
 
 // Rotate the selected shape/frame by dragging around its center.
-static void HandleRotateDrag(WindowRef win, Point startPt) {
+static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
     SInt16* pRot = gSelectedShape ? &gSelectedShape->rotation
                                   : (gSelectedFrame ? &gSelectedFrame->rotation : nullptr);
     if (!pRot) return;
@@ -1759,8 +1810,8 @@ static void HandleRotateDrag(WindowRef win, Point startPt) {
     SInt16 origRot = *pRot;
     bool pushedUndo = false;
 
-    EnsureRotateCursor();
-    SetCursor(&sRotateCursor);
+    // Only shapes render rotated (frames don't), so only shapes affect cursor orientation.
+    SetCursor(GetRotateCursor(HandleBucket(cornerIdx, gSelectedShape ? origRot : 0.0)));
 
     Point prev = startPt, curr = startPt;
     while (Button()) {
@@ -1773,6 +1824,7 @@ static void HandleRotateDrag(WindowRef win, Point startPt) {
             double delta = curAngle - startAngle;
             int newRotI = static_cast<int>(origRot + delta + 0.5);
             *pRot = static_cast<SInt16>(((newRotI % 360) + 360) % 360);
+            SetCursor(GetRotateCursor(HandleBucket(cornerIdx, gSelectedShape ? *pRot : 0.0)));
             RunDocumentLayout(gDocument);
             DrawWindowContent(win);
             prev = curr;
@@ -1793,10 +1845,11 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
     GlobalToLocal(&pt);
 
     // ---- 1a. Rotate zone (near corner, outside handle — checked before resize) ----
-    if (HitTestRotateZone(pt)) {
+    int rotateCorner = HitTestRotateZone(pt);
+    if (rotateCorner >= 0) {
         bool selLocked = gSelectedShape ? gSelectedShape->locked
                                         : (gSelectedFrame ? gSelectedFrame->locked : false);
-        if (!selLocked) HandleRotateDrag(win, pt);
+        if (!selLocked) HandleRotateDrag(win, pt, rotateCorner);
         return;
     }
 
