@@ -3207,7 +3207,12 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
 
     UpdateTextShapeBounds(*ts);
     RunDocumentLayout(gDocument);
-    Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
+    // Force an immediate normal-render redraw rather than relying solely on
+    // the async update event — otherwise TE's own last-drawn state (still
+    // showing its selection highlight, since edit sessions start with the
+    // text pre-selected) can remain visible on screen until something else
+    // happens to trigger a redraw.
+    DrawWindowContent(win);
 }
 
 // Inserts a new empty TextShape at `bounds` (frame membership resolved from
