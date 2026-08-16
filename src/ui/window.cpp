@@ -48,7 +48,7 @@ static void ComputeCursorMask(Cursor& cur, const unsigned short kData[16]) {
 
 // Handle geometry shared by cursor selection and hit-testing.
 static const short kHandleHW   = 4;   // handle square half-width (grab target)
-static const short kRotateZone = 30;  // extra px beyond handle for rotate zone (was 10, then 18 — still too thin to regrab)
+static const short kRotateZone = 18;  // extra px beyond handle for rotate zone (was 10 — too thin to regrab)
 
 // ---- Direction-accurate resize cursors: EW, NS, and both diagonals ----
 // (double-headed arrows; source bitmaps below, NWSE derived from NESW by mirroring)
@@ -1084,11 +1084,19 @@ void UpdateCanvasCursor(Point globalPt) {
             px[i] = static_cast<short>(cx + lx[i]*cosA - ly[i]*sinA + 0.5);
             py[i] = static_cast<short>(cy + lx[i]*sinA + ly[i]*cosA + 0.5);
         }
-        for (int i = 0; i < 4; ++i) { hx[i] = px[i]; hy[i] = py[i]; }
-        hx[4]=(px[0]+px[1])/2; hy[4]=(py[0]+py[1])/2;
-        hx[5]=(px[1]+px[2])/2; hy[5]=(py[1]+py[2])/2;
-        hx[6]=(px[2]+px[3])/2; hy[6]=(py[2]+py[3])/2;
-        hx[7]=(px[3]+px[0])/2; hy[7]=(py[3]+py[0])/2;
+        // Interleave corners (px[0..3] = TL,TR,BR,BL) with edge midpoints so the
+        // index convention matches the unrotated branch below: 0=TL,1=N,2=TR,3=E,
+        // 4=BR,5=S,6=BL,7=W. (A flat 0..3=corners,4..7=mids layout here would put
+        // TR/BL at indices 1/3 — outside the {0,2,4,6} corner set used elsewhere —
+        // making those two corners' rotate zone unreachable once rotated.)
+        hx[0]=px[0];              hy[0]=py[0];
+        hx[1]=(px[0]+px[1])/2;    hy[1]=(py[0]+py[1])/2;
+        hx[2]=px[1];              hy[2]=py[1];
+        hx[3]=(px[1]+px[2])/2;    hy[3]=(py[1]+py[2])/2;
+        hx[4]=px[2];              hy[4]=py[2];
+        hx[5]=(px[2]+px[3])/2;    hy[5]=(py[2]+py[3])/2;
+        hx[6]=px[3];              hy[6]=py[3];
+        hx[7]=(px[3]+px[0])/2;    hy[7]=(py[3]+py[0])/2;
     } else {
         Rect r = gSelectedShape ? CanvasRect(gSelectedShape->bounds)
                                 : CanvasRect(gSelectedFrame->bounds);
@@ -1196,12 +1204,16 @@ static void DrawSelectionHighlight() {
         LineTo(px[3], py[3]); LineTo(px[0], py[0]);
         PenSize(1, 1);
 
-        // 8 handle positions: 4 corners then 4 edge midpoints
+        // 8 handle positions, corners interleaved with edge midpoints — same
+        // 0=TL,1=N,2=TR,3=E,4=BR,5=S,6=BL,7=W convention as ComputeSelectionHandles.
         short hpx[8], hpy[8];
-        for (int i = 0; i < 4; ++i) { hpx[i] = px[i]; hpy[i] = py[i]; }
-        hpx[4] = static_cast<short>((px[0]+px[1])/2); hpy[4] = static_cast<short>((py[0]+py[1])/2);
-        hpx[5] = static_cast<short>((px[1]+px[2])/2); hpy[5] = static_cast<short>((py[1]+py[2])/2);
-        hpx[6] = static_cast<short>((px[2]+px[3])/2); hpy[6] = static_cast<short>((py[2]+py[3])/2);
+        hpx[0] = px[0]; hpy[0] = py[0];
+        hpx[1] = static_cast<short>((px[0]+px[1])/2); hpy[1] = static_cast<short>((py[0]+py[1])/2);
+        hpx[2] = px[1]; hpy[2] = py[1];
+        hpx[3] = static_cast<short>((px[1]+px[2])/2); hpy[3] = static_cast<short>((py[1]+py[2])/2);
+        hpx[4] = px[2]; hpy[4] = py[2];
+        hpx[5] = static_cast<short>((px[2]+px[3])/2); hpy[5] = static_cast<short>((py[2]+py[3])/2);
+        hpx[6] = px[3]; hpy[6] = py[3];
         hpx[7] = static_cast<short>((px[3]+px[0])/2); hpy[7] = static_cast<short>((py[3]+py[0])/2);
         for (int i = 0; i < 8; ++i) {
             Rect h = {
@@ -1588,11 +1600,19 @@ static bool ComputeSelectionHandles(short hx[8], short hy[8]) {
             px[i] = static_cast<short>(cx + lx[i]*cosA - ly[i]*sinA + 0.5);
             py[i] = static_cast<short>(cy + lx[i]*sinA + ly[i]*cosA + 0.5);
         }
-        for (int i = 0; i < 4; ++i) { hx[i] = px[i]; hy[i] = py[i]; }
-        hx[4]=(px[0]+px[1])/2; hy[4]=(py[0]+py[1])/2;
-        hx[5]=(px[1]+px[2])/2; hy[5]=(py[1]+py[2])/2;
-        hx[6]=(px[2]+px[3])/2; hy[6]=(py[2]+py[3])/2;
-        hx[7]=(px[3]+px[0])/2; hy[7]=(py[3]+py[0])/2;
+        // Interleave corners (px[0..3] = TL,TR,BR,BL) with edge midpoints so the
+        // index convention matches the unrotated branch below: 0=TL,1=N,2=TR,3=E,
+        // 4=BR,5=S,6=BL,7=W. (A flat 0..3=corners,4..7=mids layout here would put
+        // TR/BL at indices 1/3 — outside the {0,2,4,6} corner set used elsewhere —
+        // making those two corners' rotate zone unreachable once rotated.)
+        hx[0]=px[0];              hy[0]=py[0];
+        hx[1]=(px[0]+px[1])/2;    hy[1]=(py[0]+py[1])/2;
+        hx[2]=px[1];              hy[2]=py[1];
+        hx[3]=(px[1]+px[2])/2;    hy[3]=(py[1]+py[2])/2;
+        hx[4]=px[2];              hy[4]=py[2];
+        hx[5]=(px[2]+px[3])/2;    hy[5]=(py[2]+py[3])/2;
+        hx[6]=px[3];              hy[6]=py[3];
+        hx[7]=(px[3]+px[0])/2;    hy[7]=(py[3]+py[0])/2;
     } else {
         Rect r = gSelectedShape ? CanvasRect(gSelectedShape->bounds)
                                 : CanvasRect(gSelectedFrame->bounds);
