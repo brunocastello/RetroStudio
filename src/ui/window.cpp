@@ -1112,7 +1112,7 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                 if (w > 0 && h > 0) {
                     Rect gwRect; gwRect.top = 0; gwRect.left = 0; gwRect.bottom = h; gwRect.right = w;
                     GWorldPtr gw = nullptr;
-                    if (NewGWorld(&gw, 0, &gwRect, nullptr, nullptr, 0) == noErr && gw) {
+                    if (NewGWorld(&gw, 32, &gwRect, nullptr, nullptr, 0) == noErr && gw) {
                         GrafPtr savedPort; GetPort(&savedPort);
                         SetGWorld(reinterpret_cast<CGrafPtr>(gw), nullptr);
                         PixMapHandle pm = GetGWorldPixMap(gw);
@@ -1338,22 +1338,7 @@ static void DrawFrame(const Frame& frame, const RotChain& ambient) {
         TextSize(10);
         Str255 pn; ToPStr(frame.name, pn);
         if (anyRotation) {
-            // Anchor above whichever of the 4 corners is currently highest on
-            // screen, so the label stays visually above the frame at any angle
-            // (a fixed local corner would wander to the side/below once rotated).
-            double cx = (r.left + r.right) * 0.5, cy = (r.top + r.bottom) * 0.5;
-            double hw = (r.right - r.left) * 0.5, hh = (r.bottom - r.top) * 0.5;
-            double rad = frame.rotation * 3.14159265358979323846 / 180.0;
-            double cosA = std::cos(rad), sinA = std::sin(rad);
-            double lx4[4] = {-hw, hw, hw, -hw}, ly4[4] = {-hh, -hh, hh, hh};
-            double topX = 0, topY = 1e18;
-            for (int i = 0; i < 4; ++i) {
-                double px = cx + lx4[i]*cosA - ly4[i]*sinA;
-                double py = cy + lx4[i]*sinA + ly4[i]*cosA;
-                if (py < topY) { topY = py; topX = px; }
-            }
-            Point lp = ToQDPoint(topX, topY - 5);
-            MoveTo(lp.h, lp.v);
+            MoveTo(static_cast<short>(corners[0].h), static_cast<short>(corners[0].v - 5));
         } else {
             MoveTo(r.left, static_cast<short>(r.top - 5));
         }
@@ -1675,51 +1660,7 @@ void DrawWindowContent(WindowRef win) {
     SetPortWindowPort(win);
     Rect portRect;
     GetWindowPortBounds(win, &portRect);
-    short w = static_cast<short>(portRect.right - portRect.left);
-    short h = static_cast<short>(portRect.bottom - portRect.top);
-
-    // Double-buffer: draw into an offscreen GWorld the size of the content
-    // area, then blit it to the window in one shot. Drawing straight to the
-    // window erases to the canvas background first, which flashes visibly
-    // whenever a redraw is slow enough to notice (rotated text, rotated
-    // rounded corners). pixelDepth=0 matches the buffer to the CURRENT
-    // GDevice's own depth, so CopyBits never has to color-match/dither
-    // between mismatched depths — an earlier attempt hardcoded 32-bit and
-    // corrupted the whole screen's shared palette on an indexed display;
-    // this is the standard fix for that exact class of bug. Buffer is
-    // reused across calls, only reallocated on resize.
-    static GWorldPtr sCanvasBuf  = nullptr;
-    static short     sCanvasBufW = 0, sCanvasBufH = 0;
-    if (sCanvasBuf && (sCanvasBufW != w || sCanvasBufH != h)) {
-        DisposeGWorld(sCanvasBuf);
-        sCanvasBuf = nullptr;
-    }
-    if (!sCanvasBuf && w > 0 && h > 0) {
-        Rect bufBounds = {0, 0, h, w};
-        if (NewGWorld(&sCanvasBuf, 0, &bufBounds, nullptr, nullptr, 0) == noErr) {
-            sCanvasBufW = w; sCanvasBufH = h;
-        }
-    }
-
-    if (sCanvasBuf) {
-        GrafPtr savedPort; GetPort(&savedPort);
-        SetGWorld(reinterpret_cast<CGrafPtr>(sCanvasBuf), nullptr);
-        PixMapHandle pm = GetGWorldPixMap(sCanvasBuf);
-        LockPixels(pm);
-
-        Rect localBounds = {0, 0, h, w};
-        DrawCanvasInto(localBounds);
-
-        UnlockPixels(pm);
-        SetPort(savedPort);
-
-        SetPortWindowPort(win);
-        CopyBits(GetPortBitMapForCopyBits(reinterpret_cast<CGrafPtr>(sCanvasBuf)),
-                 GetPortBitMapForCopyBits(GetWindowPort(win)),
-                 &localBounds, &portRect, srcCopy, nullptr);
-    } else {
-        DrawCanvasInto(portRect);  // low-memory fallback: direct draw, may flicker
-    }
+    DrawCanvasInto(portRect);
 }
 
 // --------------------------------------------------------------------------
@@ -3207,31 +3148,33 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
 
     UpdateTextShapeBounds(*ts);
     RunDocumentLayout(gDocument);
-    // Force an immediate normal-render redraw rather than relying solely on
-    // the async update event — otherwise TE's own last-drawn state (still
-    // showing its selection highlight, since edit sessions start with the
-    // text pre-selected) can remain visible on screen until something else
-    // happens to trigger a redraw.
-    DrawWindowContent(win);
+    Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
 }
 
-// Inserts a new empty TextShape at `bounds` (frame membership resolved from
-// `localPt`), opens it for in-place editing, and discards it again if the
-// user left without typing anything (matches click-away-discards).
-static void CreateAndEditTextShape(WindowRef win, Point localPt, const Bounds2& bounds, TextSizing sizing) {
-    PushUndo();
+static void HandleTextPlace(WindowRef win, Point localPt, Point globalPt) {
+    (void)globalPt;
+    Shape* existing = HitTestAnyShapeBodyAt(localPt);
+    if (existing && existing->GetType() == Shape::kText && !existing->locked) {
+        gSelectedShapes.clear(); gSelectedFrames.clear();
+        gSelectedShape = existing;
+        gSelectedFrame = LocateShapeParent(existing);
+        EditTextInPlace(win, static_cast<TextShape*>(existing));
+        return;
+    }
 
-    auto tOwned   = std::make_unique<TextShape>();
-    TextShape* t  = tOwned.get();
-    t->name       = "Text " + istr(gNextTextNum++);
-    t->text       = "";
-    t->fontSize   = 14;
-    t->fontFace   = 0;
-    t->bounds     = bounds;
-    t->textSizing = sizing;
-    t->fillColor  = { 0, 0, 0 };  // black text color
-    t->hasFill    = true;
-    t->hasStroke  = false;
+    PushUndo();
+    Point cPt = ScreenToCanvas(localPt);
+
+    auto tOwned  = std::make_unique<TextShape>();
+    TextShape* t = tOwned.get();
+    t->name      = "Text " + istr(gNextTextNum++);
+    t->text      = "";
+    t->fontSize  = 14;
+    t->fontFace  = 0;
+    t->bounds    = { cPt.h, cPt.v, 100, 20 };
+    t->fillColor = { 0, 0, 0 };  // black text color
+    t->hasFill   = true;
+    t->hasStroke = false;
 
     Frame* target  = DeepestFrameAt(localPt);
     gSelectedShapes.clear(); gSelectedFrames.clear();
@@ -3258,43 +3201,6 @@ static void CreateAndEditTextShape(WindowRef win, Point localPt, const Bounds2& 
     }
 }
 
-// Plain click with the Text tool: edits an existing text shape's body if one
-// was clicked, else places a new Auto Width box (grows as you type) — matches
-// Figma's single-click behavior.
-static void HandleTextPlace(WindowRef win, Point localPt, Point globalPt) {
-    (void)globalPt;
-    Shape* existing = HitTestAnyShapeBodyAt(localPt);
-    if (existing && existing->GetType() == Shape::kText && !existing->locked) {
-        gSelectedShapes.clear(); gSelectedFrames.clear();
-        gSelectedShape = existing;
-        gSelectedFrame = LocateShapeParent(existing);
-        EditTextInPlace(win, static_cast<TextShape*>(existing));
-        return;
-    }
-    Point cPt = ScreenToCanvas(localPt);
-    CreateAndEditTextShape(win, localPt, { cPt.h, cPt.v, 100, 20 }, TextSizing::AutoWidth);
-}
-
-// Click-and-drag with the Text tool: places a Fixed-size box at the dragged
-// rect and switches it to Fixed sizing — matches Figma, where dragging (as
-// opposed to a plain click) sets both width and height up front and text
-// wraps within them instead of growing the box.
-static void HandleTextPlaceFixed(WindowRef win, Point startLocal, Point endLocal) {
-    Point cStart = ScreenToCanvas(startLocal);
-    Point cEnd   = ScreenToCanvas(endLocal);
-    Bounds2 b;
-    b.x = sMin(cStart.h, cEnd.h);
-    b.y = sMin(cStart.v, cEnd.v);
-    b.w = sMax(cStart.h, cEnd.h) - b.x;
-    b.h = sMax(cStart.v, cEnd.v) - b.y;
-
-    Point center;
-    center.h = static_cast<short>((sMin(startLocal.h, endLocal.h) + sMax(startLocal.h, endLocal.h)) / 2);
-    center.v = static_cast<short>((sMin(startLocal.v, endLocal.v) + sMax(startLocal.v, endLocal.v)) / 2);
-
-    CreateAndEditTextShape(win, center, b, TextSizing::Fixed);
-}
-
 // --------------------------------------------------------------------------
 // Shape / Frame creation: rubber-band drag with active tool
 // --------------------------------------------------------------------------
@@ -3306,32 +3212,9 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
     Point startPt = startGlobal;
     GlobalToLocal(&startPt);
 
-    // Text tool: plain click places/edits Auto Width text; click-and-drag
-    // (matching Figma) sizes a Fixed-size box up front before typing.
+    // Text tool: click-to-place (no rubber-band)
     if (gActiveTool == Tool::Text) {
-        Point tPrev = startPt, tCurr = startPt;
-        while (Button()) {
-            GetMouse(&tCurr);
-            if (tCurr.h != tPrev.h || tCurr.v != tPrev.v) {
-                DrawWindowContent(win);
-                Rect rb = {
-                    sMin(startPt.v, tCurr.v), sMin(startPt.h, tCurr.h),
-                    sMax(startPt.v, tCurr.v), sMax(startPt.h, tCurr.h)
-                };
-                if (rb.right > rb.left && rb.bottom > rb.top) {
-                    RGBColor blue = { 0x1177, 0x55AA, 0xFFFF };
-                    RGBForeColor(&blue); PenSize(1,1); FrameRect(&rb); PenNormal();
-                }
-                tPrev = tCurr;
-            }
-        }
-        short tdw = sMax(tCurr.h, startPt.h) - sMin(tCurr.h, startPt.h);
-        short tdh = sMax(tCurr.v, startPt.v) - sMin(tCurr.v, startPt.v);
-        if (tdw >= 4 && tdh >= 4) {
-            HandleTextPlaceFixed(win, startPt, tCurr);
-        } else {
-            HandleTextPlace(win, startPt, startGlobal);
-        }
+        HandleTextPlace(win, startPt, startGlobal);
         return;
     }
 
