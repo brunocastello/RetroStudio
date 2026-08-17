@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cstring>
 #include <cmath>
+#include <map>
 
 WindowRef  gMainWindow    = nullptr;
 WindowRef  gAboutWindow   = nullptr;
@@ -34,14 +35,6 @@ int        gNextTextNum    = 1;
 // DrawShape skips rendering it normally so the live TextEdit overlay shows
 // through instead.
 static TextShape* gEditingTextShape = nullptr;
-
-// True for the duration of a live mouse-down drag (rotate/resize/move) that
-// redraws the whole window on every mouse-move. DrawShape's kText case uses
-// this to skip the expensive multi-pass pixel-rotation technique while
-// dragging — that technique is only cheap enough to run once, on the
-// settled redraw after mouse-up, not 30+ times a second during a drag (see
-// project memory: CopyBits screen corruption, "fourth attempt").
-static bool gLiveDragActive = false;
 
 // ---- Cursor management -------------------------------------------------------
 // Helper: compute 8-connected dilation mask from a 16-row bitmap
@@ -891,6 +884,42 @@ static void TracePointPath(const std::vector<Point>& pts) {
     LineTo(pts[0].h, pts[0].v);
 }
 
+// Per-TextShape cache of its upright-rendered glyph pixels, used by
+// DrawShape's kText rotation path. What the glyphs look like only depends
+// on text/font/color/box-size — not on rotation angle — so while a text
+// shape (or its parent frame) is being live-dragged around its own
+// rotation, the angle changes every frame but the cache key doesn't,
+// meaning the expensive multi-pass GetCPixel/SetCPixel capture only runs
+// once, not on every mouse-move. This is what makes live rotation cheap
+// enough to run during an active drag instead of only on the settled
+// redraw after mouse-up.
+struct TextGlyphCacheKey {
+    std::string text;
+    short fontID = 0, size = 0, face = 0, lineH = 0, lsx = 0, align = 0;
+    bool hasFill = false, hasStroke = false;
+    RGBColor fillColor{}, strokeColor{};
+    short w = 0, h = 0;
+    bool operator==(const TextGlyphCacheKey& o) const {
+        return text == o.text && fontID == o.fontID && size == o.size && face == o.face &&
+               lineH == o.lineH && lsx == o.lsx && align == o.align &&
+               hasFill == o.hasFill && hasStroke == o.hasStroke && w == o.w && h == o.h &&
+               fillColor.red == o.fillColor.red && fillColor.green == o.fillColor.green &&
+               fillColor.blue == o.fillColor.blue &&
+               strokeColor.red == o.strokeColor.red && strokeColor.green == o.strokeColor.green &&
+               strokeColor.blue == o.strokeColor.blue;
+    }
+};
+struct TextGlyphCacheEntry {
+    TextGlyphCacheKey key;
+    std::vector<RGBColor> pixels;  // key.w * key.h
+};
+// Keyed by raw TextShape pointer. A deleted shape's entry is simply never
+// looked up again; if its memory address is later reused by an unrelated
+// TextShape with byte-identical cache-key fields, that new shape could in
+// theory reuse a stale cached bitmap — a real but extremely low-probability
+// edge case, not worth a full deletion-hook lifecycle for right now.
+static std::map<const TextShape*, TextGlyphCacheEntry> gTextGlyphCache;
+
 static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
     if (!shape.visible) return;
     if (gEditingTextShape && &shape == static_cast<const Shape*>(gEditingTextShape)) return;
@@ -1102,15 +1131,15 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
             // block and paint it with SetCPixel (inverse mapping so the
             // result has no holes).
             //
-            // Only done while NOT actively dragging: this is several
-            // Toolbox-call-heavy passes, and DrawWindowContent redraws the
-            // whole window from scratch on every mouse-move with no double
-            // buffer, so running this every frame during a drag makes each
-            // pass visibly flash on the real screen (tried once already —
-            // see project memory, "fourth attempt"). During a live drag,
-            // fall back to cheap upright position-tracking; the instant the
-            // drag ends, the settled redraw runs this once for the real
-            // rotated result.
+            // What the upright glyphs look like doesn't depend on rotation
+            // angle, so the capture is cached per TextShape (see
+            // TextGlyphCache above DrawShape) and only redone when text,
+            // font, color, or box size actually change. A live rotate drag
+            // changes only the angle every frame, so after the first frame
+            // this is a cache hit — just the inverse-map repaint below runs
+            // every mouse-move, which is cheap enough not to flicker. Only
+            // a cold cache (first frame after an edit, or a box too large
+            // to cache/repaint cheaply) pays the full multi-pass cost.
             double ownRot = static_cast<double>(shape.rotation);
             double cx0 = (r.left + r.right) * 0.5, cy0 = (r.top + r.bottom) * 0.5;
             RotChain full;
@@ -1121,7 +1150,7 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
             short srcH = static_cast<short>(r.bottom - r.top);
             bool didPixelRotate = false;
 
-            if (anyRotation && !gLiveDragActive && !str.empty() && srcW > 0 && srcH > 0 &&
+            if (anyRotation && !str.empty() && srcW > 0 && srcH > 0 &&
                 (SInt32)srcW * (SInt32)srcH <= 24000) {
                 Point c0, c1, c2, c3;
                 { double fx,fy;
@@ -1136,26 +1165,41 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                 SInt32 dstW = (SInt32)maxX - minX + 1, dstH = (SInt32)maxY - minY + 1;
 
                 if (dstW > 0 && dstH > 0 && dstW * dstH <= 30000) {
-                    std::vector<RGBColor> under(static_cast<size_t>(srcW) * srcH);
-                    std::vector<RGBColor> glyph(static_cast<size_t>(srcW) * srcH);
-                    for (short y = 0; y < srcH; ++y)
-                        for (short x = 0; x < srcW; ++x)
-                            GetCPixel(static_cast<short>(r.left+x), static_cast<short>(r.top+y),
-                                      &under[static_cast<size_t>(y)*srcW + x]);
+                    TextGlyphCacheKey key;
+                    key.text = str; key.fontID = fontID; key.size = scaledSize;
+                    key.face = static_cast<short>(t.fontFace | (shape.hasStroke ? 8 : 0));
+                    key.lineH = lineH; key.lsx = lsxPx; key.align = t.textAlign;
+                    key.hasFill = shape.hasFill; key.hasStroke = shape.hasStroke;
+                    key.fillColor = shape.fillColor; key.strokeColor = shape.strokeColor;
+                    key.w = srcW; key.h = srcH;
 
-                    setTextDrawState();
-                    drawLines(r);
+                    TextGlyphCacheEntry& entry = gTextGlyphCache[&t];
+                    if (!(entry.key == key) || entry.pixels.size() != static_cast<size_t>(srcW) * srcH) {
+                        std::vector<RGBColor> under(static_cast<size_t>(srcW) * srcH);
+                        for (short y = 0; y < srcH; ++y)
+                            for (short x = 0; x < srcW; ++x)
+                                GetCPixel(static_cast<short>(r.left+x), static_cast<short>(r.top+y),
+                                          &under[static_cast<size_t>(y)*srcW + x]);
 
-                    for (short y = 0; y < srcH; ++y)
-                        for (short x = 0; x < srcW; ++x)
-                            GetCPixel(static_cast<short>(r.left+x), static_cast<short>(r.top+y),
-                                      &glyph[static_cast<size_t>(y)*srcW + x]);
+                        setTextDrawState();
+                        drawLines(r);
 
-                    for (short y = 0; y < srcH; ++y)
-                        for (short x = 0; x < srcW; ++x)
-                            SetCPixel(static_cast<short>(r.left+x), static_cast<short>(r.top+y),
-                                      &under[static_cast<size_t>(y)*srcW + x]);
+                        std::vector<RGBColor> glyph(static_cast<size_t>(srcW) * srcH);
+                        for (short y = 0; y < srcH; ++y)
+                            for (short x = 0; x < srcW; ++x)
+                                GetCPixel(static_cast<short>(r.left+x), static_cast<short>(r.top+y),
+                                          &glyph[static_cast<size_t>(y)*srcW + x]);
 
+                        for (short y = 0; y < srcH; ++y)
+                            for (short x = 0; x < srcW; ++x)
+                                SetCPixel(static_cast<short>(r.left+x), static_cast<short>(r.top+y),
+                                          &under[static_cast<size_t>(y)*srcW + x]);
+
+                        entry.key    = key;
+                        entry.pixels = std::move(glyph);
+                    }
+
+                    const std::vector<RGBColor>& glyph = entry.pixels;
                     for (SInt32 py = 0; py < dstH; ++py) {
                         for (SInt32 px = 0; px < dstW; ++px) {
                             double ox, oy;
@@ -1172,9 +1216,8 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
             }
 
             if (!didPixelRotate) {
-                // Live drag, empty text, or box too large to pixel-rotate
-                // cheaply: position tracks the ambient chain but glyphs
-                // stay upright.
+                // Empty text, or box too large to pixel-rotate cheaply:
+                // position tracks the ambient chain but glyphs stay upright.
                 Rect rr = r;
                 if (!ambient.empty()) {
                     double fcx, fcy;
@@ -2131,7 +2174,6 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     Point prev = startPt, curr = startPt;
     bool pushedUndo = false;
 
-    gLiveDragActive = true;
     while (Button()) {
         GetMouse(&curr);
         if (curr.h != prev.h || curr.v != prev.v) {
@@ -2207,7 +2249,6 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
             prev = curr;
         }
     }
-    gLiveDragActive = false;
 
     Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
 }
@@ -2364,7 +2405,6 @@ static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
     };
 
     Point prev = startPt, curr = startPt;
-    gLiveDragActive = true;
     while (Button()) {
         GetMouse(&curr);
         if (curr.h != prev.h || curr.v != prev.v) {
@@ -2382,7 +2422,6 @@ static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
             prev = curr;
         }
     }
-    gLiveDragActive = false;
 
     Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
 }
@@ -2770,7 +2809,6 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         if (isMultiDrag && hitFrame && hitFrame->layoutMode != LayoutMode::None)
             gIsLayoutMultiDrag = true;
 
-        gLiveDragActive = true;
         while (Button()) {
             GetMouse(&currPt);
             if (currPt.h != prevPt.h || currPt.v != prevPt.v) {
@@ -2820,7 +2858,6 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                 prevPt = currPt;
             }
         }
-        gLiveDragActive = false;
 
         gLayoutDragShape   = nullptr;
         gLayoutDragFrame   = nullptr;
@@ -3040,7 +3077,6 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                 }
             }
         }
-        gLiveDragActive = false;
     } else {
         // No hit — rubber-band marquee selection (Finder-style).
         // Use XOR pen to draw/erase the selection rect without redrawing canvas.
