@@ -35,6 +35,14 @@ int        gNextTextNum    = 1;
 // through instead.
 static TextShape* gEditingTextShape = nullptr;
 
+// True for the duration of a live mouse-down drag (rotate/resize/move) that
+// redraws the whole window on every mouse-move. DrawShape's kText case uses
+// this to skip the expensive multi-pass pixel-rotation technique while
+// dragging — that technique is only cheap enough to run once, on the
+// settled redraw after mouse-up, not 30+ times a second during a drag (see
+// project memory: CopyBits screen corruption, "fourth attempt").
+static bool gLiveDragActive = false;
+
 // ---- Cursor management -------------------------------------------------------
 // Helper: compute 8-connected dilation mask from a 16-row bitmap
 static void ComputeCursorMask(Cursor& cur, const unsigned short kData[16]) {
@@ -1084,28 +1092,101 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                 } while (pos < str.size());
             };
 
-            // QuickDraw can't rotate glyphs, so text never spins with its own
-            // rotation or an ancestor frame's — but it must still track a rotated
-            // ancestor's position, or it'd render detached from its container.
-            // Re-center the (unrotated) text box on its ambient-transformed center.
-            // (An offscreen-GWorld-based true glyph rotation was tried here and
-            // removed: it repeatedly corrupted the whole screen's shared color
-            // palette in this environment, across multiple different specific
-            // techniques — CopyBits and non-CopyBits alike — so ANY offscreen
-            // GWorld usage in this rendering path is being treated as unsafe.
-            // See project memory: CopyBits screen corruption.)
-            Rect rr = r;
-            if (!ambient.empty()) {
-                double cx0 = (r.left + r.right) * 0.5, cy0 = (r.top + r.bottom) * 0.5;
-                double fcx, fcy;
-                ApplyRotChain(ambient, cx0, cy0, fcx, fcy);
-                short dx = static_cast<short>((fcx - cx0) + (fcx >= cx0 ? 0.5 : -0.5));
-                short dy = static_cast<short>((fcy - cy0) + (fcy >= cy0 ? 0.5 : -0.5));
-                rr.left = static_cast<short>(rr.left + dx); rr.right  = static_cast<short>(rr.right  + dx);
-                rr.top  = static_cast<short>(rr.top  + dy); rr.bottom = static_cast<short>(rr.bottom + dy);
+            // True glyph rotation, done entirely on the REAL window port —
+            // never an offscreen GWorld (three earlier GWorld techniques all
+            // corrupted the shared screen palette; see project memory:
+            // CopyBits screen corruption). Draw the text upright into its
+            // own unrotated rect, capture those exact pixels with
+            // GetCPixel, restore what was underneath, then inverse-map the
+            // rotated destination bounding box back into that captured
+            // block and paint it with SetCPixel (inverse mapping so the
+            // result has no holes).
+            //
+            // Only done while NOT actively dragging: this is several
+            // Toolbox-call-heavy passes, and DrawWindowContent redraws the
+            // whole window from scratch on every mouse-move with no double
+            // buffer, so running this every frame during a drag makes each
+            // pass visibly flash on the real screen (tried once already —
+            // see project memory, "fourth attempt"). During a live drag,
+            // fall back to cheap upright position-tracking; the instant the
+            // drag ends, the settled redraw runs this once for the real
+            // rotated result.
+            double ownRot = static_cast<double>(shape.rotation);
+            double cx0 = (r.left + r.right) * 0.5, cy0 = (r.top + r.bottom) * 0.5;
+            RotChain full;
+            if (ownRot != 0.0) full.push_back({ownRot, cx0, cy0});
+            full.insert(full.end(), ambient.begin(), ambient.end());
+
+            short srcW = static_cast<short>(r.right - r.left);
+            short srcH = static_cast<short>(r.bottom - r.top);
+            bool didPixelRotate = false;
+
+            if (anyRotation && !gLiveDragActive && !str.empty() && srcW > 0 && srcH > 0 &&
+                (SInt32)srcW * (SInt32)srcH <= 24000) {
+                Point c0, c1, c2, c3;
+                { double fx,fy;
+                  ApplyRotChain(full, r.left,  r.top,    fx,fy); c0 = ToQDPoint(fx,fy);
+                  ApplyRotChain(full, r.right, r.top,    fx,fy); c1 = ToQDPoint(fx,fy);
+                  ApplyRotChain(full, r.right, r.bottom, fx,fy); c2 = ToQDPoint(fx,fy);
+                  ApplyRotChain(full, r.left,  r.bottom, fx,fy); c3 = ToQDPoint(fx,fy); }
+                short minX = std::min(std::min(c0.h,c1.h), std::min(c2.h,c3.h));
+                short maxX = std::max(std::max(c0.h,c1.h), std::max(c2.h,c3.h));
+                short minY = std::min(std::min(c0.v,c1.v), std::min(c2.v,c3.v));
+                short maxY = std::max(std::max(c0.v,c1.v), std::max(c2.v,c3.v));
+                SInt32 dstW = (SInt32)maxX - minX + 1, dstH = (SInt32)maxY - minY + 1;
+
+                if (dstW > 0 && dstH > 0 && dstW * dstH <= 30000) {
+                    std::vector<RGBColor> under(static_cast<size_t>(srcW) * srcH);
+                    std::vector<RGBColor> glyph(static_cast<size_t>(srcW) * srcH);
+                    for (short y = 0; y < srcH; ++y)
+                        for (short x = 0; x < srcW; ++x)
+                            GetCPixel(static_cast<short>(r.left+x), static_cast<short>(r.top+y),
+                                      &under[static_cast<size_t>(y)*srcW + x]);
+
+                    setTextDrawState();
+                    drawLines(r);
+
+                    for (short y = 0; y < srcH; ++y)
+                        for (short x = 0; x < srcW; ++x)
+                            GetCPixel(static_cast<short>(r.left+x), static_cast<short>(r.top+y),
+                                      &glyph[static_cast<size_t>(y)*srcW + x]);
+
+                    for (short y = 0; y < srcH; ++y)
+                        for (short x = 0; x < srcW; ++x)
+                            SetCPixel(static_cast<short>(r.left+x), static_cast<short>(r.top+y),
+                                      &under[static_cast<size_t>(y)*srcW + x]);
+
+                    for (SInt32 py = 0; py < dstH; ++py) {
+                        for (SInt32 px = 0; px < dstW; ++px) {
+                            double ox, oy;
+                            ApplyRotChainInverse(full, minX+px+0.5, minY+py+0.5, ox, oy);
+                            SInt32 sxi = static_cast<SInt32>(std::floor(ox)) - r.left;
+                            SInt32 syi = static_cast<SInt32>(std::floor(oy)) - r.top;
+                            if (sxi < 0 || sxi >= srcW || syi < 0 || syi >= srcH) continue;
+                            SetCPixel(static_cast<short>(minX+px), static_cast<short>(minY+py),
+                                      &glyph[static_cast<size_t>(syi)*srcW + sxi]);
+                        }
+                    }
+                    didPixelRotate = true;
+                }
             }
-            setTextDrawState();
-            drawLines(rr);
+
+            if (!didPixelRotate) {
+                // Live drag, empty text, or box too large to pixel-rotate
+                // cheaply: position tracks the ambient chain but glyphs
+                // stay upright.
+                Rect rr = r;
+                if (!ambient.empty()) {
+                    double fcx, fcy;
+                    ApplyRotChain(ambient, cx0, cy0, fcx, fcy);
+                    short dx = static_cast<short>((fcx - cx0) + (fcx >= cx0 ? 0.5 : -0.5));
+                    short dy = static_cast<short>((fcy - cy0) + (fcy >= cy0 ? 0.5 : -0.5));
+                    rr.left = static_cast<short>(rr.left + dx); rr.right  = static_cast<short>(rr.right  + dx);
+                    rr.top  = static_cast<short>(rr.top  + dy); rr.bottom = static_cast<short>(rr.bottom + dy);
+                }
+                setTextDrawState();
+                drawLines(rr);
+            }
             TextFace(0); TextSize(12); TextFont(0);
             RGBColor wh = {0xFFFF,0xFFFF,0xFFFF}; RGBBackColor(&wh);
             break;
@@ -2050,6 +2131,7 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     Point prev = startPt, curr = startPt;
     bool pushedUndo = false;
 
+    gLiveDragActive = true;
     while (Button()) {
         GetMouse(&curr);
         if (curr.h != prev.h || curr.v != prev.v) {
@@ -2125,6 +2207,7 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
             prev = curr;
         }
     }
+    gLiveDragActive = false;
 
     Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
 }
@@ -2281,6 +2364,7 @@ static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
     };
 
     Point prev = startPt, curr = startPt;
+    gLiveDragActive = true;
     while (Button()) {
         GetMouse(&curr);
         if (curr.h != prev.h || curr.v != prev.v) {
@@ -2298,6 +2382,7 @@ static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
             prev = curr;
         }
     }
+    gLiveDragActive = false;
 
     Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
 }
@@ -2685,6 +2770,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         if (isMultiDrag && hitFrame && hitFrame->layoutMode != LayoutMode::None)
             gIsLayoutMultiDrag = true;
 
+        gLiveDragActive = true;
         while (Button()) {
             GetMouse(&currPt);
             if (currPt.h != prevPt.h || currPt.v != prevPt.v) {
@@ -2734,6 +2820,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                 prevPt = currPt;
             }
         }
+        gLiveDragActive = false;
 
         gLayoutDragShape   = nullptr;
         gLayoutDragFrame   = nullptr;
@@ -2953,6 +3040,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                 }
             }
         }
+        gLiveDragActive = false;
     } else {
         // No hit — rubber-band marquee selection (Finder-style).
         // Use XOR pen to draw/erase the selection rect without redrawing canvas.
