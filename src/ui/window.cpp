@@ -2384,6 +2384,29 @@ static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
     for (const auto& step : ambient) ambientRotDeg += step.angleDeg;
     SetCursor(GetRotateCursor(HandleBucket(cornerIdx, origRot + ambientRotDeg)));
 
+    // Clip every redraw during the drag to a generous region around the
+    // pivot instead of the whole window: DrawWindowContent redraws the
+    // entire canvas from scratch every call (erase, then repaint), and with
+    // no double buffer available in this environment (see DrawWindowContent
+    // — CopyBits corrupts the screen here), that erase is what's visible as
+    // flicker. Restricting it to just the rotating object's own worst-case
+    // footprint makes each redraw touch far fewer pixels, without changing
+    // anything about how or what gets drawn. The radius a rotating object
+    // can reach from its own center is rotation-invariant (a rigid rotation
+    // preserves distances, ambient or own), so this region is computed once
+    // and covers every angle throughout the drag; padding covers selection
+    // handles, the rotate-zone reach beyond them, and the name label.
+    double halfW = (r.right - r.left) * 0.5, halfH = (r.bottom - r.top) * 0.5;
+    double reach = std::sqrt(halfW*halfW + halfH*halfH) + 200.0;
+    Rect dirtyRect = {
+        static_cast<short>(screenCY - reach), static_cast<short>(screenCX - reach),
+        static_cast<short>(screenCY + reach), static_cast<short>(screenCX + reach)
+    };
+    SetPortWindowPort(win);
+    RgnHandle savedClip = NewRgn();
+    GetClip(savedClip);
+    ClipRect(&dirtyRect);
+
     Point prev = startPt, curr = startPt;
     while (Button()) {
         GetMouse(&curr);
@@ -2401,6 +2424,11 @@ static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
             prev = curr;
         }
     }
+
+    SetPortWindowPort(win);
+    SetClip(savedClip);
+    DisposeRgn(savedClip);
+
     Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
 }
 
