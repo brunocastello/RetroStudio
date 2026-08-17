@@ -29,34 +29,42 @@ jobs:
           cat /Retro68-build/toolchain/powerpc-apple-macos/cmake/retrocarbon.toolchain.cmake 2>/dev/null || echo "(not found)"
 
       - name: Diagnose GWorld/CGrafPtr headers (investigation only, no build changes)
+        shell: bash
         run: |
-          echo "=== Locating QuickDraw/QDOffscreen headers ==="
-          find / -iname "QuickDraw.h" -o -iname "QDOffscreen.h" -o -iname "Palettes.h" 2>/dev/null | tee /tmp/hdrs.txt
+          set +e
+          H=/Retro68-build/toolchain/powerpc-apple-macos/include/Quickdraw.h
+          echo "=== Using header: $H ==="
+          ls -la "$H"
           echo ""
           echo "=== CGrafPtr / GWorldPtr / CGrafPort typedefs ==="
-          for f in $(cat /tmp/hdrs.txt); do
-            echo "--- $f ---"
-            grep -n -E "typedef.*(CGrafPtr|GWorldPtr|CGrafPort)\b|^\s*(CGrafPtr|GWorldPtr)\s*;|struct CGrafPort" "$f" 2>/dev/null
-          done
+          grep -n -E "typedef.*(CGrafPtr|GWorldPtr|CGrafPort)\b|struct CGrafPort" "$H"
+          echo "(exit $?, 1 = no matches, not an error)"
           echo ""
-          echo "=== NewGWorld / SetGWorld / GetGWorldPixMap signatures ==="
-          for f in $(cat /tmp/hdrs.txt); do
-            echo "--- $f ---"
-            grep -n -A2 -E "OSErr\s+NewGWorld|void\s+SetGWorld|PixMapHandle\s+GetGWorldPixMap|CGrafPtr\s+GetPort|void\s+GetGWorld" "$f" 2>/dev/null
-          done
+          echo "=== NewGWorld / SetGWorld / GetGWorldPixMap / GetPort signatures ==="
+          grep -n -A2 -E "NewGWorld|SetGWorld|GetGWorldPixMap|CGrafPtr GetPort|GetGWorld\(" "$H"
+          echo "(exit $?, 1 = no matches, not an error)"
           echo ""
           echo "=== Legacy BitMap / SetPortBits availability ==="
-          find / -iname "QuickDraw.h" 2>/dev/null | xargs grep -ln "SetPortBits" 2>/dev/null || echo "SetPortBits not found in any QuickDraw.h"
-          find / -iname "*.h" 2>/dev/null | xargs grep -l "void SetPortBits" 2>/dev/null || echo "SetPortBits declaration not found anywhere"
+          grep -n "SetPortBits" "$H"
+          echo "(exit $?, 1 = no matches, not an error)"
           echo ""
-          echo "=== CTabHandle / color table structures near NewGWorld ==="
-          for f in $(cat /tmp/hdrs.txt); do
-            echo "--- $f (CTabHandle/ColorSpec context) ---"
-            grep -n -B1 -A1 "CTabHandle" "$f" 2>/dev/null | head -30
-          done
+          echo "=== CTabHandle / color table structures ==="
+          grep -n -B1 -A1 "CTabHandle" "$H" | head -40
+          echo "(exit $?, 1 = no matches, not an error)"
           echo ""
-          echo "=== Which lib provides these symbols (CarbonLib vs other) ==="
+          echo "=== Multiversal source header for comparison (if present) ==="
+          M=/Retro68-build/toolchain/multiversal/CIncludes/Quickdraw.h
+          if [ -f "$M" ]; then
+            echo "--- $M ---"
+            grep -n -E "typedef.*(CGrafPtr|GWorldPtr|CGrafPort)\b|struct CGrafPort" "$M"
+          else
+            echo "(not found at $M)"
+          fi
+          echo ""
+          echo "=== Which lib provides these symbols ==="
           find / -iname "libCarbonLib*" -o -iname "libQuickDraw*" 2>/dev/null
+          echo "=== done ==="
+          exit 0
 
       - name: Configure CMake with Retro68 Toolchain
         run: |
