@@ -1084,28 +1084,100 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                 } while (pos < str.size());
             };
 
-            // QuickDraw can't rotate glyphs, so text never spins with its own
-            // rotation or an ancestor frame's — but it must still track a rotated
-            // ancestor's position, or it'd render detached from its container.
-            // Re-center the (unrotated) text box on its ambient-transformed center.
-            // (An offscreen-GWorld-based true glyph rotation was tried here and
-            // removed: it repeatedly corrupted the whole screen's shared color
-            // palette in this environment, across multiple different specific
-            // techniques — CopyBits and non-CopyBits alike — so ANY offscreen
-            // GWorld usage in this rendering path is being treated as unsafe.
+            // True glyph rotation, done entirely on the REAL window port —
+            // never an offscreen GWorld. QuickDraw can't rotate a font's
+            // glyphs directly, so instead: draw the text normally (upright)
+            // into its own unrotated rect, capture those exact pixels back
+            // out of the port with GetCPixel, restore what was underneath,
+            // then re-paint the captured block into its rotated destination
+            // pixel-by-pixel (inverse-mapped, so there are no holes) with
+            // SetCPixel. Every read/write targets the window's own onscreen
+            // pixmap; nothing here calls NewGWorld/SetGWorld/CopyBits.
+            //
+            // (Three earlier attempts at rotated text/label rendering all
+            // allocated an offscreen GWorld — with CopyBits, without it, at
+            // matching depth, at fixed depth — and every one corrupted the
+            // shared screen color palette system-wide. This technique is
+            // deliberately GWorld-free to test whether GWorld allocation
+            // itself, not the pixel-level technique, was the actual cause.
             // See project memory: CopyBits screen corruption.)
-            Rect rr = r;
-            if (!ambient.empty()) {
-                double cx0 = (r.left + r.right) * 0.5, cy0 = (r.top + r.bottom) * 0.5;
-                double fcx, fcy;
-                ApplyRotChain(ambient, cx0, cy0, fcx, fcy);
-                short dx = static_cast<short>((fcx - cx0) + (fcx >= cx0 ? 0.5 : -0.5));
-                short dy = static_cast<short>((fcy - cy0) + (fcy >= cy0 ? 0.5 : -0.5));
-                rr.left = static_cast<short>(rr.left + dx); rr.right  = static_cast<short>(rr.right  + dx);
-                rr.top  = static_cast<short>(rr.top  + dy); rr.bottom = static_cast<short>(rr.bottom + dy);
+            double ownRot = static_cast<double>(shape.rotation);
+            double cx0 = (r.left + r.right) * 0.5, cy0 = (r.top + r.bottom) * 0.5;
+            RotChain full;
+            if (ownRot != 0.0) full.push_back({ownRot, cx0, cy0});
+            full.insert(full.end(), ambient.begin(), ambient.end());
+
+            short srcW = static_cast<short>(r.right - r.left);
+            short srcH = static_cast<short>(r.bottom - r.top);
+            bool didPixelRotate = false;
+
+            if (anyRotation && !str.empty() && srcW > 0 && srcH > 0 &&
+                (SInt32)srcW * (SInt32)srcH <= 24000) {
+                // Destination AABB: rotate r's 4 corners through the full chain.
+                Point c0, c1, c2, c3;
+                { double fx,fy;
+                  ApplyRotChain(full, r.left,  r.top,    fx,fy); c0 = ToQDPoint(fx,fy);
+                  ApplyRotChain(full, r.right, r.top,    fx,fy); c1 = ToQDPoint(fx,fy);
+                  ApplyRotChain(full, r.right, r.bottom, fx,fy); c2 = ToQDPoint(fx,fy);
+                  ApplyRotChain(full, r.left,  r.bottom, fx,fy); c3 = ToQDPoint(fx,fy); }
+                short minX = std::min(std::min(c0.h,c1.h), std::min(c2.h,c3.h));
+                short maxX = std::max(std::max(c0.h,c1.h), std::max(c2.h,c3.h));
+                short minY = std::min(std::min(c0.v,c1.v), std::min(c2.v,c3.v));
+                short maxY = std::max(std::max(c0.v,c1.v), std::max(c2.v,c3.v));
+                SInt32 dstW = (SInt32)maxX - minX + 1, dstH = (SInt32)maxY - minY + 1;
+
+                if (dstW > 0 && dstH > 0 && dstW * dstH <= 30000) {
+                    std::vector<RGBColor> under(static_cast<size_t>(srcW) * srcH);
+                    std::vector<RGBColor> glyph(static_cast<size_t>(srcW) * srcH);
+                    for (short y = 0; y < srcH; ++y)
+                        for (short x = 0; x < srcW; ++x)
+                            GetCPixel(static_cast<short>(r.left+x), static_cast<short>(r.top+y),
+                                      &under[static_cast<size_t>(y)*srcW + x]);
+
+                    setTextDrawState();
+                    drawLines(r);
+
+                    for (short y = 0; y < srcH; ++y)
+                        for (short x = 0; x < srcW; ++x)
+                            GetCPixel(static_cast<short>(r.left+x), static_cast<short>(r.top+y),
+                                      &glyph[static_cast<size_t>(y)*srcW + x]);
+
+                    for (short y = 0; y < srcH; ++y)
+                        for (short x = 0; x < srcW; ++x)
+                            SetCPixel(static_cast<short>(r.left+x), static_cast<short>(r.top+y),
+                                      &under[static_cast<size_t>(y)*srcW + x]);
+
+                    for (SInt32 py = 0; py < dstH; ++py) {
+                        for (SInt32 px = 0; px < dstW; ++px) {
+                            double ox, oy;
+                            ApplyRotChainInverse(full, minX+px+0.5, minY+py+0.5, ox, oy);
+                            SInt32 sxi = static_cast<SInt32>(std::floor(ox)) - r.left;
+                            SInt32 syi = static_cast<SInt32>(std::floor(oy)) - r.top;
+                            if (sxi < 0 || sxi >= srcW || syi < 0 || syi >= srcH) continue;
+                            SetCPixel(static_cast<short>(minX+px), static_cast<short>(minY+py),
+                                      &glyph[static_cast<size_t>(syi)*srcW + sxi]);
+                        }
+                    }
+                    didPixelRotate = true;
+                }
             }
-            setTextDrawState();
-            drawLines(rr);
+
+            if (!didPixelRotate) {
+                // Fallback (text box too large to pixel-rotate cheaply, or no
+                // rotation at all): position tracks the ambient chain but
+                // glyphs stay upright.
+                Rect rr = r;
+                if (!ambient.empty()) {
+                    double fcx, fcy;
+                    ApplyRotChain(ambient, cx0, cy0, fcx, fcy);
+                    short dx = static_cast<short>((fcx - cx0) + (fcx >= cx0 ? 0.5 : -0.5));
+                    short dy = static_cast<short>((fcy - cy0) + (fcy >= cy0 ? 0.5 : -0.5));
+                    rr.left = static_cast<short>(rr.left + dx); rr.right  = static_cast<short>(rr.right  + dx);
+                    rr.top  = static_cast<short>(rr.top  + dy); rr.bottom = static_cast<short>(rr.bottom + dy);
+                }
+                setTextDrawState();
+                drawLines(rr);
+            }
             TextFace(0); TextSize(12); TextFont(0);
             RGBColor wh = {0xFFFF,0xFFFF,0xFFFF}; RGBBackColor(&wh);
             break;
