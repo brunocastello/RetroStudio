@@ -1278,6 +1278,18 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                             else         SetCPixel(dh, dv, &glyph[si]);
                         }
                     }
+                    // TEMP DIAGNOSTIC (remove once confirmed): a small dot
+                    // above the rotated text — green if the fast direct
+                    // pixel-buffer path engaged this draw, red if it fell
+                    // back to per-pixel SetCPixel (e.g. display depth isn't
+                    // exactly 32-bit here, which would mean the previous
+                    // "fix" silently never activated).
+                    RGBColor dbgC = useFast ? RGBColor{0,0xFFFF,0} : RGBColor{0xFFFF,0,0};
+                    RGBForeColor(&dbgC);
+                    Rect dbgR = { static_cast<short>(minY-8), minX,
+                                  static_cast<short>(minY-4), static_cast<short>(minX+4) };
+                    PaintRect(&dbgR);
+
                     didPixelRotate = true;
                 }
             }
