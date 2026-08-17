@@ -623,20 +623,6 @@ static void ToPStr(const std::string& src, Str255& dst) {
     }
 }
 
-static void DrawShapeNameLabel(const Shape& shape) {
-    Rect r = CanvasRect(shape.bounds);
-    std::string label = shape.name;
-    if (label.empty())
-        label = (shape.GetType() == Shape::kEllipse) ? "Ellipse" : "Rectangle";
-    Str255 pn; ToPStr(label, pn);
-    TextSize(10);
-    RGBColor lc = { 0x8888, 0x8888, 0x8888 };
-    RGBForeColor(&lc);
-    MoveTo(r.left, static_cast<short>(r.top - 5));
-    DrawString(pn);
-    TextSize(12);
-}
-
 // Fill or frame a rect with four independent corner radii (already in screen pixels).
 // Approach: start with full RectRgn; for each corner subtract the "waste" piece
 // (cr×cr corner square minus the quarter of the inscribed oval that falls in it).
@@ -1279,6 +1265,40 @@ static void DrawRotatedLabel(Str255 pstr, const Rect& localRect, const RotChain&
     }
 }
 
+// Root-level shapes get a small name label above them (nested shapes don't —
+// see DrawFrame). Rotates with the shape via DrawRotatedLabel when the shape
+// itself is rotated (root-level shapes have no ambient, since they have no
+// parent frame, so only their own rotation matters here).
+static void DrawShapeNameLabel(const Shape& shape) {
+    Rect r = CanvasRect(shape.bounds);
+    std::string label = shape.name;
+    if (label.empty()) {
+        if      (shape.GetType() == Shape::kEllipse) label = "Ellipse";
+        else if (shape.GetType() == Shape::kText)     label = "Text";
+        else                                           label = "Rectangle";
+    }
+    Str255 pn; ToPStr(label, pn);
+    RGBColor lc = { 0x8888, 0x8888, 0x8888 };
+    if (shape.rotation != 0) {
+        TextFont(0); TextSize(10); TextFace(0);
+        short strW = StringWidth(pn);
+        Rect localRect = {
+            static_cast<short>(r.top - 5 - 12), r.left,
+            static_cast<short>(r.top - 5),      static_cast<short>(r.left + strW)
+        };
+        double cx = (r.left + r.right) * 0.5, cy = (r.top + r.bottom) * 0.5;
+        RotChain chain;
+        chain.push_back({ static_cast<double>(shape.rotation), cx, cy });
+        DrawRotatedLabel(pn, localRect, chain, lc);
+    } else {
+        TextSize(10);
+        RGBForeColor(&lc);
+        MoveTo(r.left, static_cast<short>(r.top - 5));
+        DrawString(pn);
+        TextSize(12);
+    }
+}
+
 // Forward-declare so DrawFrame can call itself recursively
 static void DrawFrame(const Frame& frame, const RotChain& ambient = {});
 
@@ -1763,7 +1783,54 @@ void DrawWindowContent(WindowRef win) {
     SetPortWindowPort(win);
     Rect portRect;
     GetWindowPortBounds(win, &portRect);
-    DrawCanvasInto(portRect);
+    short w = static_cast<short>(portRect.right - portRect.left);
+    short h = static_cast<short>(portRect.bottom - portRect.top);
+
+    // Double-buffer: draw into an offscreen GWorld the size of the content
+    // area, then blit it to the window in one shot. Drawing straight to the
+    // window erases to the canvas background first, which flashes visibly
+    // whenever a redraw is slow enough to notice (rotated text/frames,
+    // rotated rounded corners, rotated labels all do many small QuickDraw
+    // calls). pixelDepth=0 matches the buffer to the CURRENT GDevice's own
+    // depth, so CopyBits never has to color-match/dither between mismatched
+    // formats -- an earlier attempt hardcoded 32-bit and appeared to corrupt
+    // the screen's shared palette on this environment; that corruption was
+    // never seen again after restarting, including through everything built
+    // since, so it may have been transient/session-local rather than caused
+    // by this code path -- test carefully. Buffer is reused across calls,
+    // only reallocated on resize.
+    static GWorldPtr sCanvasBuf  = nullptr;
+    static short     sCanvasBufW = 0, sCanvasBufH = 0;
+    if (sCanvasBuf && (sCanvasBufW != w || sCanvasBufH != h)) {
+        DisposeGWorld(sCanvasBuf);
+        sCanvasBuf = nullptr;
+    }
+    if (!sCanvasBuf && w > 0 && h > 0) {
+        Rect bufBounds = {0, 0, h, w};
+        if (NewGWorld(&sCanvasBuf, 0, &bufBounds, nullptr, nullptr, 0) == noErr) {
+            sCanvasBufW = w; sCanvasBufH = h;
+        }
+    }
+
+    if (sCanvasBuf) {
+        GrafPtr savedPort; GetPort(&savedPort);
+        SetGWorld(reinterpret_cast<CGrafPtr>(sCanvasBuf), nullptr);
+        PixMapHandle pm = GetGWorldPixMap(sCanvasBuf);
+        LockPixels(pm);
+
+        Rect localBounds = {0, 0, h, w};
+        DrawCanvasInto(localBounds);
+
+        UnlockPixels(pm);
+        SetPort(savedPort);
+
+        SetPortWindowPort(win);
+        CopyBits(GetPortBitMapForCopyBits(reinterpret_cast<CGrafPtr>(sCanvasBuf)),
+                 GetPortBitMapForCopyBits(GetWindowPort(win)),
+                 &localBounds, &portRect, srcCopy, nullptr);
+    } else {
+        DrawCanvasInto(portRect);  // low-memory fallback: direct draw, may flicker
+    }
 }
 
 // --------------------------------------------------------------------------
