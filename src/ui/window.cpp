@@ -1783,54 +1783,16 @@ void DrawWindowContent(WindowRef win) {
     SetPortWindowPort(win);
     Rect portRect;
     GetWindowPortBounds(win, &portRect);
-    short w = static_cast<short>(portRect.right - portRect.left);
-    short h = static_cast<short>(portRect.bottom - portRect.top);
-
-    // Double-buffer: draw into an offscreen GWorld the size of the content
-    // area, then blit it to the window in one shot. Drawing straight to the
-    // window erases to the canvas background first, which flashes visibly
-    // whenever a redraw is slow enough to notice (rotated text/frames,
-    // rotated rounded corners, rotated labels all do many small QuickDraw
-    // calls). pixelDepth=0 matches the buffer to the CURRENT GDevice's own
-    // depth, so CopyBits never has to color-match/dither between mismatched
-    // formats -- an earlier attempt hardcoded 32-bit and appeared to corrupt
-    // the screen's shared palette on this environment; that corruption was
-    // never seen again after restarting, including through everything built
-    // since, so it may have been transient/session-local rather than caused
-    // by this code path -- test carefully. Buffer is reused across calls,
-    // only reallocated on resize.
-    static GWorldPtr sCanvasBuf  = nullptr;
-    static short     sCanvasBufW = 0, sCanvasBufH = 0;
-    if (sCanvasBuf && (sCanvasBufW != w || sCanvasBufH != h)) {
-        DisposeGWorld(sCanvasBuf);
-        sCanvasBuf = nullptr;
-    }
-    if (!sCanvasBuf && w > 0 && h > 0) {
-        Rect bufBounds = {0, 0, h, w};
-        if (NewGWorld(&sCanvasBuf, 0, &bufBounds, nullptr, nullptr, 0) == noErr) {
-            sCanvasBufW = w; sCanvasBufH = h;
-        }
-    }
-
-    if (sCanvasBuf) {
-        GrafPtr savedPort; GetPort(&savedPort);
-        SetGWorld(reinterpret_cast<CGrafPtr>(sCanvasBuf), nullptr);
-        PixMapHandle pm = GetGWorldPixMap(sCanvasBuf);
-        LockPixels(pm);
-
-        Rect localBounds = {0, 0, h, w};
-        DrawCanvasInto(localBounds);
-
-        UnlockPixels(pm);
-        SetPort(savedPort);
-
-        SetPortWindowPort(win);
-        CopyBits(GetPortBitMapForCopyBits(reinterpret_cast<CGrafPtr>(sCanvasBuf)),
-                 GetPortBitMapForCopyBits(GetWindowPort(win)),
-                 &localBounds, &portRect, srcCopy, nullptr);
-    } else {
-        DrawCanvasInto(portRect);  // low-memory fallback: direct draw, may flicker
-    }
+    // Direct draw — NOT double-buffered. Two separate attempts at an
+    // offscreen-GWorld + CopyBits double buffer (hardcoded 32-bit, then
+    // pixelDepth=0 to match the screen) both corrupted the shared system
+    // color palette SCREEN-WIDE (affecting the desktop background and other
+    // apps' chrome, not just this window) after enough redraws in a live
+    // session. CopyBits onto the window in this environment is unsafe
+    // regardless of source depth — do not reintroduce it here without a
+    // fundamentally different approach. Flicker on expensive redraws
+    // (rotated text/frames) is the accepted tradeoff.
+    DrawCanvasInto(portRect);
 }
 
 // --------------------------------------------------------------------------
