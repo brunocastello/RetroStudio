@@ -1279,12 +1279,20 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                         }
                     }
                     // TEMP DIAGNOSTIC (remove once confirmed): a small dot
-                    // above the rotated text — green if the fast direct
-                    // pixel-buffer path engaged this draw, red if it fell
-                    // back to per-pixel SetCPixel (e.g. display depth isn't
-                    // exactly 32-bit here, which would mean the previous
-                    // "fix" silently never activated).
-                    RGBColor dbgC = useFast ? RGBColor{0,0xFFFF,0} : RGBColor{0xFFFF,0,0};
+                    // above the rotated text, color-coded by the port's
+                    // actual reported pixelSize (confirmed red = fast path
+                    // NOT engaging on the user's display; this narrows down
+                    // to which depth it actually is instead of guessing).
+                    RGBColor dbgC;
+                    switch (fastW.pixelSize) {
+                        case 32: dbgC = RGBColor{0,0xFFFF,0};         break;  // green
+                        case 16: dbgC = RGBColor{0,0,0xFFFF};         break;  // blue
+                        case 8:  dbgC = RGBColor{0xFFFF,0xFFFF,0};    break;  // yellow
+                        case 4:  dbgC = RGBColor{0xFFFF,0x8800,0};    break;  // orange
+                        case 2:  dbgC = RGBColor{0x8888,0x8888,0x8888}; break; // gray
+                        case 1:  dbgC = RGBColor{0,0,0};              break;  // black
+                        default: dbgC = RGBColor{0xFFFF,0,0};         break;  // red = unmapped/unexpected
+                    }
                     RGBForeColor(&dbgC);
                     Rect dbgR = { static_cast<short>(minY-8), minX,
                                   static_cast<short>(minY-4), static_cast<short>(minX+4) };
