@@ -28,6 +28,44 @@ jobs:
           echo "=== retrocarbon.toolchain.cmake ==="
           cat /Retro68-build/toolchain/powerpc-apple-macos/cmake/retrocarbon.toolchain.cmake 2>/dev/null || echo "(not found)"
 
+      - name: Diagnose GWorld/CGrafPtr headers (investigation only, no build changes)
+        shell: bash
+        run: |
+          set +e
+          H=/Retro68-build/toolchain/powerpc-apple-macos/include/Quickdraw.h
+          echo "=== Using header: $H ==="
+          ls -la "$H"
+          echo ""
+          echo "=== CGrafPtr / GWorldPtr / CGrafPort typedefs ==="
+          grep -n -E "typedef.*(CGrafPtr|GWorldPtr|CGrafPort)\b|struct CGrafPort" "$H"
+          echo "(exit $?, 1 = no matches, not an error)"
+          echo ""
+          echo "=== NewGWorld / SetGWorld / GetGWorldPixMap / GetPort signatures ==="
+          grep -n -A2 -E "NewGWorld|SetGWorld|GetGWorldPixMap|CGrafPtr GetPort|GetGWorld\(" "$H"
+          echo "(exit $?, 1 = no matches, not an error)"
+          echo ""
+          echo "=== Legacy BitMap / SetPortBits availability ==="
+          grep -n "SetPortBits" "$H"
+          echo "(exit $?, 1 = no matches, not an error)"
+          echo ""
+          echo "=== CTabHandle / color table structures ==="
+          grep -n -B1 -A1 "CTabHandle" "$H" | head -40
+          echo "(exit $?, 1 = no matches, not an error)"
+          echo ""
+          echo "=== Multiversal source header for comparison (if present) ==="
+          M=/Retro68-build/toolchain/multiversal/CIncludes/Quickdraw.h
+          if [ -f "$M" ]; then
+            echo "--- $M ---"
+            grep -n -E "typedef.*(CGrafPtr|GWorldPtr|CGrafPort)\b|struct CGrafPort" "$M"
+          else
+            echo "(not found at $M)"
+          fi
+          echo ""
+          echo "=== Which lib provides these symbols ==="
+          find / -iname "libCarbonLib*" -o -iname "libQuickDraw*" 2>/dev/null
+          echo "=== done ==="
+          exit 0
+
       - name: Configure CMake with Retro68 Toolchain
         run: |
           TOOLCHAIN=$(find /Retro68-build -name "retrocarbon.toolchain.cmake" 2>/dev/null | head -1)
