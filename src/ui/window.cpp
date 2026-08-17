@@ -2402,10 +2402,13 @@ static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
     // anything about how or what gets drawn. The radius a rotating object
     // can reach from its own center is rotation-invariant (a rigid rotation
     // preserves distances, ambient or own), so this region is computed once
-    // and covers every angle throughout the drag; padding covers selection
-    // handles, the rotate-zone reach beyond them, and the name label.
+    // and covers every angle throughout the drag. Padding only needs to
+    // cover selection handles, the rotate-zone reach beyond them (well under
+    // kHandleHW+kRotateZone px), and a short name label — keep it tight, a
+    // large pad on anything but a tiny shape makes the "restricted" region
+    // barely smaller than the whole window and defeats the point.
     double halfW = (r.right - r.left) * 0.5, halfH = (r.bottom - r.top) * 0.5;
-    double reach = std::sqrt(halfW*halfW + halfH*halfH) + 200.0;
+    double reach = std::sqrt(halfW*halfW + halfH*halfH) + 60.0;
     Rect dirtyRect = {
         static_cast<short>(screenCY - reach), static_cast<short>(screenCX - reach),
         static_cast<short>(screenCY + reach), static_cast<short>(screenCX + reach)
