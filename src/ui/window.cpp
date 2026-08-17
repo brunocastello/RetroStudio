@@ -731,6 +731,35 @@ static Point ToQDPoint(double x, double y) {
     return p;
 }
 
+// Returns a persistent, reused 32-bit offscreen GWorld at least `w`x`h`
+// (only reallocated when the existing one is too small; the same buffer is
+// reused across calls/redraws otherwise, avoiding NewGWorld/DisposeGWorld
+// overhead on every frame of a live drag). Callers must only touch pixels
+// within [0,w)x[0,h) even though the underlying buffer may physically be
+// larger from a previous, bigger request — its rowBytes is read directly
+// from the PixMap, never assumed to equal w*4, so this is safe. Shared by
+// rotated-text and rotated-label rendering, which are never both mid-draw
+// at once. Purely a raw-pixel-read source buffer — never blitted via
+// CopyBits, so it doesn't touch the screen palette and isn't implicated in
+// the CopyBits corruption documented on DrawWindowContent.
+static GWorldPtr GetScratchGWorld32(short w, short h) {
+    static GWorldPtr sBuf  = nullptr;
+    static short     sBufW = 0, sBufH = 0;
+    if (sBuf && (sBufW < w || sBufH < h)) {
+        DisposeGWorld(sBuf);
+        sBuf = nullptr;
+    }
+    if (!sBuf) {
+        short newW = (w > sBufW) ? w : sBufW;
+        short newH = (h > sBufH) ? h : sBufH;
+        Rect bounds = {0, 0, newH, newW};
+        if (NewGWorld(&sBuf, 32, &bounds, nullptr, nullptr, 0) == noErr) {
+            sBufW = newW; sBufH = newH;
+        }
+    }
+    return sBuf;
+}
+
 // Rotate 4 rect corners around their own center by angleDeg, then carry them
 // through `ambient` (the enclosing rotated frames, if any), and draw as a
 // filled/stroked polygon. angleDeg is clockwise in screen coords (Y-down).
@@ -1097,8 +1126,8 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                 short w = static_cast<short>(r.right - r.left), h = static_cast<short>(r.bottom - r.top);
                 if (w > 0 && h > 0) {
                     Rect gwRect; gwRect.top = 0; gwRect.left = 0; gwRect.bottom = h; gwRect.right = w;
-                    GWorldPtr gw = nullptr;
-                    if (NewGWorld(&gw, 32, &gwRect, nullptr, nullptr, 0) == noErr && gw) {
+                    GWorldPtr gw = GetScratchGWorld32(w, h);
+                    if (gw) {
                         GrafPtr savedPort; GetPort(&savedPort);
                         SetGWorld(reinterpret_cast<CGrafPtr>(gw), nullptr);
                         PixMapHandle pm = GetGWorldPixMap(gw);
@@ -1139,7 +1168,6 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                         }
                         UnlockPixels(pm);
                         SetPort(savedPort);
-                        DisposeGWorld(gw);
 
                         // Rotated (own + ambient) bounding box in screen space, then
                         // inverse-map each destination pixel back into the source buffer.
@@ -1203,8 +1231,8 @@ static void DrawRotatedLabel(Str255 pstr, const Rect& localRect, const RotChain&
     if (w <= 0 || h <= 0) return;
 
     Rect gwRect; gwRect.top = 0; gwRect.left = 0; gwRect.bottom = h; gwRect.right = w;
-    GWorldPtr gw = nullptr;
-    if (NewGWorld(&gw, 32, &gwRect, nullptr, nullptr, 0) != noErr || !gw) return;
+    GWorldPtr gw = GetScratchGWorld32(w, h);
+    if (!gw) return;
 
     GrafPtr savedPort; GetPort(&savedPort);
     SetGWorld(reinterpret_cast<CGrafPtr>(gw), nullptr);
@@ -1237,7 +1265,6 @@ static void DrawRotatedLabel(Str255 pstr, const Rect& localRect, const RotChain&
     }
     UnlockPixels(pm);
     SetPort(savedPort);
-    DisposeGWorld(gw);
 
     double lx0 = localRect.left, ly0 = localRect.top;
     double minX = 1e18, maxX = -1e18, minY = 1e18, maxY = -1e18;
@@ -2426,7 +2453,8 @@ static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
             int newRotI = static_cast<int>(origRot + delta + 0.5);
             *pRot = static_cast<SInt16>(((newRotI % 360) + 360) % 360);
             SetCursor(GetRotateCursor(HandleBucket(cornerIdx, *pRot + ambientRotDeg)));
-            RunDocumentLayout(gDocument);
+            // DrawWindowContent already runs layout itself right before drawing;
+            // doing it again here was pure redundant work on every mouse-move.
             DrawWindowContent(win, &dirtyRect);
             prev = curr;
         }
