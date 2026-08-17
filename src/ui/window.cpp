@@ -1796,8 +1796,9 @@ void DrawWindowContent(WindowRef win, const Rect* clipTo) {
 
     // SetPortWindowPort resets this port's clip region as a side effect, so
     // any clip the caller set before calling in would already be gone —
-    // apply it here, after, instead.
-    if (clipTo) ClipRect(clipTo);
+    // apply it here, after, instead. ClipRect wants a non-const Rect* in
+    // these old headers, so a mutable local copy is needed either way.
+    if (clipTo) { Rect cr = *clipTo; ClipRect(&cr); }
     DrawCanvasInto(portRect);
     if (clipTo) ClipRect(&portRect);
 }
