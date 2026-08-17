@@ -912,6 +912,14 @@ struct TextGlyphCacheKey {
 struct TextGlyphCacheEntry {
     TextGlyphCacheKey key;
     std::vector<RGBColor> pixels;  // key.w * key.h
+    // Precomputed once alongside `pixels`: true where the captured glyph
+    // pixel actually differs from what was underneath it (real ink), false
+    // where it's just background repeated. The inverse-map repaint skips
+    // SetCPixel entirely on false entries — for ordinary text, most of the
+    // bounding box is background, so this cuts the per-frame Toolbox call
+    // count (the actual cost driver during a live drag) well below the
+    // full box area instead of writing every pixel in it every frame.
+    std::vector<bool> ink;
 };
 // Keyed by raw TextShape pointer. A deleted shape's entry is simply never
 // looked up again; if its memory address is later reused by an unrelated
@@ -1195,11 +1203,20 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                                 SetCPixel(static_cast<short>(r.left+x), static_cast<short>(r.top+y),
                                           &under[static_cast<size_t>(y)*srcW + x]);
 
+                        std::vector<bool> ink(static_cast<size_t>(srcW) * srcH);
+                        for (size_t i = 0; i < ink.size(); ++i) {
+                            ink[i] = glyph[i].red != under[i].red ||
+                                     glyph[i].green != under[i].green ||
+                                     glyph[i].blue != under[i].blue;
+                        }
+
                         entry.key    = key;
                         entry.pixels = std::move(glyph);
+                        entry.ink    = std::move(ink);
                     }
 
                     std::vector<RGBColor>& glyph = entry.pixels;
+                    std::vector<bool>&      ink   = entry.ink;
                     for (SInt32 py = 0; py < dstH; ++py) {
                         for (SInt32 px = 0; px < dstW; ++px) {
                             double ox, oy;
@@ -1207,8 +1224,10 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                             SInt32 sxi = static_cast<SInt32>(std::floor(ox)) - r.left;
                             SInt32 syi = static_cast<SInt32>(std::floor(oy)) - r.top;
                             if (sxi < 0 || sxi >= srcW || syi < 0 || syi >= srcH) continue;
+                            size_t si = static_cast<size_t>(syi) * srcW + sxi;
+                            if (!ink[si]) continue;
                             SetCPixel(static_cast<short>(minX+px), static_cast<short>(minY+py),
-                                      &glyph[static_cast<size_t>(syi)*srcW + sxi]);
+                                      &glyph[si]);
                         }
                     }
                     didPixelRotate = true;
