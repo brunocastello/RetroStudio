@@ -37,7 +37,12 @@ void DrawAboutWindow();
 bool IsDocumentCanvas(WindowRef win);
 void SwitchActiveDocument(WindowRef win);
 void CloseDocumentWindow(WindowRef win);
-void DrawWindowContent(WindowRef win);
+// `clipTo`, if non-null, restricts the redraw to that screen-local rect
+// instead of the whole window content area (see HandleRotateDrag) -- applied
+// AFTER this function's own SetPortWindowPort, since that resets the port's
+// clip region as a side effect (setting a clip before calling in would just
+// get silently discarded).
+void DrawWindowContent(WindowRef win, const Rect* clipTo = nullptr);
 void HandleCanvasCreate(WindowRef win, Point startGlobal);
 void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers = 0);
 void HandleCanvasPan(WindowRef win, Point startGlobal);

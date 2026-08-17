@@ -1775,14 +1775,11 @@ static void DrawCanvasInto(const Rect& eraseRect) {
     RGBBackColor(&white);
 }
 
-void DrawWindowContent(WindowRef win) {
+void DrawWindowContent(WindowRef win, const Rect* clipTo) {
     // Update text shape bounds first (auto-sizing), then run layout.
     UpdateAllTextShapeBounds(gDocument);
     RunDocumentLayout(gDocument);
 
-    SetPortWindowPort(win);
-    Rect portRect;
-    GetWindowPortBounds(win, &portRect);
     // Direct draw — NOT double-buffered. Two separate attempts at an
     // offscreen-GWorld + CopyBits double buffer (hardcoded 32-bit, then
     // pixelDepth=0 to match the screen) both corrupted the shared system
@@ -1791,8 +1788,18 @@ void DrawWindowContent(WindowRef win) {
     // session. CopyBits onto the window in this environment is unsafe
     // regardless of source depth — do not reintroduce it here without a
     // fundamentally different approach. Flicker on expensive redraws
-    // (rotated text/frames) is the accepted tradeoff.
+    // (rotated text/frames) is mitigated instead by restricting which
+    // callers actually need to redraw the whole window (see `clipTo`).
+    SetPortWindowPort(win);
+    Rect portRect;
+    GetWindowPortBounds(win, &portRect);
+
+    // SetPortWindowPort resets this port's clip region as a side effect, so
+    // any clip the caller set before calling in would already be gone —
+    // apply it here, after, instead.
+    if (clipTo) ClipRect(clipTo);
     DrawCanvasInto(portRect);
+    if (clipTo) ClipRect(&portRect);
 }
 
 // --------------------------------------------------------------------------
@@ -2402,10 +2409,6 @@ static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
         static_cast<short>(screenCY - reach), static_cast<short>(screenCX - reach),
         static_cast<short>(screenCY + reach), static_cast<short>(screenCX + reach)
     };
-    SetPortWindowPort(win);
-    RgnHandle savedClip = NewRgn();
-    GetClip(savedClip);
-    ClipRect(&dirtyRect);
 
     Point prev = startPt, curr = startPt;
     while (Button()) {
@@ -2420,14 +2423,10 @@ static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
             *pRot = static_cast<SInt16>(((newRotI % 360) + 360) % 360);
             SetCursor(GetRotateCursor(HandleBucket(cornerIdx, *pRot + ambientRotDeg)));
             RunDocumentLayout(gDocument);
-            DrawWindowContent(win);
+            DrawWindowContent(win, &dirtyRect);
             prev = curr;
         }
     }
-
-    SetPortWindowPort(win);
-    SetClip(savedClip);
-    DisposeRgn(savedClip);
 
     Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
 }
