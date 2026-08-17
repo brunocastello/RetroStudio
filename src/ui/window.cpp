@@ -1168,16 +1168,6 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                         }
                     }
                     didPixelRotate = true;
-
-                    // TEMP DIAGNOSTIC (remove once the real bug is found):
-                    // unmistakable magenta outline around the destination
-                    // AABB so a live test tells us whether this branch is
-                    // even being reached, independent of whether the
-                    // captured/repainted pixels are actually correct.
-                    RGBColor magenta = {0xFFFF, 0x0000, 0xFFFF};
-                    RGBForeColor(&magenta);
-                    Rect dbgR = { minY, minX, static_cast<short>(maxY+1), static_cast<short>(maxX+1) };
-                    FrameRect(&dbgR);
                 }
             }
 
