@@ -1199,7 +1199,7 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                         entry.pixels = std::move(glyph);
                     }
 
-                    const std::vector<RGBColor>& glyph = entry.pixels;
+                    std::vector<RGBColor>& glyph = entry.pixels;
                     for (SInt32 py = 0; py < dstH; ++py) {
                         for (SInt32 px = 0; px < dstW; ++px) {
                             double ox, oy;
