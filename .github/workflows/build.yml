@@ -28,53 +28,6 @@ jobs:
           echo "=== retrocarbon.toolchain.cmake ==="
           cat /Retro68-build/toolchain/powerpc-apple-macos/cmake/retrocarbon.toolchain.cmake 2>/dev/null || echo "(not found)"
 
-      - name: Diagnose raw-framebuffer pixel-write APIs (investigation only, no build changes)
-        shell: bash
-        run: |
-          set +e
-          M=/Retro68-build/toolchain/multiversal/CIncludes
-          echo "=== Searching $M for pixel-buffer access APIs ==="
-          echo ""
-          echo "=== GetPortPixMap ==="
-          grep -rn "GetPortPixMap" "$M" 2>/dev/null
-          echo "(exit $?, 1 = no matches)"
-          echo ""
-          echo "=== GetPixBaseAddr ==="
-          grep -rn "GetPixBaseAddr" "$M" 2>/dev/null
-          echo "(exit $?, 1 = no matches)"
-          echo ""
-          echo "=== PixMap struct / rowBytes / pixelSize fields ==="
-          grep -rn -A15 "^struct PixMap\b\|^} PixMap;" "$M" 2>/dev/null | head -40
-          echo "(exit $?, 1 = no matches)"
-          echo ""
-          echo "=== GetGWorldPixMap (fallback reference point, known to exist) ==="
-          grep -rn "GetGWorldPixMap" "$M" 2>/dev/null
-          echo "(exit $?, 1 = no matches)"
-          echo ""
-          echo "=== portPixMap field (direct CGrafPort struct access) ==="
-          grep -rn -B3 -A3 "portPixMap" "$M" 2>/dev/null | head -60
-          echo "(exit $?, 1 = no matches)"
-          echo ""
-          echo "=== CGrafPort struct definition ==="
-          grep -rln "CGrafPort" "$M" 2>/dev/null
-          F=$(grep -rl "typedef struct CGrafPort\|^struct CGrafPort" "$M" 2>/dev/null | head -1)
-          if [ -n "$F" ]; then
-            echo "--- found in $F ---"
-            grep -n -A40 "struct CGrafPort" "$F" | head -50
-          fi
-          echo ""
-          echo "=== PixMap struct definition (any style) ==="
-          F2=$(grep -rl "PixMap {" "$M" 2>/dev/null | head -1)
-          if [ -n "$F2" ]; then
-            echo "--- found in $F2 ---"
-            grep -n -B2 -A20 "PixMap {" "$F2" | head -30
-          else
-            echo "(no 'PixMap {' match, trying looser search)"
-            grep -rn "rowBytes" "$M" 2>/dev/null | head -10
-          fi
-          echo "=== done ==="
-          exit 0
-
       - name: Configure CMake with Retro68 Toolchain
         run: |
           TOOLCHAIN=$(find /Retro68-build -name "retrocarbon.toolchain.cmake" 2>/dev/null | head -1)

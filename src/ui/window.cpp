@@ -928,6 +928,51 @@ struct TextGlyphCacheEntry {
 // edge case, not worth a full deletion-hook lifecycle for right now.
 static std::map<const TextShape*, TextGlyphCacheEntry> gTextGlyphCache;
 
+// Direct pixel-buffer access to the CURRENT PORT's own onscreen pixmap
+// (never a GWorld) for the text-rotation hot path. SetCPixel is a full
+// QuickDraw Toolbox trap call per pixel; called thousands of times per
+// mouse-move during a live drag, the call overhead itself is what causes
+// visible flicker/lag, independent of how many of those pixels are
+// actually "ink" (see the `ink` mask above). CGrafPort exposes its
+// PixMapHandle directly as `portPixMap`, and PixMap directly exposes
+// `baseAddr`/`rowBytes`/`pixelSize` — confirmed against this toolchain's
+// actual Multiversal header (not assumed), same reinterpret_cast-across-
+// the-Carbon-opacity-boundary pattern already used for SetGWorld elsewhere
+// in this codebase. Handles only the common 32-bit-depth case; anything
+// else falls back to SetCPixel, so this is a pure speed-up with no
+// correctness regression on other depths.
+struct FastPixelWriter {
+    Ptr base = nullptr;
+    SInt32 rowBytes = 0;
+    short pixelSize = 0;
+    Rect bounds = {0, 0, 0, 0};
+    bool Ready() const { return base != nullptr && pixelSize == 32; }
+    void Set(short h, short v, const RGBColor& c) const {
+        SInt32 lx = h - bounds.left, ly = v - bounds.top;
+        if (lx < 0 || ly < 0 || lx >= (bounds.right - bounds.left) || ly >= (bounds.bottom - bounds.top)) return;
+        UInt8* p = reinterpret_cast<UInt8*>(base) + static_cast<SInt32>(ly) * rowBytes + lx * 4;
+        p[1] = static_cast<UInt8>(c.red   >> 8);
+        p[2] = static_cast<UInt8>(c.green >> 8);
+        p[3] = static_cast<UInt8>(c.blue  >> 8);
+    }
+};
+
+static FastPixelWriter GetFastPixelWriter() {
+    FastPixelWriter w;
+    GrafPtr gp;
+    GetPort(&gp);
+    CGrafPort* cgp = reinterpret_cast<CGrafPort*>(gp);
+    PixMapHandle pmH = cgp->portPixMap;
+    if (pmH && *pmH) {
+        PixMapPtr pmp = *pmH;
+        w.base      = pmp->baseAddr;
+        w.rowBytes  = pmp->rowBytes & 0x3FFF;
+        w.pixelSize = pmp->pixelSize;
+        w.bounds    = pmp->bounds;
+    }
+    return w;
+}
+
 static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
     if (!shape.visible) return;
     if (gEditingTextShape && &shape == static_cast<const Shape*>(gEditingTextShape)) return;
@@ -1217,6 +1262,8 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
 
                     std::vector<RGBColor>& glyph = entry.pixels;
                     std::vector<bool>&      ink   = entry.ink;
+                    FastPixelWriter fastW = GetFastPixelWriter();
+                    bool useFast = fastW.Ready();
                     for (SInt32 py = 0; py < dstH; ++py) {
                         for (SInt32 px = 0; px < dstW; ++px) {
                             double ox, oy;
@@ -1226,8 +1273,9 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                             if (sxi < 0 || sxi >= srcW || syi < 0 || syi >= srcH) continue;
                             size_t si = static_cast<size_t>(syi) * srcW + sxi;
                             if (!ink[si]) continue;
-                            SetCPixel(static_cast<short>(minX+px), static_cast<short>(minY+py),
-                                      &glyph[si]);
+                            short dh = static_cast<short>(minX+px), dv = static_cast<short>(minY+py);
+                            if (useFast) fastW.Set(dh, dv, glyph[si]);
+                            else         SetCPixel(dh, dv, &glyph[si]);
                         }
                     }
                     didPixelRotate = true;
