@@ -36,6 +36,16 @@ int        gNextTextNum    = 1;
 // through instead.
 static TextShape* gEditingTextShape = nullptr;
 
+// True for the duration of a live rotate/resize/move mouse-down loop.
+// DrawCanvasInto skips the selection highlight (border + 8 handle squares)
+// while this is set: that overlay is ~20 individual QuickDraw shape calls
+// every single mouse-move, redrawn via full erase-then-redraw with no
+// double buffer, and a thin high-contrast outline flashing blank-then-back
+// reads as much worse flicker than the shape body itself even though it's
+// the same erase/redraw mechanism. Hidden during the drag, restored on the
+// settled redraw right after mouse-up.
+static bool gLiveTransformDragActive = false;
+
 // ---- Cursor management -------------------------------------------------------
 // Helper: compute 8-connected dilation mask from a 16-row bitmap
 static void ComputeCursorMask(Cursor& cur, const unsigned short kData[16]) {
@@ -1757,7 +1767,7 @@ static void DrawCanvasInto(const Rect& eraseRect) {
         }
     }
 
-    DrawSelectionHighlight();
+    if (!gLiveTransformDragActive) DrawSelectionHighlight();
 
     PenNormal();
     RGBColor white = { 0xFFFF, 0xFFFF, 0xFFFF };
@@ -2174,6 +2184,7 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     Point prev = startPt, curr = startPt;
     bool pushedUndo = false;
 
+    gLiveTransformDragActive = true;
     while (Button()) {
         GetMouse(&curr);
         if (curr.h != prev.h || curr.v != prev.v) {
@@ -2249,6 +2260,7 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
             prev = curr;
         }
     }
+    gLiveTransformDragActive = false;
 
     Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
 }
@@ -2405,6 +2417,7 @@ static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
     };
 
     Point prev = startPt, curr = startPt;
+    gLiveTransformDragActive = true;
     while (Button()) {
         GetMouse(&curr);
         if (curr.h != prev.h || curr.v != prev.v) {
@@ -2422,6 +2435,7 @@ static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
             prev = curr;
         }
     }
+    gLiveTransformDragActive = false;
 
     Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
 }
@@ -2809,6 +2823,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         if (isMultiDrag && hitFrame && hitFrame->layoutMode != LayoutMode::None)
             gIsLayoutMultiDrag = true;
 
+        gLiveTransformDragActive = true;
         while (Button()) {
             GetMouse(&currPt);
             if (currPt.h != prevPt.h || currPt.v != prevPt.v) {
@@ -2858,6 +2873,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                 prevPt = currPt;
             }
         }
+        gLiveTransformDragActive = false;
 
         gLayoutDragShape   = nullptr;
         gLayoutDragFrame   = nullptr;
