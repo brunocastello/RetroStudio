@@ -1217,7 +1217,7 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
             bool didPixelRotate = false;
 
             if (anyRotation && !str.empty() && srcW > 0 && srcH > 0 &&
-                (SInt32)srcW * (SInt32)srcH <= 24000) {
+                (SInt32)srcW * (SInt32)srcH <= 150000) {
                 Point c0, c1, c2, c3;
                 { double fx,fy;
                   ApplyRotChain(full, r.left,  r.top,    fx,fy); c0 = ToQDPoint(fx,fy);
@@ -1230,7 +1230,7 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                 short maxY = std::max(std::max(c0.v,c1.v), std::max(c2.v,c3.v));
                 SInt32 dstW = (SInt32)maxX - minX + 1, dstH = (SInt32)maxY - minY + 1;
 
-                if (dstW > 0 && dstH > 0 && dstW * dstH <= 30000) {
+                if (dstW > 0 && dstH > 0 && dstW * dstH <= 300000) {
                     TextGlyphCacheKey key;
                     key.text = str; key.fontID = fontID; key.size = scaledSize;
                     key.face = static_cast<short>(t.fontFace | (shape.hasStroke ? 8 : 0));
@@ -1312,15 +1312,6 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                         }
                         rowOx += stepYOx; rowOy += stepYOy;
                     }
-                    // TEMP DIAGNOSTIC (remove once confirmed): green if the
-                    // fast direct pixel-buffer path engaged this draw
-                    // (32-bit or 16-bit now both supported), red if it fell
-                    // back to per-pixel SetCPixel for some other depth.
-                    RGBColor dbgC = useFast ? RGBColor{0,0xFFFF,0} : RGBColor{0xFFFF,0,0};
-                    RGBForeColor(&dbgC);
-                    Rect dbgR = { static_cast<short>(minY-8), minX,
-                                  static_cast<short>(minY-4), static_cast<short>(minX+4) };
-                    PaintRect(&dbgR);
 
                     didPixelRotate = true;
                 }
