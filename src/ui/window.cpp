@@ -1294,10 +1294,34 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                     stepXOx -= baseOx; stepXOy -= baseOy;  // change in (ox,oy) per +1 dest X
                     stepYOx -= baseOx; stepYOy -= baseOy;  // change in (ox,oy) per +1 dest Y
 
+                    // Most of the destination AABB is empty space around the
+                    // (thin, rotated) actual rectangle -- worse at some
+                    // angles than others, which is exactly the "flickers
+                    // more at certain angles while resizing" symptom. Since
+                    // ox(px)/oy(px) are linear in px for a fixed row, the
+                    // valid px range per row (where the source rect contains
+                    // the sample) is a single contiguous interval, solvable
+                    // directly instead of testing every px and discarding
+                    // most of them.
+                    auto ClipAxis = [](double a, double b, double lo, double hi,
+                                        double& pxLo, double& pxHi) {
+                        if (b == 0.0) { if (a < lo || a >= hi) pxHi = pxLo - 1.0; return; }
+                        double t0 = (lo - a) / b, t1 = (hi - a) / b;
+                        if (b > 0) { pxLo = std::max(pxLo, t0); pxHi = std::min(pxHi, t1); }
+                        else       { pxLo = std::max(pxLo, t1); pxHi = std::min(pxHi, t0); }
+                    };
+
                     double rowOx = baseOx, rowOy = baseOy;
                     for (SInt32 py = 0; py < dstH; ++py) {
-                        double ox = rowOx, oy = rowOy;
-                        for (SInt32 px = 0; px < dstW; ++px) {
+                        double pxLo = 0.0, pxHi = static_cast<double>(dstW);
+                        ClipAxis(rowOx, stepXOx, r.left, r.right, pxLo, pxHi);
+                        ClipAxis(rowOy, stepXOy, r.top,  r.bottom, pxLo, pxHi);
+                        SInt32 pxStart = std::max<SInt32>(0, static_cast<SInt32>(std::ceil(pxLo)));
+                        SInt32 pxEnd   = std::min<SInt32>(dstW, static_cast<SInt32>(std::ceil(pxHi)));
+
+                        double ox = rowOx + pxStart * stepXOx;
+                        double oy = rowOy + pxStart * stepXOy;
+                        for (SInt32 px = pxStart; px < pxEnd; ++px) {
                             SInt32 sxi = static_cast<SInt32>(std::floor(ox)) - r.left;
                             SInt32 syi = static_cast<SInt32>(std::floor(oy)) - r.top;
                             if (sxi >= 0 && sxi < srcW && syi >= 0 && syi < srcH) {
