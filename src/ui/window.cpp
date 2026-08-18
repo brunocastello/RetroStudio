@@ -1386,6 +1386,19 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                 }
                 setTextDrawState();
                 drawLines(rr);
+
+                // TEMP DIAGNOSTIC (remove once confirmed): unmistakable
+                // orange frame around rr whenever a ROTATED text shape hits
+                // the upright fallback — tells us whether the reported
+                // corruption is this branch firing unexpectedly (versus a
+                // bug inside the successful pixel-rotate path itself).
+                if (anyRotation) {
+                    RGBColor orange = {0xFFFF, 0x8800, 0};
+                    RGBForeColor(&orange);
+                    PenSize(2, 2);
+                    FrameRect(&rr);
+                    PenSize(1, 1);
+                }
             }
             TextFace(0); TextSize(12); TextFont(0);
             RGBColor wh = {0xFFFF,0xFFFF,0xFFFF}; RGBBackColor(&wh);
