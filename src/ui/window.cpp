@@ -2493,12 +2493,41 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
 // Name-label hit-tests (canvas coordinate space, port = main window)
 // --------------------------------------------------------------------------
 
+// The clickable rect for a name label, matching where it's actually drawn:
+// DrawShapeNameLabel anchors a rotated label above whichever of the 4
+// corners is currently highest on screen (labels don't spin, but they do
+// track rotation's effect on the shape's own footprint). The label
+// hit-test rects used to always sit above the UNROTATED bounding box, so
+// for a rotated shape that phantom zone could swing up right into the
+// visually rotated body itself — a click (or double-click, meant to enter
+// text edit) landing anywhere in that overlap got misidentified as a
+// label hit instead of a body hit.
+static Rect LabelHitRect(const Bounds2& bounds, double rotationDeg, short textWidthPx) {
+    Rect r = CanvasRect(bounds);
+    if (rotationDeg == 0.0) {
+        return Rect{ static_cast<short>(r.top-16), r.left,
+                     static_cast<short>(r.top-1),   static_cast<short>(r.left+textWidthPx+4) };
+    }
+    double cx = (r.left+r.right)*0.5, cy = (r.top+r.bottom)*0.5;
+    double hw = (r.right-r.left)*0.5, hh = (r.bottom-r.top)*0.5;
+    double rad = rotationDeg * 3.14159265358979323846 / 180.0;
+    double cosA = std::cos(rad), sinA = std::sin(rad);
+    double lx4[4] = {-hw, hw, hw, -hw}, ly4[4] = {-hh, -hh, hh, hh};
+    double topX = 0, topY = 1e18;
+    for (int i = 0; i < 4; ++i) {
+        double px = cx + lx4[i]*cosA - ly4[i]*sinA, py = cy + lx4[i]*sinA + ly4[i]*cosA;
+        if (py < topY) { topY = py; topX = px; }
+    }
+    Point lp = ToQDPoint(topX, topY - 5);
+    return Rect{ static_cast<short>(lp.v-10), lp.h,
+                 static_cast<short>(lp.v+3),  static_cast<short>(lp.h+textWidthPx+4) };
+}
+
 // Returns the Shape whose name label contains pt, searching recursively
 // through the given frame and its children.
 static Shape* HitTestShapeLabel(const Frame* f, Point pt) {
     for (auto it = f->children.rbegin(); it != f->children.rend(); ++it) {
         Shape* s = it->get();
-        Rect r = CanvasRect(s->bounds);
         std::string label = s->name;
         if (label.empty()) {
             if      (s->GetType() == Shape::kEllipse) label = "Ellipse";
@@ -2509,10 +2538,7 @@ static Shape* HitTestShapeLabel(const Frame* f, Point pt) {
         TextSize(10);
         short tw = StringWidth(pn);
         TextSize(12);
-        Rect lr = {
-            static_cast<short>(r.top  - 16), r.left,
-            static_cast<short>(r.top  -  1), static_cast<short>(r.left + tw + 4)
-        };
+        Rect lr = LabelHitRect(s->bounds, s->rotation, tw);
         if (PtInRect(pt, &lr)) return s;
     }
     for (auto it = f->childFrames.rbegin(); it != f->childFrames.rend(); ++it) {
@@ -2525,8 +2551,6 @@ static Shape* HitTestShapeLabel(const Frame* f, Point pt) {
 // Returns the innermost Frame whose name label (rendered above its top-left
 // corner) contains pt, or nullptr.  Port must already be set to main window.
 static Frame* HitTestFrameLabel(Frame* f, Point pt) {
-    Rect fr = CanvasRect(f->bounds);
-
     Str255 pn; pn[0] = 0;
     const char* nm = f->name.c_str();
     for (int i = 0; nm[i] && i < 63; ++i) { pn[i+1] = (unsigned char)nm[i]; pn[0]++; }
@@ -2535,10 +2559,7 @@ static Frame* HitTestFrameLabel(Frame* f, Point pt) {
     short tw = StringWidth(pn);
     TextSize(12);
 
-    Rect label = {
-        static_cast<short>(fr.top - 16), fr.left,
-        static_cast<short>(fr.top -  1), static_cast<short>(fr.left + tw + 4)
-    };
+    Rect label = LabelHitRect(f->bounds, f->rotation, tw);
     if (PtInRect(pt, &label)) return f;
 
     for (auto it = f->childFrames.rbegin(); it != f->childFrames.rend(); ++it) {
@@ -2554,7 +2575,6 @@ struct ShapeLabelHit { Shape* shape = nullptr; Frame* parent = nullptr; };
 static ShapeLabelHit HitTestShapeLabelInFrame(Frame* f, Point pt) {
     for (auto it = f->children.rbegin(); it != f->children.rend(); ++it) {
         Shape* s = it->get();
-        Rect r = CanvasRect(s->bounds);
         std::string lbl = s->name;
         if (lbl.empty()) {
             if      (s->GetType() == Shape::kEllipse) lbl = "Ellipse";
@@ -2563,8 +2583,7 @@ static ShapeLabelHit HitTestShapeLabelInFrame(Frame* f, Point pt) {
         }
         Str255 pn; ToPStr(lbl, pn);
         TextSize(10); short tw = StringWidth(pn); TextSize(12);
-        Rect lr = { static_cast<short>(r.top-16), r.left,
-                    static_cast<short>(r.top-1),  static_cast<short>(r.left+tw+4) };
+        Rect lr = LabelHitRect(s->bounds, s->rotation, tw);
         if (PtInRect(pt, &lr)) return { s, f };
     }
     for (auto it = f->childFrames.rbegin(); it != f->childFrames.rend(); ++it) {
@@ -2709,7 +2728,6 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         // rootShapes name labels
         for (auto it = gDocument->rootShapes.rbegin(); it != gDocument->rootShapes.rend(); ++it) {
             Shape* s = it->get();
-            Rect sr = CanvasRect(s->bounds);
             std::string lbl = s->name;
             if (lbl.empty()) {
                 if      (s->GetType() == Shape::kEllipse) lbl = "Ellipse";
@@ -2718,8 +2736,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
             }
             Str255 pn; ToPStr(lbl, pn);
             TextSize(10); short tw = StringWidth(pn); TextSize(12);
-            Rect lr = { static_cast<short>(sr.top-16), sr.left,
-                        static_cast<short>(sr.top-1),  static_cast<short>(sr.left+tw+4) };
+            Rect lr = LabelHitRect(s->bounds, s->rotation, tw);
             if (PtInRect(pt, &lr)) { hitShape = s; hitFrame = nullptr; found = true; break; }
         }
     }
