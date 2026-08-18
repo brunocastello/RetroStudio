@@ -1310,6 +1310,26 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                     std::vector<RGBColor>& glyph = entry.pixels;
                     std::vector<bool>&      ink   = entry.ink;
 
+                    // TEMP DIAGNOSTIC (remove once confirmed): paint a raw,
+                    // UNROTATED copy of the cached glyph bitmap at a fixed
+                    // debug spot (canvas top-left corner), bypassing all
+                    // rotation/mapping math entirely. If the white patch
+                    // shows up here too, the bug is in capture (entry.pixels
+                    // itself is wrong); if this copy looks perfect, the bug
+                    // is in the destination inverse-mapping math instead.
+                    {
+                        FastPixelWriter dbgW = GetFastPixelWriter();
+                        bool dbgFast = dbgW.Ready();
+                        for (short dy = 0; dy < srcH; ++dy) {
+                            for (short dx = 0; dx < srcW; ++dx) {
+                                short ddh = static_cast<short>(4+dx), ddv = static_cast<short>(4+dy);
+                                const RGBColor& c = glyph[static_cast<size_t>(dy)*srcW+dx];
+                                if (dbgFast) dbgW.Set(ddh, ddv, c);
+                                else         SetCPixel(ddh, ddv, const_cast<RGBColor*>(&c));
+                            }
+                        }
+                    }
+
                     // The inverse mapping from destination pixel to source
                     // pixel is a fixed affine transform (rotation + translation,
                     // never scale/shear) for this entire repaint, so instead of
