@@ -1365,11 +1365,14 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
 
                     double rowOx = baseOx, rowOy = baseOy;
                     for (SInt32 py = 0; py < dstH; ++py) {
-                        double pxLo = 0.0, pxHi = static_cast<double>(dstW);
-                        ClipAxis(rowOx, stepXOx, r.left, r.right, pxLo, pxHi);
-                        ClipAxis(rowOy, stepXOy, r.top,  r.bottom, pxLo, pxHi);
-                        SInt32 pxStart = std::max<SInt32>(0, static_cast<SInt32>(std::ceil(pxLo)));
-                        SInt32 pxEnd   = std::min<SInt32>(dstW, static_cast<SInt32>(std::ceil(pxHi)));
+                        // TEMP: scanline clipping bypassed (brute-force full
+                        // row 0..dstW) to isolate whether ClipAxis is the
+                        // source of the reported white-patch bug -- the
+                        // debug preview proved captured glyph data is
+                        // correct, so the bug is somewhere in this mapping.
+                        (void)ClipAxis;
+                        SInt32 pxStart = 0;
+                        SInt32 pxEnd   = dstW;
 
                         double ox = rowOx + pxStart * stepXOx;
                         double oy = rowOy + pxStart * stepXOy;
