@@ -2331,6 +2331,36 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     Point prev = startPt, curr = startPt;
     bool pushedUndo = false;
 
+    // Same dirty-rect clipping HandleRotateDrag already uses, adapted for
+    // resize: unlike rotation the object's on-screen footprint isn't a
+    // fixed radius (it's changing every frame by definition), so recompute
+    // it each frame from the CURRENT bounds and union with the previous
+    // frame's footprint -- covers both what needs to be redrawn (new
+    // position) and what needs to be erased (old position), without
+    // resorting to a full, unclipped whole-window redraw on every
+    // mouse-move like this was doing before.
+    RotChain resizeAmbient = SelectedAmbientChain();
+    auto ComputeReachRect = [&](const Bounds2& bnd) -> Rect {
+        Rect rr = CanvasRect(bnd);
+        double cx = (rr.left+rr.right)*0.5, cy = (rr.top+rr.bottom)*0.5;
+        double hw = (rr.right-rr.left)*0.5, hh = (rr.bottom-rr.top)*0.5;
+        double rad = ownRotDeg * 3.14159265358979323846 / 180.0;
+        double ca = std::cos(rad), sa = std::sin(rad);
+        double lx[4] = {-hw, hw, hw, -hw}, ly[4] = {-hh, -hh, hh, hh};
+        short minX=32767, maxX=-32768, minY=32767, maxY=-32768;
+        for (int i = 0; i < 4; ++i) {
+            double ox = cx + lx[i]*ca - ly[i]*sa, oy = cy + lx[i]*sa + ly[i]*ca;
+            double fx, fy; ApplyRotChain(resizeAmbient, ox, oy, fx, fy);
+            Point p = ToQDPoint(fx, fy);
+            minX = std::min(minX, p.h); maxX = std::max(maxX, p.h);
+            minY = std::min(minY, p.v); maxY = std::max(maxY, p.v);
+        }
+        short pad = 60;
+        return Rect{ static_cast<short>(minY-pad), static_cast<short>(minX-pad),
+                     static_cast<short>(maxY+pad), static_cast<short>(maxX+pad) };
+    };
+    Rect prevReach = ComputeReachRect(*b);
+
     while (Button()) {
         GetMouse(&curr);
         if (curr.h != prev.h || curr.v != prev.v) {
@@ -2402,7 +2432,15 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
             b->x = static_cast<SInt32>(newX + (newX >= 0 ? 0.5 : -0.5));
             b->y = static_cast<SInt32>(newY + (newY >= 0 ? 0.5 : -0.5));
 
-            DrawWindowContent(win);
+            Rect newReach = ComputeReachRect(*b);
+            Rect dirtyRect = {
+                std::min(prevReach.top,  newReach.top),
+                std::min(prevReach.left, newReach.left),
+                std::max(prevReach.bottom, newReach.bottom),
+                std::max(prevReach.right,  newReach.right)
+            };
+            DrawWindowContent(win, &dirtyRect);
+            prevReach = newReach;
             prev = curr;
         }
     }
