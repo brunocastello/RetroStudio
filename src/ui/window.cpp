@@ -1923,10 +1923,6 @@ static void DrawCanvasInto(const Rect& eraseRect) {
 }
 
 void DrawWindowContent(WindowRef win, const Rect* clipTo) {
-    // Update text shape bounds first (auto-sizing), then run layout.
-    UpdateAllTextShapeBounds(gDocument);
-    RunDocumentLayout(gDocument);
-
     // Direct draw — NOT double-buffered. Two separate attempts at an
     // offscreen-GWorld + CopyBits double buffer (hardcoded 32-bit, then
     // pixelDepth=0 to match the screen) both corrupted the shared system
@@ -1937,9 +1933,19 @@ void DrawWindowContent(WindowRef win, const Rect* clipTo) {
     // fundamentally different approach. Flicker on expensive redraws
     // (rotated text/frames) is mitigated instead by restricting which
     // callers actually need to redraw the whole window (see `clipTo`).
+    //
+    // SetPortWindowPort must happen BEFORE UpdateAllTextShapeBounds: that
+    // call measures text via StringWidth/CharWidth, which read the CURRENT
+    // port's font state — if some other window (Inspector, Layers) was
+    // last active, auto-sizing text would get measured against the wrong
+    // port. Clicking to select a shape refreshes those panels right before
+    // this runs, so this ordering bug was live on exactly that path.
     SetPortWindowPort(win);
     Rect portRect;
     GetWindowPortBounds(win, &portRect);
+
+    UpdateAllTextShapeBounds(gDocument);
+    RunDocumentLayout(gDocument);
 
     // Explicitly reset the clip to the full port on every call, rather than
     // relying on SetPortWindowPort's clip-reset side effect: if that's
