@@ -946,14 +946,27 @@ struct FastPixelWriter {
     SInt32 rowBytes = 0;
     short pixelSize = 0;
     Rect bounds = {0, 0, 0, 0};
-    bool Ready() const { return base != nullptr && pixelSize == 32; }
+    bool Ready() const { return base != nullptr && (pixelSize == 32 || pixelSize == 16); }
     void Set(short h, short v, const RGBColor& c) const {
         SInt32 lx = h - bounds.left, ly = v - bounds.top;
         if (lx < 0 || ly < 0 || lx >= (bounds.right - bounds.left) || ly >= (bounds.bottom - bounds.top)) return;
-        UInt8* p = reinterpret_cast<UInt8*>(base) + static_cast<SInt32>(ly) * rowBytes + lx * 4;
-        p[1] = static_cast<UInt8>(c.red   >> 8);
-        p[2] = static_cast<UInt8>(c.green >> 8);
-        p[3] = static_cast<UInt8>(c.blue  >> 8);
+        UInt8* row = reinterpret_cast<UInt8*>(base) + static_cast<SInt32>(ly) * rowBytes;
+        if (pixelSize == 32) {
+            UInt8* p = row + lx * 4;
+            p[1] = static_cast<UInt8>(c.red   >> 8);
+            p[2] = static_cast<UInt8>(c.green >> 8);
+            p[3] = static_cast<UInt8>(c.blue  >> 8);
+        } else {
+            // 16-bit QuickDraw pixel: 1 unused bit + 5-5-5 RGB, stored as a
+            // single big-endian 16-bit word — this build targets PowerPC
+            // (big-endian), so a direct UInt16 store already lands in the
+            // right byte order with no manual swap needed.
+            UInt16 r5 = static_cast<UInt16>(c.red   >> 11);
+            UInt16 g5 = static_cast<UInt16>(c.green >> 11);
+            UInt16 b5 = static_cast<UInt16>(c.blue  >> 11);
+            UInt16 pixel = static_cast<UInt16>((r5 << 10) | (g5 << 5) | b5);
+            *reinterpret_cast<UInt16*>(row + lx * 2) = pixel;
+        }
     }
 };
 
@@ -1278,21 +1291,11 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                             else         SetCPixel(dh, dv, &glyph[si]);
                         }
                     }
-                    // TEMP DIAGNOSTIC (remove once confirmed): a small dot
-                    // above the rotated text, color-coded by the port's
-                    // actual reported pixelSize (confirmed red = fast path
-                    // NOT engaging on the user's display; this narrows down
-                    // to which depth it actually is instead of guessing).
-                    RGBColor dbgC;
-                    switch (fastW.pixelSize) {
-                        case 32: dbgC = RGBColor{0,0xFFFF,0};         break;  // green
-                        case 16: dbgC = RGBColor{0,0,0xFFFF};         break;  // blue
-                        case 8:  dbgC = RGBColor{0xFFFF,0xFFFF,0};    break;  // yellow
-                        case 4:  dbgC = RGBColor{0xFFFF,0x8800,0};    break;  // orange
-                        case 2:  dbgC = RGBColor{0x8888,0x8888,0x8888}; break; // gray
-                        case 1:  dbgC = RGBColor{0,0,0};              break;  // black
-                        default: dbgC = RGBColor{0xFFFF,0,0};         break;  // red = unmapped/unexpected
-                    }
+                    // TEMP DIAGNOSTIC (remove once confirmed): green if the
+                    // fast direct pixel-buffer path engaged this draw
+                    // (32-bit or 16-bit now both supported), red if it fell
+                    // back to per-pixel SetCPixel for some other depth.
+                    RGBColor dbgC = useFast ? RGBColor{0,0xFFFF,0} : RGBColor{0xFFFF,0,0};
                     RGBForeColor(&dbgC);
                     Rect dbgR = { static_cast<short>(minY-8), minX,
                                   static_cast<short>(minY-4), static_cast<short>(minX+4) };
