@@ -1277,10 +1277,31 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                     std::vector<bool>&      ink   = entry.ink;
                     FastPixelWriter fastW = GetFastPixelWriter();
                     bool useFast = fastW.Ready();
+
+                    // ApplyRotChainInverse recomputes cos/sin from scratch on
+                    // every call; calling it per destination pixel (up to
+                    // ~30000/frame) redoes the same handful of transcendental
+                    // calls tens of thousands of times over. The chain itself
+                    // doesn't change within this loop, so precompute each
+                    // step's cos/sin once and inline the inverse transform.
+                    struct InvStep { double ca, sa, cx, cy; };
+                    InvStep invSteps[8];
+                    int nInvSteps = 0;
+                    for (auto it = full.rbegin(); it != full.rend() && nInvSteps < 8; ++it) {
+                        if (it->angleDeg == 0.0) continue;
+                        double rad = -it->angleDeg * 3.14159265358979323846 / 180.0;
+                        invSteps[nInvSteps++] = { std::cos(rad), std::sin(rad), it->cx, it->cy };
+                    }
+
                     for (SInt32 py = 0; py < dstH; ++py) {
                         for (SInt32 px = 0; px < dstW; ++px) {
-                            double ox, oy;
-                            ApplyRotChainInverse(full, minX+px+0.5, minY+py+0.5, ox, oy);
+                            double ox = minX+px+0.5, oy = minY+py+0.5;
+                            for (int si2 = 0; si2 < nInvSteps; ++si2) {
+                                const InvStep& s = invSteps[si2];
+                                double dx = ox - s.cx, dy = oy - s.cy;
+                                ox = s.cx + dx*s.ca - dy*s.sa;
+                                oy = s.cy + dx*s.sa + dy*s.ca;
+                            }
                             SInt32 sxi = static_cast<SInt32>(std::floor(ox)) - r.left;
                             SInt32 syi = static_cast<SInt32>(std::floor(oy)) - r.top;
                             if (sxi < 0 || sxi >= srcW || syi < 0 || syi >= srcH) continue;
