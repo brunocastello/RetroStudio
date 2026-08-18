@@ -1261,7 +1261,8 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                     TextGlyphCacheEntry& entry = gTextGlyphCache[&t];
                     FastPixelWriter fastW = GetFastPixelWriter();
                     bool useFast = fastW.Ready();
-                    if (!(entry.key == key) || entry.pixels.size() != static_cast<size_t>(srcW) * srcH) {
+                    bool wasCacheHit = (entry.key == key) && entry.pixels.size() == static_cast<size_t>(srcW) * srcH;
+                    if (!wasCacheHit) {
                         // A live resize changes srcW/srcH on every mouse-move,
                         // which invalidates this cache every frame -- capture
                         // (normally rare) becomes the hot path for the whole
@@ -1367,6 +1368,21 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                         }
                         rowOx += stepYOx; rowOy += stepYOy;
                     }
+
+                    // TEMP DIAGNOSTIC (remove once confirmed): small dot
+                    // above the destination AABB — blue if this repaint was
+                    // a cache HIT (reused entry.pixels/ink as-is), magenta
+                    // if it was a MISS (recaptured this frame). The orange
+                    // fallback marker proved the corruption isn't the
+                    // upright-fallback path; this narrows further — if the
+                    // click-triggered corrupted redraw shows magenta, the
+                    // cache is unexpectedly missing/recapturing on a redraw
+                    // where nothing about the text should have changed.
+                    RGBColor cacheDbg = wasCacheHit ? RGBColor{0,0,0xFFFF} : RGBColor{0xFFFF,0,0xFFFF};
+                    RGBForeColor(&cacheDbg);
+                    Rect cacheDbgR = { static_cast<short>(minY-14), minX,
+                                       static_cast<short>(minY-10), static_cast<short>(minX+4) };
+                    PaintRect(&cacheDbgR);
 
                     didPixelRotate = true;
                 }
