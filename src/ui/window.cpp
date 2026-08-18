@@ -968,6 +968,25 @@ struct FastPixelWriter {
             *reinterpret_cast<UInt16*>(row + lx * 2) = pixel;
         }
     }
+    // Mirrors Set(): reads a pixel back out of the same raw buffer instead
+    // of via GetCPixel. Needed for the text-glyph capture path too, not
+    // just the rotated repaint — during a live resize the box dimensions
+    // change every frame, which invalidates the glyph cache every frame,
+    // so capture (normally a rare cache-miss event) becomes a hot path
+    // for the duration of the drag and needs to be just as fast.
+    RGBColor Get(short h, short v) const {
+        SInt32 lx = h - bounds.left, ly = v - bounds.top;
+        UInt8* row = reinterpret_cast<UInt8*>(base) + static_cast<SInt32>(ly) * rowBytes;
+        if (pixelSize == 32) {
+            UInt8* p = row + lx * 4;
+            return RGBColor{ static_cast<UInt16>(p[1] << 8), static_cast<UInt16>(p[2] << 8),
+                              static_cast<UInt16>(p[3] << 8) };
+        }
+        UInt16 pixel = *reinterpret_cast<UInt16*>(row + lx * 2);
+        UInt16 r5 = (pixel >> 10) & 0x1F, g5 = (pixel >> 5) & 0x1F, b5 = pixel & 0x1F;
+        return RGBColor{ static_cast<UInt16>(r5 << 11), static_cast<UInt16>(g5 << 11),
+                          static_cast<UInt16>(b5 << 11) };
+    }
 };
 
 static FastPixelWriter GetFastPixelWriter() {
@@ -1240,26 +1259,40 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                     key.w = srcW; key.h = srcH;
 
                     TextGlyphCacheEntry& entry = gTextGlyphCache[&t];
+                    FastPixelWriter fastW = GetFastPixelWriter();
+                    bool useFast = fastW.Ready();
                     if (!(entry.key == key) || entry.pixels.size() != static_cast<size_t>(srcW) * srcH) {
+                        // A live resize changes srcW/srcH on every mouse-move,
+                        // which invalidates this cache every frame -- capture
+                        // (normally rare) becomes the hot path for the whole
+                        // drag, so it needs the same fast raw-buffer access as
+                        // the repaint loop below, not just GetCPixel/SetCPixel.
                         std::vector<RGBColor> under(static_cast<size_t>(srcW) * srcH);
                         for (short y = 0; y < srcH; ++y)
-                            for (short x = 0; x < srcW; ++x)
-                                GetCPixel(static_cast<short>(r.left+x), static_cast<short>(r.top+y),
-                                          &under[static_cast<size_t>(y)*srcW + x]);
+                            for (short x = 0; x < srcW; ++x) {
+                                short px = static_cast<short>(r.left+x), py = static_cast<short>(r.top+y);
+                                under[static_cast<size_t>(y)*srcW + x] =
+                                    useFast ? fastW.Get(px, py) : ([&]{ RGBColor c; GetCPixel(px, py, &c); return c; }());
+                            }
 
                         setTextDrawState();
                         drawLines(r);
 
                         std::vector<RGBColor> glyph(static_cast<size_t>(srcW) * srcH);
                         for (short y = 0; y < srcH; ++y)
-                            for (short x = 0; x < srcW; ++x)
-                                GetCPixel(static_cast<short>(r.left+x), static_cast<short>(r.top+y),
-                                          &glyph[static_cast<size_t>(y)*srcW + x]);
+                            for (short x = 0; x < srcW; ++x) {
+                                short px = static_cast<short>(r.left+x), py = static_cast<short>(r.top+y);
+                                glyph[static_cast<size_t>(y)*srcW + x] =
+                                    useFast ? fastW.Get(px, py) : ([&]{ RGBColor c; GetCPixel(px, py, &c); return c; }());
+                            }
 
                         for (short y = 0; y < srcH; ++y)
-                            for (short x = 0; x < srcW; ++x)
-                                SetCPixel(static_cast<short>(r.left+x), static_cast<short>(r.top+y),
-                                          &under[static_cast<size_t>(y)*srcW + x]);
+                            for (short x = 0; x < srcW; ++x) {
+                                short px = static_cast<short>(r.left+x), py = static_cast<short>(r.top+y);
+                                const RGBColor& u = under[static_cast<size_t>(y)*srcW + x];
+                                if (useFast) fastW.Set(px, py, u);
+                                else         SetCPixel(px, py, const_cast<RGBColor*>(&u));
+                            }
 
                         std::vector<bool> ink(static_cast<size_t>(srcW) * srcH);
                         for (size_t i = 0; i < ink.size(); ++i) {
@@ -1275,8 +1308,6 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
 
                     std::vector<RGBColor>& glyph = entry.pixels;
                     std::vector<bool>&      ink   = entry.ink;
-                    FastPixelWriter fastW = GetFastPixelWriter();
-                    bool useFast = fastW.Ready();
 
                     // The inverse mapping from destination pixel to source
                     // pixel is a fixed affine transform (rotation + translation,
