@@ -1941,10 +1941,16 @@ void DrawWindowContent(WindowRef win, const Rect* clipTo) {
     Rect portRect;
     GetWindowPortBounds(win, &portRect);
 
-    // SetPortWindowPort resets this port's clip region as a side effect, so
-    // any clip the caller set before calling in would already be gone —
-    // apply it here, after, instead. ClipRect wants a non-const Rect* in
-    // these old headers, so a mutable local copy is needed either way.
+    // Explicitly reset the clip to the full port on every call, rather than
+    // relying on SetPortWindowPort's clip-reset side effect: if that's
+    // skipped when `win` is already the current port (a common SetPort
+    // optimization), a tight clip left behind by an earlier resize/rotate
+    // drag's dirtyRect could silently leak into a later plain/unclipped
+    // call here, so only that small stale region actually gets erased and
+    // redrawn while genuinely-stale content everywhere else on screen goes
+    // untouched. ClipRect wants a non-const Rect* in these old headers, so
+    // a mutable local copy is needed either way.
+    ClipRect(&portRect);
     if (clipTo) { Rect cr = *clipTo; ClipRect(&cr); }
     DrawCanvasInto(portRect);
     if (clipTo) ClipRect(&portRect);
