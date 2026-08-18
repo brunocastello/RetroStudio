@@ -1358,11 +1358,14 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                             SInt32 syi = static_cast<SInt32>(std::floor(oy)) - r.top;
                             if (sxi >= 0 && sxi < srcW && syi >= 0 && syi < srcH) {
                                 size_t si = static_cast<size_t>(syi) * srcW + sxi;
-                                if (ink[si]) {
-                                    short dh = static_cast<short>(minX+px), dv = static_cast<short>(minY+py);
-                                    if (useFast) fastW.Set(dh, dv, glyph[si]);
-                                    else         SetCPixel(dh, dv, &glyph[si]);
-                                }
+                                // TEMP: ink[] skip disabled to test whether it's
+                                // the source of the reported white-patch
+                                // corruption (round-trip quantization at 16-bit
+                                // depth could make some real ink pixels compare
+                                // equal to background and get wrongly skipped).
+                                short dh = static_cast<short>(minX+px), dv = static_cast<short>(minY+py);
+                                if (useFast) fastW.Set(dh, dv, glyph[si]);
+                                else         SetCPixel(dh, dv, &glyph[si]);
                             }
                             ox += stepXOx; oy += stepXOy;
                         }
