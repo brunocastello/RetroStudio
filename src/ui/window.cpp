@@ -3541,7 +3541,14 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
 
     UpdateTextShapeBounds(*ts);
     RunDocumentLayout(gDocument);
-    Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
+    // Redraw immediately rather than just InvalWindowRect-ing and waiting
+    // for the next async updateEvt: for a rotated text shape, the plain
+    // axis-aligned edit box (TextEdit can't render rotation) only partly
+    // overlaps where the shape's rotated glyphs actually sit on screen, so
+    // any gap before the real repaint fires leaves that mismatch visibly
+    // on screen — looking like part of the text got erased — until some
+    // unrelated later event happens to trigger a redraw.
+    DrawWindowContent(win);
 }
 
 static void HandleTextPlace(WindowRef win, Point localPt, Point globalPt) {
