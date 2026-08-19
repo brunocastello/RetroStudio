@@ -1792,7 +1792,7 @@ static void DrawSelectionHighlight() {
         // can't rotate) edit box; the normal rotated selection border/
         // handles would otherwise draw on top of it, unrelated to where
         // the edit box actually is.
-        if (gSelectedShape == static_cast<Shape*>(gEditingTextShape)) { PenNormal(); return; }
+        if (gEditingTextShape && gSelectedShape == static_cast<Shape*>(gEditingTextShape)) { PenNormal(); return; }
         double ownRot = SelectedOwnRotation();
         RotChain ambient = SelectedAmbientChain();
         if (ownRot != 0.0 || !ambient.empty()) {
@@ -3612,7 +3612,19 @@ static void HandleTextPlace(WindowRef win, Point localPt, Point globalPt) {
     }
 
     PushUndo();
-    Point cPt = ScreenToCanvas(localPt);
+
+    // Same fix as HandleCanvasCreate: un-rotate through the target frame's
+    // ambient chain before converting to canvas coordinates, or a text
+    // placed inside a rotated frame lands with skewed local bounds.
+    Frame* target  = DeepestFrameAt(localPt);
+    RotChain targetAmbient = AncestorChainFor(target);
+    Point localPlacePt = localPt;
+    if (!targetAmbient.empty()) {
+        double lx, ly;
+        ApplyRotChainInverse(targetAmbient, localPt.h, localPt.v, lx, ly);
+        localPlacePt = ToQDPoint(lx, ly);
+    }
+    Point cPt = ScreenToCanvas(localPlacePt);
 
     auto tOwned  = std::make_unique<TextShape>();
     TextShape* t = tOwned.get();
@@ -3624,8 +3636,6 @@ static void HandleTextPlace(WindowRef win, Point localPt, Point globalPt) {
     t->fillColor = { 0, 0, 0 };  // black text color
     t->hasFill   = true;
     t->hasStroke = false;
-
-    Frame* target  = DeepestFrameAt(localPt);
     gSelectedShapes.clear(); gSelectedFrames.clear();
     gSelectedShape = t;
     gSelectedFrame = target;
@@ -3690,20 +3700,39 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
 
     if (dw >= 4 && dh >= 4) {
         PushUndo();
-        // Convert rubber-band screen corners to canvas coordinates
-        Point cStart = ScreenToCanvas(startPt);
-        Point cEnd   = ScreenToCanvas(currPt);
+
+        // Center in screen space for DeepestFrameAt (uses CanvasRect = screen rects)
+        Point center;
+        center.h = static_cast<short>((sMin(startPt.h, currPt.h) + sMax(startPt.h, currPt.h)) / 2);
+        center.v = static_cast<short>((sMin(startPt.v, currPt.v) + sMax(startPt.v, currPt.v)) / 2);
+
+        // Which frame this new shape/frame lands in has to be resolved before
+        // computing its bounds: if that frame (or any of its own ancestors)
+        // is rotated, the rubber-band's screen-space corners need to be
+        // un-rotated through that ambient chain first, or the new object's
+        // local bounds end up skewed relative to what was actually dragged
+        // on screen (previously always used a plain, rotation-oblivious
+        // screen->canvas conversion here).
+        Frame* dropParent = DeepestFrameAt(center);
+        RotChain dropAmbient = AncestorChainFor(dropParent);
+        Point localStart = startPt, localEnd = currPt;
+        if (!dropAmbient.empty()) {
+            double lx, ly;
+            ApplyRotChainInverse(dropAmbient, startPt.h, startPt.v, lx, ly);
+            localStart = ToQDPoint(lx, ly);
+            ApplyRotChainInverse(dropAmbient, currPt.h, currPt.v, lx, ly);
+            localEnd = ToQDPoint(lx, ly);
+        }
+
+        // Convert rubber-band screen corners (rotation already undone above) to canvas coordinates
+        Point cStart = ScreenToCanvas(localStart);
+        Point cEnd   = ScreenToCanvas(localEnd);
 
         Bounds2 b;
         b.x = sMin(cStart.h, cEnd.h);
         b.y = sMin(cStart.v, cEnd.v);
         b.w = sMax(cStart.h, cEnd.h) - b.x;
         b.h = sMax(cStart.v, cEnd.v) - b.y;
-
-        // Center in screen space for DeepestFrameAt (uses CanvasRect = screen rects)
-        Point center;
-        center.h = static_cast<short>((sMin(startPt.h, currPt.h) + sMax(startPt.h, currPt.h)) / 2);
-        center.v = static_cast<short>((sMin(startPt.v, currPt.v) + sMax(startPt.v, currPt.v)) / 2);
 
         gSelectedShape = nullptr;
         gSelectedFrame = nullptr;
@@ -3714,7 +3743,7 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
             f->bounds         = b;
             f->backgroundColor = { 0xFFFF, 0xFFFF, 0xFFFF };
 
-            Frame* parent = DeepestFrameAt(center);  // nest inside containing frame if any
+            Frame* parent = dropParent;  // nest inside containing frame if any
             Frame* raw    = f.get();
             if (parent) {
                 f->parent = parent;
@@ -3730,7 +3759,7 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
         } else {
             // Rectangle or Ellipse — place inside deepest containing frame,
             // or at canvas root if drawn on bare canvas.
-            Frame* target = DeepestFrameAt(center);
+            Frame* target = dropParent;
 
             std::unique_ptr<Shape> shape;
             if (gActiveTool == Tool::Rectangle) {
