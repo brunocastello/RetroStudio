@@ -3569,7 +3569,15 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
     auto applyFont = [&]() { TextFont(fontID); TextSize(scaledSize); TextFace(ts->fontFace); };
     applyFont();
 
+    // AutoWidth text should grow to fit what's typed, never wrap -- give TE
+    // a generously wide/tall destRect so IT never wraps internally; editR
+    // (the actual visible/captured box) is instead resized every redraw
+    // below to hug the real measured content, independent of TE's rect.
     Rect viewR = editR;
+    if (ts->textSizing == TextSizing::AutoWidth) {
+        viewR.right  = static_cast<short>(viewR.left + 4000);
+        viewR.bottom = static_cast<short>(viewR.top + 1000);
+    }
     TEHandle teh = TENew(&viewR, &viewR);
     if (!teh) { gEditingTextShape = nullptr; return; }
 
@@ -3593,13 +3601,60 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
     double ownRot = static_cast<double>(ts->rotation);
     RotChain ambient = AncestorChainFor(LocateShapeParent(ts));
     RotChain full;
-    if (ownRot != 0.0) full.push_back({ownRot, (editR.left+editR.right)*0.5, (editR.top+editR.bottom)*0.5});
-    full.insert(full.end(), ambient.begin(), ambient.end());
-    bool anyRot = !full.empty();
-    short editSrcW = static_cast<short>(editR.right - editR.left);
-    short editSrcH = static_cast<short>(editR.bottom - editR.top);
-    bool canRotateEdit = anyRot && editSrcW > 0 && editSrcH > 0 &&
-                          (SInt32)editSrcW * editSrcH <= 150000;
+    short editSrcW = 0, editSrcH = 0;
+    bool anyRot = (ownRot != 0.0) || !ambient.empty();
+    bool canRotateEdit = false;
+    short lineH = static_cast<short>(SInt32(scaledSize) * ts->lineHeight / 100);
+    if (lineH < 1) lineH = scaledSize;
+
+    // Rebuilds `full` (the rotation chain, pivoted on editR's current
+    // center) and the derived src dimensions/cap check -- called once up
+    // front and again after every AutoWidth remeasure below, since editR
+    // itself (and therefore its center) can change while typing.
+    auto rebuildFull = [&]() {
+        full.clear();
+        if (ownRot != 0.0) full.push_back({ownRot, (editR.left+editR.right)*0.5, (editR.top+editR.bottom)*0.5});
+        full.insert(full.end(), ambient.begin(), ambient.end());
+        editSrcW = static_cast<short>(editR.right - editR.left);
+        editSrcH = static_cast<short>(editR.bottom - editR.top);
+        canRotateEdit = anyRot && editSrcW > 0 && editSrcH > 0 &&
+                        (SInt32)editSrcW * editSrcH <= 150000;
+    };
+    rebuildFull();
+
+    // AutoWidth: editR should hug whatever's actually typed, growing (never
+    // wrapping) as content is added -- TE's own destRect is deliberately
+    // oversized (see TENew above) specifically so this can resize editR
+    // independently of it. Keeps the box's top-left anchored, matching how
+    // UpdateTextShapeBounds grows AutoWidth boxes elsewhere in the app.
+    auto remeasureAutoWidth = [&]() {
+        if (ts->textSizing != TextSizing::AutoWidth) return;
+        Handle h = (*teh)->hText; long len = (*teh)->teLength;
+        std::string cur;
+        if (h && len > 0) { HLock(h); cur.assign(reinterpret_cast<char*>(*h), static_cast<size_t>(len)); HUnlock(h); }
+
+        applyFont();
+        short maxW = 8;
+        int nLines = 0;
+        size_t pos = 0;
+        do {
+            size_t nl  = cur.find('\r', pos);
+            size_t len2 = (nl == std::string::npos) ? cur.size() - pos : nl - pos;
+            Str255 pl; pl[0] = 0;
+            for (size_t ci = 0; ci < len2 && ci < 63; ++ci) { pl[ci+1] = static_cast<unsigned char>(cur[pos+ci]); pl[0]++; }
+            short lw = StringWidth(pl);
+            if (lw > maxW) maxW = lw;
+            ++nLines;
+            if (nl == std::string::npos) break;
+            pos = nl + 1;
+        } while (pos < cur.size());
+        if (nLines == 0) nLines = 1;
+
+        editR.right  = static_cast<short>(editR.left + maxW + 8);
+        editR.bottom = static_cast<short>(editR.top + lineH * nLines + 4);
+        rebuildFull();
+    };
+    remeasureAutoWidth();
 
     RGBColor white = {0xFFFF,0xFFFF,0xFFFF}, black = {0,0,0}, blue = {0x1177,0x55AA,0xFFFF};
 
@@ -3616,6 +3671,7 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
     auto redraw = [&]() {
         DrawWindowContent(win);   // full canvas, minus `ts` (skipped by DrawShape while editing)
         SetPortWindowPort(win);
+        remeasureAutoWidth();
         if (!canRotateEdit) { redrawStraight(); return; }
 
         FastPixelWriter fastW = GetFastPixelWriter();
