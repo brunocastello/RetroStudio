@@ -1959,7 +1959,19 @@ void DrawWindowContent(WindowRef win, const Rect* clipTo) {
     // a mutable local copy is needed either way.
     ClipRect(&portRect);
     if (clipTo) { Rect cr = *clipTo; ClipRect(&cr); }
+    // The classic Mac OS software cursor auto-saves/restores the pixels
+    // under it, but only for drawing it can see going through QuickDraw.
+    // FastPixelWriter writes raw bytes straight into the framebuffer,
+    // bypassing QuickDraw entirely -- the cursor manager never learns
+    // those pixels changed, so the next time it needs to redraw the
+    // cursor (any mouse movement) it pastes its own stale saved copy of
+    // what used to be there right back over the freshly-rotated glyph
+    // pixels wherever the cursor happens to be sitting. HideCursor/
+    // ShowCursor nest via an internal counter, so bracketing every redraw
+    // here is safe even if a caller further up also does it.
+    HideCursor();
     DrawCanvasInto(portRect);
+    ShowCursor();
     if (clipTo) ClipRect(&portRect);
 }
 
