@@ -3569,16 +3569,21 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
     auto applyFont = [&]() { TextFont(fontID); TextSize(scaledSize); TextFace(ts->fontFace); };
     applyFont();
 
-    // AutoWidth text should grow to fit what's typed, never wrap -- give TE
-    // a generously wide/tall destRect so IT never wraps internally; editR
-    // (the actual visible/captured box) is instead resized every redraw
-    // below to hug the real measured content, independent of TE's rect.
-    Rect viewR = editR;
+    // AutoWidth text should grow to fit what's typed, never wrap. destRect
+    // controls TE's own word-wrap width, so it gets a generous fixed
+    // allowance so TE itself never wraps -- but viewRect controls what TE
+    // actually erases/draws/clips to, so it must stay matched to the real
+    // (small, growing) box, or TEUpdate erases across destRect's whole
+    // width regardless of what rect gets passed to it, leaving a stray
+    // block of blank canvas out past the visible text. viewRect gets
+    // resynced to editR on every remeasure below as the box grows.
+    Rect destR = editR;
     if (ts->textSizing == TextSizing::AutoWidth) {
-        viewR.right  = static_cast<short>(viewR.left + 4000);
-        viewR.bottom = static_cast<short>(viewR.top + 1000);
+        destR.right  = static_cast<short>(destR.left + 4000);
+        destR.bottom = static_cast<short>(destR.top + 1000);
     }
-    TEHandle teh = TENew(&viewR, &viewR);
+    Rect viewR = editR;
+    TEHandle teh = TENew(&destR, &viewR);
     if (!teh) { gEditingTextShape = nullptr; return; }
 
     // TE uses CR (\r) for line breaks; our stored text uses LF (\n).
@@ -3652,6 +3657,7 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
 
         editR.right  = static_cast<short>(editR.left + maxW + 8);
         editR.bottom = static_cast<short>(editR.top + lineH * nLines + 4);
+        (*teh)->viewRect = editR;
         rebuildFull();
     };
     remeasureAutoWidth();
