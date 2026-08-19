@@ -1452,8 +1452,18 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                     rr.left = static_cast<short>(rr.left + dx); rr.right  = static_cast<short>(rr.right  + dx);
                     rr.top  = static_cast<short>(rr.top  + dy); rr.bottom = static_cast<short>(rr.bottom + dy);
                 }
+                // Clip to the shape's own box: drawLines only ever breaks on
+                // explicit newlines, never on width, so a Fixed/Auto Height
+                // box narrower than its content would otherwise let text
+                // spill out past its edges instead of being hidden like a
+                // normal text box.
+                RgnHandle savedClip = NewRgn();
+                GetClip(savedClip);
+                { Rect cr = rr; ClipRect(&cr); }
                 setTextDrawState();
                 drawLines(rr);
+                SetClip(savedClip);
+                DisposeRgn(savedClip);
             }
             TextFace(0); TextSize(12); TextFont(0);
             RGBColor wh = {0xFFFF,0xFFFF,0xFFFF}; RGBBackColor(&wh);
