@@ -1689,6 +1689,7 @@ static RotChain AncestorChainFor(Frame* startFrame);
 
 static void DrawSelectionHighlight() {
     RGBColor selBlue = { 0x1177, 0x55AA, 0xFFFF };
+    RGBColor white   = { 0xFFFF, 0xFFFF, 0xFFFF };
     static const short kHW = 4;
 
     // Axis-aligned border + square handles at 8 positions
@@ -1702,11 +1703,7 @@ static void DrawSelectionHighlight() {
                 static_cast<short>(hy[i]-kHW), static_cast<short>(hx[i]-kHW),
                 static_cast<short>(hy[i]+kHW), static_cast<short>(hx[i]+kHW)
             };
-            // Hollow outline only, no solid fill: at small font sizes an
-            // 8x8 filled handle square can fully blot out 1-2 characters
-            // of content sitting underneath it (reported as text getting
-            // "erased" near a handle). An outline still clearly marks the
-            // handle position without hiding whatever's under it.
+            RGBForeColor(&white); PaintRect(&h);
             RGBForeColor(&selBlue); FrameRect(&h);
         }
     };
@@ -1765,7 +1762,7 @@ static void DrawSelectionHighlight() {
                 static_cast<short>(hpy[i]-kHW), static_cast<short>(hpx[i]-kHW),
                 static_cast<short>(hpy[i]+kHW), static_cast<short>(hpx[i]+kHW)
             };
-            // Hollow outline only — see the matching comment in drawHandles above.
+            RGBForeColor(&white); PaintRect(&h);
             RGBForeColor(&selBlue); FrameRect(&h);
         }
     };
