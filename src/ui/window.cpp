@@ -1768,6 +1768,7 @@ static void DrawSelectionHighlight() {
     };
 
     for (Shape* s : gSelectedShapes) {
+        if (s == static_cast<Shape*>(gEditingTextShape)) continue;
         RotChain ambient = AncestorChainFor(LocateShapeParent(s));
         if (s->rotation != 0 || !ambient.empty()) drawRotatedItem(s->bounds, s->rotation, ambient);
         else                                      drawItem(CanvasRect(s->bounds));
@@ -1786,6 +1787,12 @@ static void DrawSelectionHighlight() {
 
     if (!drawnAsShape && !drawnAsFrame) {
         if (!gSelectedShape && !gSelectedFrame) { PenNormal(); return; }
+        // The text-editing overlay (EditTextInPlace) draws its own plain
+        // axis-aligned frame around the (necessarily unrotated — TextEdit
+        // can't rotate) edit box; the normal rotated selection border/
+        // handles would otherwise draw on top of it, unrelated to where
+        // the edit box actually is.
+        if (gSelectedShape == static_cast<Shape*>(gEditingTextShape)) { PenNormal(); return; }
         double ownRot = SelectedOwnRotation();
         RotChain ambient = SelectedAmbientChain();
         if (ownRot != 0.0 || !ambient.empty()) {
