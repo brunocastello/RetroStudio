@@ -1005,6 +1005,73 @@ static FastPixelWriter GetFastPixelWriter() {
     return w;
 }
 
+// Paints a captured, unrotated `srcW`x`srcH` pixel block (read from
+// `srcRect` on the real port) into its rotated destination on screen —
+// same inverse-mapped affine-stepping technique as DrawShape's kText case
+// (see the comments there for the derivation), factored out here so the
+// live text-edit overlay (EditTextInPlace) can reuse it too, not just the
+// static/settled rendering. `ink`, if non-null, skips repainting pixels
+// where it's false (background); pass nullptr to paint every pixel
+// unconditionally (used for the edit overlay, where content changes too
+// often per keystroke for a meaningful ink cache to be worth building).
+static void PaintRotatedPixelBlock(const std::vector<RGBColor>& pixels, const std::vector<bool>* ink,
+                                    short srcW, short srcH, Rect srcRect, const RotChain& full,
+                                    FastPixelWriter& fastW, bool useFast) {
+    if (srcW <= 0 || srcH <= 0) return;
+    Point c0, c1, c2, c3;
+    { double fx,fy;
+      ApplyRotChain(full, srcRect.left,  srcRect.top,    fx,fy); c0 = ToQDPoint(fx,fy);
+      ApplyRotChain(full, srcRect.right, srcRect.top,    fx,fy); c1 = ToQDPoint(fx,fy);
+      ApplyRotChain(full, srcRect.right, srcRect.bottom, fx,fy); c2 = ToQDPoint(fx,fy);
+      ApplyRotChain(full, srcRect.left,  srcRect.bottom, fx,fy); c3 = ToQDPoint(fx,fy); }
+    short minX = std::min(std::min(c0.h,c1.h), std::min(c2.h,c3.h));
+    short maxX = std::max(std::max(c0.h,c1.h), std::max(c2.h,c3.h));
+    short minY = std::min(std::min(c0.v,c1.v), std::min(c2.v,c3.v));
+    short maxY = std::max(std::max(c0.v,c1.v), std::max(c2.v,c3.v));
+    SInt32 dstW = (SInt32)maxX - minX + 1, dstH = (SInt32)maxY - minY + 1;
+    if (dstW <= 0 || dstH <= 0 || dstW * dstH > 300000) return;
+
+    double baseOx, baseOy, stepXOx, stepXOy, stepYOx, stepYOy;
+    ApplyRotChainInverse(full, minX+0.5, minY+0.5, baseOx,  baseOy);
+    ApplyRotChainInverse(full, minX+1.5, minY+0.5, stepXOx, stepXOy);
+    ApplyRotChainInverse(full, minX+0.5, minY+1.5, stepYOx, stepYOy);
+    stepXOx -= baseOx; stepXOy -= baseOy;
+    stepYOx -= baseOx; stepYOy -= baseOy;
+
+    auto ClipAxis = [](double a, double b, double lo, double hi, double& pxLo, double& pxHi) {
+        if (b == 0.0) { if (a < lo || a >= hi) pxHi = pxLo - 1.0; return; }
+        double t0 = (lo - a) / b, t1 = (hi - a) / b;
+        if (b > 0) { pxLo = std::max(pxLo, t0); pxHi = std::min(pxHi, t1); }
+        else       { pxLo = std::max(pxLo, t1); pxHi = std::min(pxHi, t0); }
+    };
+
+    double rowOx = baseOx, rowOy = baseOy;
+    for (SInt32 py = 0; py < dstH; ++py) {
+        double pxLo = 0.0, pxHi = static_cast<double>(dstW);
+        ClipAxis(rowOx, stepXOx, srcRect.left, srcRect.right,  pxLo, pxHi);
+        ClipAxis(rowOy, stepXOy, srcRect.top,  srcRect.bottom, pxLo, pxHi);
+        SInt32 pxStart = std::max<SInt32>(0, static_cast<SInt32>(std::ceil(pxLo)));
+        SInt32 pxEnd   = std::min<SInt32>(dstW, static_cast<SInt32>(std::ceil(pxHi)));
+
+        double ox = rowOx + pxStart * stepXOx;
+        double oy = rowOy + pxStart * stepXOy;
+        for (SInt32 px = pxStart; px < pxEnd; ++px) {
+            SInt32 sxi = static_cast<SInt32>(std::floor(ox)) - srcRect.left;
+            SInt32 syi = static_cast<SInt32>(std::floor(oy)) - srcRect.top;
+            if (sxi >= 0 && sxi < srcW && syi >= 0 && syi < srcH) {
+                size_t si = static_cast<size_t>(syi) * srcW + sxi;
+                if (!ink || (*ink)[si]) {
+                    short dh = static_cast<short>(minX+px), dv = static_cast<short>(minY+py);
+                    if (useFast) fastW.Set(dh, dv, pixels[si]);
+                    else         SetCPixel(dh, dv, const_cast<RGBColor*>(&pixels[si]));
+                }
+            }
+            ox += stepXOx; oy += stepXOy;
+        }
+        rowOx += stepYOx; rowOy += stepYOy;
+    }
+}
+
 static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
     if (!shape.visible) return;
     if (gEditingTextShape && &shape == static_cast<const Shape*>(gEditingTextShape)) return;
@@ -3514,25 +3581,106 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
     TESetSelect(0, static_cast<long>((*teh)->teLength), teh);
     TEActivate(teh);
 
+    // Rotation this shape has while editing: own rotation plus whatever
+    // ambient rotation its parent frame chain contributes. TextEdit itself
+    // has no concept of rotation at all -- it always draws upright into
+    // `editR`. To make editing itself appear rotated (not just the static,
+    // non-editing view), every redraw renders TE's upright output into
+    // editR as a staging area, captures those exact pixels, restores
+    // whatever was underneath, then paints the captured block into its
+    // rotated position via the same technique used for the settled/static
+    // text rendering (see PaintRotatedPixelBlock).
+    double ownRot = static_cast<double>(ts->rotation);
+    RotChain ambient = AncestorChainFor(LocateShapeParent(ts));
+    RotChain full;
+    if (ownRot != 0.0) full.push_back({ownRot, (editR.left+editR.right)*0.5, (editR.top+editR.bottom)*0.5});
+    full.insert(full.end(), ambient.begin(), ambient.end());
+    bool anyRot = !full.empty();
+    short editSrcW = static_cast<short>(editR.right - editR.left);
+    short editSrcH = static_cast<short>(editR.bottom - editR.top);
+    bool canRotateEdit = anyRot && editSrcW > 0 && editSrcH > 0 &&
+                          (SInt32)editSrcW * editSrcH <= 150000;
+
     RGBColor white = {0xFFFF,0xFFFF,0xFFFF}, black = {0,0,0}, blue = {0x1177,0x55AA,0xFFFF};
-    auto redraw = [&]() {
-        DrawWindowContent(win);   // full canvas, minus `ts` (skipped by DrawShape while editing)
-        SetPortWindowPort(win);
+
+    // Straight (unrotated) draw of the TE box -- used whenever the shape
+    // isn't rotated, or the box is too large to cheaply rotate-capture.
+    auto redrawStraight = [&]() {
         RGBBackColor(&white); RGBForeColor(&black);
         EraseRect(&editR);
         applyFont();
         TEUpdate(&editR, teh);
         RGBForeColor(&blue); FrameRect(&editR);
     };
+
+    auto redraw = [&]() {
+        DrawWindowContent(win);   // full canvas, minus `ts` (skipped by DrawShape while editing)
+        SetPortWindowPort(win);
+        if (!canRotateEdit) { redrawStraight(); return; }
+
+        FastPixelWriter fastW = GetFastPixelWriter();
+        bool useFast = fastW.Ready();
+        size_t n = static_cast<size_t>(editSrcW) * editSrcH;
+        std::vector<RGBColor> under(n), content(n);
+        auto getPx = [&](short px, short py) -> RGBColor {
+            if (useFast) return fastW.Get(px, py);
+            RGBColor c; GetCPixel(px, py, &c); return c;
+        };
+        auto setPx = [&](short px, short py, const RGBColor& c) {
+            if (useFast) fastW.Set(px, py, c);
+            else         SetCPixel(px, py, const_cast<RGBColor*>(&c));
+        };
+
+        for (short y = 0; y < editSrcH; ++y)
+            for (short x = 0; x < editSrcW; ++x)
+                under[static_cast<size_t>(y)*editSrcW + x] =
+                    getPx(static_cast<short>(editR.left+x), static_cast<short>(editR.top+y));
+
+        RGBBackColor(&white); RGBForeColor(&black);
+        EraseRect(&editR);
+        applyFont();
+        TEUpdate(&editR, teh);
+
+        for (short y = 0; y < editSrcH; ++y)
+            for (short x = 0; x < editSrcW; ++x)
+                content[static_cast<size_t>(y)*editSrcW + x] =
+                    getPx(static_cast<short>(editR.left+x), static_cast<short>(editR.top+y));
+
+        for (short y = 0; y < editSrcH; ++y)
+            for (short x = 0; x < editSrcW; ++x)
+                setPx(static_cast<short>(editR.left+x), static_cast<short>(editR.top+y),
+                      under[static_cast<size_t>(y)*editSrcW + x]);
+
+        HideCursor();  // raw pixel writes bypass QuickDraw -- see FastPixelWriter
+        PaintRotatedPixelBlock(content, nullptr, editSrcW, editSrcH, editR, full, fastW, useFast);
+        ShowCursor();
+
+        // Rotated border around the edit area, matching the rotated
+        // destination instead of framing the (invisible, staging-only)
+        // unrotated editR.
+        Point rc[4]; double fx, fy;
+        ApplyRotChain(full, editR.left,  editR.top,    fx,fy); rc[0] = ToQDPoint(fx,fy);
+        ApplyRotChain(full, editR.right, editR.top,    fx,fy); rc[1] = ToQDPoint(fx,fy);
+        ApplyRotChain(full, editR.right, editR.bottom, fx,fy); rc[2] = ToQDPoint(fx,fy);
+        ApplyRotChain(full, editR.left,  editR.bottom, fx,fy); rc[3] = ToQDPoint(fx,fy);
+        RGBForeColor(&blue);
+        PenSize(2, 2);
+        MoveTo(rc[0].h, rc[0].v);
+        LineTo(rc[1].h, rc[1].v); LineTo(rc[2].h, rc[2].v);
+        LineTo(rc[3].h, rc[3].v); LineTo(rc[0].h, rc[0].v);
+        PenSize(1, 1);
+    };
     redraw();
 
     while (Button()) {}  // wait out the click/double-click that triggered this
 
     bool done = false, confirmed = false;
+    int idleTicks = 0;
     EventRecord evt;
     while (!done) {
         bool got = WaitNextEvent(everyEvent, &evt, 3, nullptr);
         if (got) {
+            idleTicks = 0;
             switch (evt.what) {
                 case keyDown: case autoKey: {
                     char c = static_cast<char>(evt.message & charCodeMask);
@@ -3549,11 +3697,36 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
                     WindowRef hitWin; short part = FindWindow(evt.where, &hitWin);
                     Point local = evt.where;
                     SetPortWindowPort(win); GlobalToLocal(&local);
-                    if (hitWin != win || part != inContent || !PtInRect(local, &editR)) {
+                    bool inside = false;
+                    Point teLocal = local;
+                    if (hitWin == win && part == inContent) {
+                        if (!canRotateEdit) {
+                            inside = PtInRect(local, &editR);
+                        } else {
+                            // Click landed somewhere on the visually rotated
+                            // edit box; TE only understands the unrotated
+                            // staging rect, so map the click back through
+                            // the same rotation before testing/forwarding it.
+                            double lx, ly;
+                            ApplyRotChainInverse(full, local.h, local.v, lx, ly);
+                            teLocal = ToQDPoint(lx, ly);
+                            inside = PtInRect(teLocal, &editR);
+                        }
+                    }
+                    if (!inside) {
                         confirmed = true; done = true;  // click elsewhere commits
                     } else {
                         applyFont();
-                        TEClick(local, (evt.modifiers & shiftKey) != 0, teh);
+                        // TEClick blocks internally, tracking drag-select
+                        // itself; it draws that live feedback upright at
+                        // editR's real screen position, so a drag-select
+                        // gesture on rotated text will flash unrotated
+                        // for its duration -- a Toolbox limitation (no
+                        // hook into TEClick's internal drawing). The
+                        // selection itself, and everything drawn once it
+                        // returns, is correctly rotated again.
+                        TEClick(teLocal, (evt.modifiers & shiftKey) != 0, teh);
+                        redraw();
                     }
                     break;
                 }
@@ -3566,7 +3739,19 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
             }
         } else {
             SetPortWindowPort(win); applyFont();
-            TEIdle(teh);
+            if (!canRotateEdit) {
+                TEIdle(teh);
+            } else if (++idleTicks >= 10) {
+                // TEIdle blinks the cursor by drawing directly at editR's
+                // real (unrotated) position -- fine when not rotated, but
+                // wrong here, so a rotated edit re-runs the full capture/
+                // rotate-paint on a throttled timer instead of calling
+                // TEIdle directly, to keep the blink roughly visible
+                // without redrawing on every ~50ms idle poll.
+                idleTicks = 0;
+                TEIdle(teh);
+                redraw();
+            }
         }
     }
 
