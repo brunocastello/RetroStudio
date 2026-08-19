@@ -1310,26 +1310,6 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                     std::vector<RGBColor>& glyph = entry.pixels;
                     std::vector<bool>&      ink   = entry.ink;
 
-                    // TEMP DIAGNOSTIC (remove once confirmed): paint a raw,
-                    // UNROTATED copy of the cached glyph bitmap at a fixed
-                    // debug spot (canvas top-left corner), bypassing all
-                    // rotation/mapping math entirely. If the white patch
-                    // shows up here too, the bug is in capture (entry.pixels
-                    // itself is wrong); if this copy looks perfect, the bug
-                    // is in the destination inverse-mapping math instead.
-                    {
-                        FastPixelWriter dbgW = GetFastPixelWriter();
-                        bool dbgFast = dbgW.Ready();
-                        for (short dy = 0; dy < srcH; ++dy) {
-                            for (short dx = 0; dx < srcW; ++dx) {
-                                short ddh = static_cast<short>(4+dx), ddv = static_cast<short>(4+dy);
-                                const RGBColor& c = glyph[static_cast<size_t>(dy)*srcW+dx];
-                                if (dbgFast) dbgW.Set(ddh, ddv, c);
-                                else         SetCPixel(ddh, ddv, const_cast<RGBColor*>(&c));
-                            }
-                        }
-                    }
-
                     // The inverse mapping from destination pixel to source
                     // pixel is a fixed affine transform (rotation + translation,
                     // never scale/shear) for this entire repaint, so instead of
@@ -1365,14 +1345,11 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
 
                     double rowOx = baseOx, rowOy = baseOy;
                     for (SInt32 py = 0; py < dstH; ++py) {
-                        // TEMP: scanline clipping bypassed (brute-force full
-                        // row 0..dstW) to isolate whether ClipAxis is the
-                        // source of the reported white-patch bug -- the
-                        // debug preview proved captured glyph data is
-                        // correct, so the bug is somewhere in this mapping.
-                        (void)ClipAxis;
-                        SInt32 pxStart = 0;
-                        SInt32 pxEnd   = dstW;
+                        double pxLo = 0.0, pxHi = static_cast<double>(dstW);
+                        ClipAxis(rowOx, stepXOx, r.left, r.right, pxLo, pxHi);
+                        ClipAxis(rowOy, stepXOy, r.top,  r.bottom, pxLo, pxHi);
+                        SInt32 pxStart = std::max<SInt32>(0, static_cast<SInt32>(std::ceil(pxLo)));
+                        SInt32 pxEnd   = std::min<SInt32>(dstW, static_cast<SInt32>(std::ceil(pxHi)));
 
                         double ox = rowOx + pxStart * stepXOx;
                         double oy = rowOy + pxStart * stepXOy;
@@ -1381,34 +1358,16 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                             SInt32 syi = static_cast<SInt32>(std::floor(oy)) - r.top;
                             if (sxi >= 0 && sxi < srcW && syi >= 0 && syi < srcH) {
                                 size_t si = static_cast<size_t>(syi) * srcW + sxi;
-                                // TEMP: ink[] skip disabled to test whether it's
-                                // the source of the reported white-patch
-                                // corruption (round-trip quantization at 16-bit
-                                // depth could make some real ink pixels compare
-                                // equal to background and get wrongly skipped).
-                                short dh = static_cast<short>(minX+px), dv = static_cast<short>(minY+py);
-                                if (useFast) fastW.Set(dh, dv, glyph[si]);
-                                else         SetCPixel(dh, dv, &glyph[si]);
+                                if (ink[si]) {
+                                    short dh = static_cast<short>(minX+px), dv = static_cast<short>(minY+py);
+                                    if (useFast) fastW.Set(dh, dv, glyph[si]);
+                                    else         SetCPixel(dh, dv, &glyph[si]);
+                                }
                             }
                             ox += stepXOx; oy += stepXOy;
                         }
                         rowOx += stepYOx; rowOy += stepYOy;
                     }
-
-                    // TEMP DIAGNOSTIC (remove once confirmed): small dot
-                    // above the destination AABB — blue if this repaint was
-                    // a cache HIT (reused entry.pixels/ink as-is), magenta
-                    // if it was a MISS (recaptured this frame). The orange
-                    // fallback marker proved the corruption isn't the
-                    // upright-fallback path; this narrows further — if the
-                    // click-triggered corrupted redraw shows magenta, the
-                    // cache is unexpectedly missing/recapturing on a redraw
-                    // where nothing about the text should have changed.
-                    RGBColor cacheDbg = wasCacheHit ? RGBColor{0,0,0xFFFF} : RGBColor{0xFFFF,0,0xFFFF};
-                    RGBForeColor(&cacheDbg);
-                    Rect cacheDbgR = { static_cast<short>(minY-14), minX,
-                                       static_cast<short>(minY-10), static_cast<short>(minX+4) };
-                    PaintRect(&cacheDbgR);
 
                     didPixelRotate = true;
                 }
@@ -1428,19 +1387,6 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                 }
                 setTextDrawState();
                 drawLines(rr);
-
-                // TEMP DIAGNOSTIC (remove once confirmed): unmistakable
-                // orange frame around rr whenever a ROTATED text shape hits
-                // the upright fallback — tells us whether the reported
-                // corruption is this branch firing unexpectedly (versus a
-                // bug inside the successful pixel-rotate path itself).
-                if (anyRotation) {
-                    RGBColor orange = {0xFFFF, 0x8800, 0};
-                    RGBForeColor(&orange);
-                    PenSize(2, 2);
-                    FrameRect(&rr);
-                    PenSize(1, 1);
-                }
             }
             TextFace(0); TextSize(12); TextFont(0);
             RGBColor wh = {0xFFFF,0xFFFF,0xFFFF}; RGBBackColor(&wh);
@@ -1743,7 +1689,6 @@ static RotChain AncestorChainFor(Frame* startFrame);
 
 static void DrawSelectionHighlight() {
     RGBColor selBlue = { 0x1177, 0x55AA, 0xFFFF };
-    RGBColor white   = { 0xFFFF, 0xFFFF, 0xFFFF };
     static const short kHW = 4;
 
     // Axis-aligned border + square handles at 8 positions
@@ -1757,7 +1702,11 @@ static void DrawSelectionHighlight() {
                 static_cast<short>(hy[i]-kHW), static_cast<short>(hx[i]-kHW),
                 static_cast<short>(hy[i]+kHW), static_cast<short>(hx[i]+kHW)
             };
-            RGBForeColor(&white); PaintRect(&h);
+            // Hollow outline only, no solid fill: at small font sizes an
+            // 8x8 filled handle square can fully blot out 1-2 characters
+            // of content sitting underneath it (reported as text getting
+            // "erased" near a handle). An outline still clearly marks the
+            // handle position without hiding whatever's under it.
             RGBForeColor(&selBlue); FrameRect(&h);
         }
     };
@@ -1816,7 +1765,7 @@ static void DrawSelectionHighlight() {
                 static_cast<short>(hpy[i]-kHW), static_cast<short>(hpx[i]-kHW),
                 static_cast<short>(hpy[i]+kHW), static_cast<short>(hpx[i]+kHW)
             };
-            RGBForeColor(&white); PaintRect(&h);
+            // Hollow outline only — see the matching comment in drawHandles above.
             RGBForeColor(&selBlue); FrameRect(&h);
         }
     };
