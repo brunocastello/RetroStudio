@@ -3554,6 +3554,8 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
 
     SetPortWindowPort(win);
     Rect editR = CanvasRect(ts->bounds);
+    Rect portRect;
+    GetWindowPortBounds(win, &portRect);
 
     short fontID = 0;
     if (!ts->fontFamily.empty()) {
@@ -3670,7 +3672,13 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
         RGBBackColor(&white); RGBForeColor(&black);
         EraseRect(&editR);
         applyFont();
+        // Clip to editR: content that wraps/overflows past the box's
+        // bottom (or right, for a fixed-width box) would otherwise be
+        // drawn by TE anyway, unconstrained, spilling stray text outside
+        // the box instead of being clipped like a normal text box.
+        { Rect cr = editR; ClipRect(&cr); }
         TEUpdate(&editR, teh);
+        { Rect cr = portRect; ClipRect(&cr); }
         RGBForeColor(&blue); FrameRect(&editR);
     };
 
@@ -3701,7 +3709,9 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
         RGBBackColor(&white); RGBForeColor(&black);
         EraseRect(&editR);
         applyFont();
+        { Rect cr = editR; ClipRect(&cr); }
         TEUpdate(&editR, teh);
+        { Rect cr = portRect; ClipRect(&cr); }
 
         for (short y = 0; y < editSrcH; ++y)
             for (short x = 0; x < editSrcW; ++x)
