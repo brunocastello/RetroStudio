@@ -3937,6 +3937,25 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
                     } else {
                         SetPortWindowPort(win); applyFont();
                         TEKey(c, teh);
+                        // A rotated redraw isn't cheap (full canvas redraw plus
+                        // a per-pixel capture/rotate over the box's current
+                        // area, which grows with the text), and gets slower
+                        // the longer the text gets. If a fast typist outpaces
+                        // it, the OS event queue can fill up and silently drop
+                        // keystrokes before they ever reach TEKey -- text
+                        // appears to stop growing partway through a sentence,
+                        // worse the longer it gets, never at 0 degrees (where
+                        // redraw stays cheap). Drain every already-queued key
+                        // event into TE's buffer first, then redraw once for
+                        // the final state, so typing speed can never outrun
+                        // rendering enough to lose a character.
+                        EventRecord more;
+                        while (EventAvail(keyDownMask | autoKeyMask, &more)) {
+                            if (!GetNextEvent(keyDownMask | autoKeyMask, &more)) break;
+                            char c2 = static_cast<char>(more.message & charCodeMask);
+                            if (c2 == 0x03 || c2 == 0x1B) { confirmed = true; done = true; break; }
+                            TEKey(c2, teh);
+                        }
                         redraw();
                     }
                     break;
