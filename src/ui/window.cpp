@@ -1945,17 +1945,27 @@ static void UpdateTextShapeBounds(TextShape& ts) {
 
 static void UpdateTextShapeBoundsInFrame(Frame& f) {
     for (auto& s : f.children)
-        if (s->GetType() == Shape::kText)
+        if (s->GetType() == Shape::kText && s.get() != static_cast<Shape*>(gEditingTextShape))
             UpdateTextShapeBounds(static_cast<TextShape&>(*s));
     for (auto& cf : f.childFrames)
         UpdateTextShapeBoundsInFrame(*cf);
 }
 
+// Skips whichever shape EditTextInPlace currently has open, same as
+// DrawShape already skips drawing it: ts->text isn't updated with the live
+// typed content until the edit session commits, so recomputing bounds from
+// the stale ts->text mid-edit is meaningless at best. Worse, if a parent
+// frame uses Auto Layout, RunDocumentLayout (called right after this, every
+// single redraw during editing) can then reflow/reposition the shape using
+// that stale size -- observed as the shape's on-screen position drifting or
+// even jumping outside its frame while actively typing. Freezing bounds for
+// the duration of editing keeps ts->bounds (and therefore layout) stable
+// until the real, final size is known at commit.
 static void UpdateAllTextShapeBounds(Document* doc) {
     if (!doc || !gMainWindow) return;
     SetPortWindowPort(gMainWindow);
     for (auto& s : doc->rootShapes)
-        if (s->GetType() == Shape::kText)
+        if (s->GetType() == Shape::kText && s.get() != static_cast<Shape*>(gEditingTextShape))
             UpdateTextShapeBounds(static_cast<TextShape&>(*s));
     for (auto& f : doc->frames)
         UpdateTextShapeBoundsInFrame(*f);
@@ -3627,13 +3637,26 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
     short lineH = static_cast<short>(SInt32(scaledSize) * ts->lineHeight / 100);
     if (lineH < 1) lineH = scaledSize;
 
-    // Rebuilds `full` (the rotation chain, pivoted on editR's current
-    // center) and the derived src dimensions/cap check -- called once up
-    // front and again after every AutoWidth remeasure below, since editR
-    // itself (and therefore its center) can change while typing.
+    // Rotation pivot is fixed at editR's ORIGINAL center for the whole
+    // editing session, computed once here and never touched again. If it
+    // instead tracked editR's center live (which is what the settled/
+    // static renderer does, recentering on whatever the current bounds
+    // are), AutoWidth growth -- which extends editR's right/bottom edge
+    // while keeping left/top fixed -- would continuously shift the center,
+    // and rotating around a moving pivot makes the whole box visibly swing
+    // around as you type instead of just growing outward from a stable
+    // anchor. (The settled view still recenters on commit, matching
+    // existing behavior elsewhere in the app; this only stabilizes the
+    // live-typing view, which previously had no such view at all.)
+    double pivotX = (editR.left + editR.right) * 0.5, pivotY = (editR.top + editR.bottom) * 0.5;
+
+    // Rebuilds `full` (rotation chain, pivoted at the FIXED point above)
+    // and the derived src dimensions/cap check -- called once up front and
+    // again after every AutoWidth remeasure below, since editR's size (but
+    // not the pivot) changes while typing.
     auto rebuildFull = [&]() {
         full.clear();
-        if (ownRot != 0.0) full.push_back({ownRot, (editR.left+editR.right)*0.5, (editR.top+editR.bottom)*0.5});
+        if (ownRot != 0.0) full.push_back({ownRot, pivotX, pivotY});
         full.insert(full.end(), ambient.begin(), ambient.end());
         editSrcW = static_cast<short>(editR.right - editR.left);
         editSrcH = static_cast<short>(editR.bottom - editR.top);
