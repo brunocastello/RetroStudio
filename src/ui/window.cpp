@@ -3397,6 +3397,38 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         if (isMultiDrag && hitFrame && hitFrame->layoutMode != LayoutMode::None)
             gIsLayoutMultiDrag = true;
 
+        // Single-shape move: same dirty-rect approach HandleResizeDrag/
+        // HandleRotateDrag already use, so this loop stops doing a full,
+        // unclipped whole-window redraw on every mouse-move. That matters
+        // more than it used to now that a rotated text box wider than the
+        // window does real per-frame capture/paint work (see the kText
+        // case's needR slice) -- without this, a slow redraw falls behind
+        // the physical mouse, and whatever frame last finished rendering
+        // is what's left on screen, looking like newly-exposed content
+        // stays hidden until you keep dragging.
+        bool singleShapeMove = !isMultiDrag && gSelectedFrames.empty() && hitShape != nullptr;
+        auto reachFor = [&](Shape* s) -> Rect {
+            RotChain amb = AncestorChainFor(LocateShapeParent(s));
+            Rect rr = CanvasRect(s->bounds);
+            double cx = (rr.left+rr.right)*0.5, cy = (rr.top+rr.bottom)*0.5;
+            double hw = (rr.right-rr.left)*0.5, hh = (rr.bottom-rr.top)*0.5;
+            double rad = static_cast<double>(s->rotation) * 3.14159265358979323846 / 180.0;
+            double ca = std::cos(rad), sa = std::sin(rad);
+            double lx[4] = {-hw, hw, hw, -hw}, ly[4] = {-hh, -hh, hh, hh};
+            short minX=32767, maxX=-32768, minY=32767, maxY=-32768;
+            for (int i = 0; i < 4; ++i) {
+                double ox = cx + lx[i]*ca - ly[i]*sa, oy = cy + lx[i]*sa + ly[i]*ca;
+                double fx, fy; ApplyRotChain(amb, ox, oy, fx, fy);
+                Point p = ToQDPoint(fx, fy);
+                minX = std::min(minX, p.h); maxX = std::max(maxX, p.h);
+                minY = std::min(minY, p.v); maxY = std::max(maxY, p.v);
+            }
+            short pad = 60;
+            return Rect{ static_cast<short>(minY-pad), static_cast<short>(minX-pad),
+                         static_cast<short>(maxY+pad), static_cast<short>(maxX+pad) };
+        };
+        Rect prevReach = singleShapeMove ? reachFor(hitShape) : Rect{0,0,0,0};
+
         while (Button()) {
             GetMouse(&currPt);
             if (currPt.h != prevPt.h || currPt.v != prevPt.v) {
@@ -3442,7 +3474,17 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                     MoveFrameTree(hitFrame, dx, dy);
                 }
 
-                DrawWindowContent(win);
+                if (singleShapeMove) {
+                    Rect currReach = reachFor(hitShape);
+                    Rect dirty = { std::min(prevReach.top, currReach.top),
+                                    std::min(prevReach.left, currReach.left),
+                                    std::max(prevReach.bottom, currReach.bottom),
+                                    std::max(prevReach.right, currReach.right) };
+                    DrawWindowContent(win, &dirty);
+                    prevReach = currReach;
+                } else {
+                    DrawWindowContent(win);
+                }
                 prevPt = currPt;
             }
         }
