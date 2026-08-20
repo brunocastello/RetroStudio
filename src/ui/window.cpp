@@ -1027,7 +1027,16 @@ static FastPixelWriter GetFastPixelWriter() {
 static Rect CurrentPortBounds() {
     GrafPtr gp;
     GetPort(&gp);
-    return reinterpret_cast<CGrafPort*>(gp)->portRect;
+    // GetWindowPortBounds is the same proven call used everywhere else in
+    // this file (20+ call sites) -- reading portRect directly off the raw
+    // CGrafPort struct instead relies on an unverified assumption about
+    // this toolchain's exact struct layout, and a wrong offset there would
+    // silently produce a bogus (likely too-small) rect: every rotated-text
+    // destination would get clipped far too early, well inside the visible
+    // canvas, as a hard straight-line cut through otherwise-rotated content.
+    Rect r;
+    GetWindowPortBounds(reinterpret_cast<WindowRef>(gp), &r);
+    return r;
 }
 
 // Paints a captured, unrotated `srcW`x`srcH` pixel block (read from
