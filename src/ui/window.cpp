@@ -1344,18 +1344,24 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
             short srcH = static_cast<short>(r.bottom - r.top);
             bool didPixelRotate = false;
 
-            // A box wider or taller than the window itself can never be
-            // shifted to fit entirely inside it for the staging draw (see
-            // the stageR shift below) -- no position exists where the whole
-            // thing is on real screen pixels, so some part of it always
-            // reads/writes undefined content. Fall back to the upright
-            // renderer in that case.
+            // r (the shape's own box) can be far wider/taller than the
+            // window (a long AutoWidth sentence) -- matching Figma means
+            // that content simply extends past the visible viewport, not
+            // that it falls back to upright once it no longer fits. A box
+            // that fits inside the window uses the fast, cached, rotation-
+            // ANGLE-INDEPENDENT technique below (the whole point of the
+            // cache: a live rotate drag changes only the angle, so it's a
+            // cache hit every frame). A box wider than the window instead
+            // only ever captures the slice that maps into the visible,
+            // window-clipped destination -- which depends on the rotation
+            // angle, so it can't be cached the same way and is handled in
+            // its own uncached branch further below.
             Rect fitCheckBounds = CurrentPortBounds();
             bool fitsWindow = srcW <= (fitCheckBounds.right - fitCheckBounds.left) &&
                                srcH <= (fitCheckBounds.bottom - fitCheckBounds.top);
 
-            if (anyRotation && !str.empty() && srcW > 0 && srcH > 0 && fitsWindow &&
-                (SInt32)srcW * (SInt32)srcH <= 150000) {
+            if (anyRotation && !str.empty() && srcW > 0 && srcH > 0 &&
+                (fitsWindow ? ((SInt32)srcW * (SInt32)srcH <= 150000) : true)) {
                 Point c0, c1, c2, c3;
                 { double fx,fy;
                   ApplyRotChain(full, r.left,  r.top,    fx,fy); c0 = ToQDPoint(fx,fy);
@@ -1377,7 +1383,119 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
 
                 SInt32 dstW = (SInt32)maxX - minX + 1, dstH = (SInt32)maxY - minY + 1;
 
-                if (dstW > 0 && dstH > 0 && dstW * dstH <= 300000) {
+                // Uncached path for a box wider/taller than the window:
+                // inverse-map the (already window-clipped) destination
+                // corners back into r's own coordinate space to find
+                // exactly which slice of the box is actually visible, then
+                // stage/capture just that -- same technique as the
+                // live-edit overlay's needR. This is angle-dependent (so
+                // not cached) but the slice is always bounded to roughly
+                // the window's own size, so it's cheap regardless of how
+                // wide r itself has grown.
+                std::vector<RGBColor> uncachedGlyph;
+                std::vector<bool> uncachedInk;
+                Rect paintSrcRect = r;
+                short paintSrcW = srcW, paintSrcH = srcH;
+                const std::vector<RGBColor>* glyphPtr = nullptr;
+                const std::vector<bool>* inkPtr = nullptr;
+                FastPixelWriter fastW;
+                bool useFast = false;
+
+                if (dstW > 0 && dstH > 0 && dstW * dstH <= 300000 && !fitsWindow) {
+                    double nx0,ny0, nx1,ny1, nx2,ny2, nx3,ny3;
+                    ApplyRotChainInverse(full, minX, minY, nx0, ny0);
+                    ApplyRotChainInverse(full, maxX, minY, nx1, ny1);
+                    ApplyRotChainInverse(full, maxX, maxY, nx2, ny2);
+                    ApplyRotChainInverse(full, minX, maxY, nx3, ny3);
+                    double needMinXd = std::min(std::min(nx0,nx1), std::min(nx2,nx3));
+                    double needMaxXd = std::max(std::max(nx0,nx1), std::max(nx2,nx3));
+                    double needMinYd = std::min(std::min(ny0,ny1), std::min(ny2,ny3));
+                    double needMaxYd = std::max(std::max(ny0,ny1), std::max(ny2,ny3));
+
+                    Rect needR;
+                    needR.left   = std::max(r.left,   static_cast<short>(std::floor(needMinXd) - 1));
+                    needR.right  = std::min(r.right,  static_cast<short>(std::ceil(needMaxXd)  + 1));
+                    needR.top    = std::max(r.top,    static_cast<short>(std::floor(needMinYd) - 1));
+                    needR.bottom = std::min(r.bottom, static_cast<short>(std::ceil(needMaxYd)  + 1));
+                    short needSrcW = static_cast<short>(needR.right - needR.left);
+                    short needSrcH = static_cast<short>(needR.bottom - needR.top);
+
+                    if (needR.right > needR.left && needR.bottom > needR.top &&
+                        (SInt32)needSrcW * needSrcH <= 500000) {
+                        fastW = GetFastPixelWriter();
+                        useFast = fastW.Ready();
+                        Rect stageR = needR;
+                        short stageShiftX = 0, stageShiftY = 0;
+                        if (stageR.right > winBounds.right) stageShiftX = static_cast<short>(winBounds.right - stageR.right);
+                        if (static_cast<short>(stageR.left + stageShiftX) < winBounds.left)
+                            stageShiftX = static_cast<short>(winBounds.left - stageR.left);
+                        if (stageR.bottom > winBounds.bottom) stageShiftY = static_cast<short>(winBounds.bottom - stageR.bottom);
+                        if (static_cast<short>(stageR.top + stageShiftY) < winBounds.top)
+                            stageShiftY = static_cast<short>(winBounds.top - stageR.top);
+                        stageR.left   = static_cast<short>(stageR.left   + stageShiftX);
+                        stageR.right  = static_cast<short>(stageR.right  + stageShiftX);
+                        stageR.top    = static_cast<short>(stageR.top    + stageShiftY);
+                        stageR.bottom = static_cast<short>(stageR.bottom + stageShiftY);
+
+                        auto getPxU = [&](short px, short py) -> RGBColor {
+                            if (useFast) return fastW.Get(px, py);
+                            RGBColor c; GetCPixel(px, py, &c); return c;
+                        };
+                        auto setPxU = [&](short px, short py, const RGBColor& c) {
+                            if (useFast) fastW.Set(px, py, c);
+                            else         SetCPixel(px, py, const_cast<RGBColor*>(&c));
+                        };
+
+                        std::vector<RGBColor> under(static_cast<size_t>(needSrcW) * needSrcH);
+                        for (short y = 0; y < needSrcH; ++y)
+                            for (short x = 0; x < needSrcW; ++x)
+                                under[static_cast<size_t>(y)*needSrcW + x] =
+                                    getPxU(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y));
+
+                        RgnHandle savedClipU = NewRgn();
+                        GetClip(savedClipU);
+                        { Rect cr = stageR; ClipRect(&cr); }
+                        setTextDrawState();
+                        // drawLines aligns/positions text using the rect's
+                        // own left/right, which must stay r's real extent
+                        // (not the narrower stageR) or a centered/right-
+                        // aligned line would be drawn in the wrong spot;
+                        // the clip above still confines the actual pixels
+                        // touched to stageR.
+                        Rect alignR = r;
+                        alignR.left  = static_cast<short>(r.left  + stageShiftX);
+                        alignR.right = static_cast<short>(r.right + stageShiftX);
+                        alignR.top   = stageR.top; alignR.bottom = stageR.bottom;
+                        drawLines(alignR);
+                        SetClip(savedClipU);
+                        DisposeRgn(savedClipU);
+
+                        uncachedGlyph.resize(static_cast<size_t>(needSrcW) * needSrcH);
+                        for (short y = 0; y < needSrcH; ++y)
+                            for (short x = 0; x < needSrcW; ++x)
+                                uncachedGlyph[static_cast<size_t>(y)*needSrcW + x] =
+                                    getPxU(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y));
+
+                        for (short y = 0; y < needSrcH; ++y)
+                            for (short x = 0; x < needSrcW; ++x)
+                                setPxU(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y),
+                                       under[static_cast<size_t>(y)*needSrcW + x]);
+
+                        uncachedInk.resize(static_cast<size_t>(needSrcW) * needSrcH);
+                        for (size_t i = 0; i < uncachedInk.size(); ++i) {
+                            uncachedInk[i] = uncachedGlyph[i].red   != under[i].red ||
+                                              uncachedGlyph[i].green != under[i].green ||
+                                              uncachedGlyph[i].blue  != under[i].blue;
+                        }
+
+                        paintSrcRect = needR;
+                        paintSrcW = needSrcW; paintSrcH = needSrcH;
+                        glyphPtr = &uncachedGlyph;
+                        inkPtr = &uncachedInk;
+                    }
+                }
+
+                if (fitsWindow && dstW > 0 && dstH > 0 && dstW * dstH <= 300000) {
                     TextGlyphCacheKey key;
                     key.text = str; key.fontID = fontID; key.size = scaledSize;
                     key.face = static_cast<short>(t.fontFace | (shape.hasStroke ? 8 : 0));
@@ -1387,8 +1505,8 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                     key.w = srcW; key.h = srcH;
 
                     TextGlyphCacheEntry& entry = gTextGlyphCache[&t];
-                    FastPixelWriter fastW = GetFastPixelWriter();
-                    bool useFast = fastW.Ready();
+                    fastW = GetFastPixelWriter();
+                    useFast = fastW.Ready();
                     bool wasCacheHit = (entry.key == key) && entry.pixels.size() == static_cast<size_t>(srcW) * srcH;
                     if (!wasCacheHit) {
                         // The capture below stages its draw at a real screen
@@ -1474,8 +1592,16 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                         entry.ink    = std::move(ink);
                     }
 
-                    std::vector<RGBColor>& glyph = entry.pixels;
-                    std::vector<bool>&      ink   = entry.ink;
+                    glyphPtr = &entry.pixels;
+                    inkPtr   = &entry.ink;
+                }
+
+                // Shared repaint: paints whichever source (the cached full
+                // box, or the uncached window-clipped slice) either branch
+                // above produced into the rotated destination.
+                if (glyphPtr && inkPtr && dstW > 0 && dstH > 0) {
+                    const std::vector<RGBColor>& glyph = *glyphPtr;
+                    const std::vector<bool>&     ink   = *inkPtr;
 
                     // The inverse mapping from destination pixel to source
                     // pixel is a fixed affine transform (rotation + translation,
@@ -1513,22 +1639,22 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                     double rowOx = baseOx, rowOy = baseOy;
                     for (SInt32 py = 0; py < dstH; ++py) {
                         double pxLo = 0.0, pxHi = static_cast<double>(dstW);
-                        ClipAxis(rowOx, stepXOx, r.left, r.right, pxLo, pxHi);
-                        ClipAxis(rowOy, stepXOy, r.top,  r.bottom, pxLo, pxHi);
+                        ClipAxis(rowOx, stepXOx, paintSrcRect.left, paintSrcRect.right, pxLo, pxHi);
+                        ClipAxis(rowOy, stepXOy, paintSrcRect.top,  paintSrcRect.bottom, pxLo, pxHi);
                         SInt32 pxStart = std::max<SInt32>(0, static_cast<SInt32>(std::ceil(pxLo)));
                         SInt32 pxEnd   = std::min<SInt32>(dstW, static_cast<SInt32>(std::ceil(pxHi)));
 
                         double ox = rowOx + pxStart * stepXOx;
                         double oy = rowOy + pxStart * stepXOy;
                         for (SInt32 px = pxStart; px < pxEnd; ++px) {
-                            SInt32 sxi = static_cast<SInt32>(std::floor(ox)) - r.left;
-                            SInt32 syi = static_cast<SInt32>(std::floor(oy)) - r.top;
-                            if (sxi >= 0 && sxi < srcW && syi >= 0 && syi < srcH) {
-                                size_t si = static_cast<size_t>(syi) * srcW + sxi;
+                            SInt32 sxi = static_cast<SInt32>(std::floor(ox)) - paintSrcRect.left;
+                            SInt32 syi = static_cast<SInt32>(std::floor(oy)) - paintSrcRect.top;
+                            if (sxi >= 0 && sxi < paintSrcW && syi >= 0 && syi < paintSrcH) {
+                                size_t si = static_cast<size_t>(syi) * paintSrcW + sxi;
                                 if (ink[si]) {
                                     short dh = static_cast<short>(minX+px), dv = static_cast<short>(minY+py);
                                     if (useFast) fastW.Set(dh, dv, glyph[si]);
-                                    else         SetCPixel(dh, dv, &glyph[si]);
+                                    else         SetCPixel(dh, dv, const_cast<RGBColor*>(&glyph[si]));
                                 }
                             }
                             ox += stepXOx; oy += stepXOy;
@@ -3783,17 +3909,13 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
         full.insert(full.end(), ambient.begin(), ambient.end());
         editSrcW = static_cast<short>(editR.right - editR.left);
         editSrcH = static_cast<short>(editR.bottom - editR.top);
-        // A box wider or taller than the window itself can never be shifted
-        // to fit entirely inside it for the staging draw (see the stageR
-        // shift below) -- no position exists where the whole thing is on
-        // real screen pixels, so some part of it always reads/writes
-        // undefined content. Fall back to the plain upright renderer in
-        // that case, same as the existing "too large to cheaply
-        // pixel-rotate" fallback.
-        bool fitsWindow = editSrcW <= (portRect.right - portRect.left) &&
-                           editSrcH <= (portRect.bottom - portRect.top);
-        canRotateEdit = anyRot && editSrcW > 0 && editSrcH > 0 && fitsWindow &&
-                        (SInt32)editSrcW * editSrcH <= 150000;
+        // No area/window-fit cap here anymore: editR itself can be far
+        // wider than the window (a long AutoWidth sentence), but only the
+        // portion that actually maps into the visible, on-screen part of
+        // the rotated destination ever needs to be captured -- see the
+        // needR computation in redraw() below. That's what's checked for
+        // size, not the full box.
+        canRotateEdit = anyRot && editSrcW > 0 && editSrcH > 0;
     };
     rebuildFull();
 
@@ -3902,9 +4024,55 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
         resyncPositionFromModel(); // pick up any position change layout just made
         if (!canRotateEdit) { redrawStraight(); return; }
 
+        // editR can be far wider/taller than the window itself (a long
+        // AutoWidth sentence) -- matching Figma means that content simply
+        // extends past the visible viewport, not that it stops rendering
+        // rotated once it no longer fits. So don't try to capture the
+        // whole box: compute the full rotated destination, clip it to the
+        // window (only this part is ever going to be seen), then
+        // inverse-map that clipped rect back into editR's own coordinate
+        // space to find exactly which (much smaller) slice of the box is
+        // actually needed. That slice is what gets staged/captured -- it's
+        // bounded by roughly the window's own size regardless of how wide
+        // editR has grown, so it always fits for staging.
+        Point fc[4]; double ffx, ffy;
+        ApplyRotChain(full, editR.left,  editR.top,    ffx,ffy); fc[0] = ToQDPoint(ffx,ffy);
+        ApplyRotChain(full, editR.right, editR.top,    ffx,ffy); fc[1] = ToQDPoint(ffx,ffy);
+        ApplyRotChain(full, editR.right, editR.bottom, ffx,ffy); fc[2] = ToQDPoint(ffx,ffy);
+        ApplyRotChain(full, editR.left,  editR.bottom, ffx,ffy); fc[3] = ToQDPoint(ffx,ffy);
+        short fMinX = std::min(std::min(fc[0].h,fc[1].h), std::min(fc[2].h,fc[3].h));
+        short fMaxX = std::max(std::max(fc[0].h,fc[1].h), std::max(fc[2].h,fc[3].h));
+        short fMinY = std::min(std::min(fc[0].v,fc[1].v), std::min(fc[2].v,fc[3].v));
+        short fMaxY = std::max(std::max(fc[0].v,fc[1].v), std::max(fc[2].v,fc[3].v));
+        short visMinX = std::max(fMinX, portRect.left);
+        short visMaxX = std::min(fMaxX, static_cast<short>(portRect.right - 1));
+        short visMinY = std::max(fMinY, portRect.top);
+        short visMaxY = std::min(fMaxY, static_cast<short>(portRect.bottom - 1));
+        if (visMinX > visMaxX || visMinY > visMaxY) return; // fully off-window: nothing to draw
+
+        double isx0,isy0, isx1,isy1, isx2,isy2, isx3,isy3;
+        ApplyRotChainInverse(full, visMinX, visMinY, isx0, isy0);
+        ApplyRotChainInverse(full, visMaxX, visMinY, isx1, isy1);
+        ApplyRotChainInverse(full, visMaxX, visMaxY, isx2, isy2);
+        ApplyRotChainInverse(full, visMinX, visMaxY, isx3, isy3);
+        double needMinXd = std::min(std::min(isx0,isx1), std::min(isx2,isx3));
+        double needMaxXd = std::max(std::max(isx0,isx1), std::max(isx2,isx3));
+        double needMinYd = std::min(std::min(isy0,isy1), std::min(isy2,isy3));
+        double needMaxYd = std::max(std::max(isy0,isy1), std::max(isy2,isy3));
+
+        Rect needR;
+        needR.left   = std::max(editR.left,   static_cast<short>(std::floor(needMinXd) - 1));
+        needR.right  = std::min(editR.right,  static_cast<short>(std::ceil(needMaxXd)  + 1));
+        needR.top    = std::max(editR.top,    static_cast<short>(std::floor(needMinYd) - 1));
+        needR.bottom = std::min(editR.bottom, static_cast<short>(std::ceil(needMaxYd)  + 1));
+        if (needR.right <= needR.left || needR.bottom <= needR.top) return;
+        short needSrcW = static_cast<short>(needR.right - needR.left);
+        short needSrcH = static_cast<short>(needR.bottom - needR.top);
+        if ((SInt32)needSrcW * needSrcH > 500000) return; // pathological angle/size guard
+
         FastPixelWriter fastW = GetFastPixelWriter();
         bool useFast = fastW.Ready();
-        size_t n = static_cast<size_t>(editSrcW) * editSrcH;
+        size_t n = static_cast<size_t>(needSrcW) * needSrcH;
         std::vector<RGBColor> under(n), content(n);
         auto getPx = [&](short px, short py) -> RGBColor {
             if (useFast) return fastW.Get(px, py);
@@ -3915,26 +4083,11 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
             else         SetCPixel(px, py, const_cast<RGBColor*>(&c));
         };
 
-        // The staging draw below happens at a real screen location, read
-        // back with GetCPixel/FastPixelWriter afterward -- but editR can
-        // grow wider/taller than the window itself as AutoWidth text grows
-        // (expected for a long sentence), and any part of that staging
-        // draw landing outside the window reads/writes undefined pixels,
-        // which then get baked into the rotated paint as corruption right
-        // at the point the box crosses the window edge. That's what "cuts
-        // exactly where it would disappear at 0 degrees" actually was --
-        // the window edge, evaluated in unrotated/local terms.
-        //
-        // Fix: shift (never resize) a copy of editR so it fits entirely
-        // inside portRect, and stage the draw/capture there instead.
-        // editR itself -- and everything derived from it for the rotation
-        // transform (full/rebuildFull, the border, PaintRotatedPixelBlock's
-        // srcRect) -- stays at its real logical position throughout; only
-        // the *captured pixel content* needs to be correct, and that's
-        // indexed relative to the block's own origin, not any actual
-        // screen coordinate, so painting it via editR's true geometry
-        // after capturing it from a shifted location is still correct.
-        Rect stageR = editR;
+        // Shift (never resize) a staging copy of needR so it fits inside
+        // the window -- needR is already bounded to roughly the window's
+        // own size by construction above, so this always succeeds, unlike
+        // trying to shift the full (possibly much wider) editR.
+        Rect stageR = needR;
         short stageShiftX = 0, stageShiftY = 0;
         if (stageR.right > portRect.right) stageShiftX = static_cast<short>(portRect.right - stageR.right);
         if (static_cast<short>(stageR.left + stageShiftX) < portRect.left)
@@ -3947,19 +4100,25 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
         stageR.top    = static_cast<short>(stageR.top    + stageShiftY);
         stageR.bottom = static_cast<short>(stageR.bottom + stageShiftY);
 
+        // Temporarily repoint TE at the staging location: destRect shifts
+        // by the same amount as everything else (preserving the text's
+        // real flow/wrap geometry, just translated), and viewRect becomes
+        // the staging rect itself, so TEUpdate only draws/erases (and so
+        // only what we read back covers) the needed slice -- not the
+        // whole, possibly much wider, box.
         Rect savedViewRect = (*teh)->viewRect;
         Rect savedDestRect = (*teh)->destRect;
-        if (stageShiftX != 0 || stageShiftY != 0) {
-            (*teh)->viewRect = stageR;
-            (*teh)->destRect.left   = static_cast<short>(savedDestRect.left   + stageShiftX);
-            (*teh)->destRect.right  = static_cast<short>(savedDestRect.right  + stageShiftX);
-            (*teh)->destRect.top    = static_cast<short>(savedDestRect.top    + stageShiftY);
-            (*teh)->destRect.bottom = static_cast<short>(savedDestRect.bottom + stageShiftY);
-        }
+        short teShiftX = static_cast<short>(stageR.left - needR.left);
+        short teShiftY = static_cast<short>(stageR.top  - needR.top);
+        (*teh)->viewRect = stageR;
+        (*teh)->destRect.left   = static_cast<short>(savedDestRect.left   + teShiftX);
+        (*teh)->destRect.right  = static_cast<short>(savedDestRect.right  + teShiftX);
+        (*teh)->destRect.top    = static_cast<short>(savedDestRect.top    + teShiftY);
+        (*teh)->destRect.bottom = static_cast<short>(savedDestRect.bottom + teShiftY);
 
-        for (short y = 0; y < editSrcH; ++y)
-            for (short x = 0; x < editSrcW; ++x)
-                under[static_cast<size_t>(y)*editSrcW + x] =
+        for (short y = 0; y < needSrcH; ++y)
+            for (short x = 0; x < needSrcW; ++x)
+                under[static_cast<size_t>(y)*needSrcW + x] =
                     getPx(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y));
 
         // Erase to a flat color sampled from the real background (the
@@ -3975,7 +4134,7 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
         // same read path cancels out whatever that path does, regardless
         // of depth.
         RGBColor bg = white;
-        if (editSrcW > 0 && editSrcH > 0) bg = under[0];
+        if (needSrcW > 0 && needSrcH > 0) bg = under[0];
         RGBBackColor(&bg); RGBForeColor(&black);
         // See redrawStraight() for why the clip must be reset to the full
         // window before erasing -- otherwise a leftover narrower clip (e.g.
@@ -3991,20 +4150,18 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
         TEUpdate(&stageR, teh);
         { Rect cr = portRect; ClipRect(&cr); }
 
-        for (short y = 0; y < editSrcH; ++y)
-            for (short x = 0; x < editSrcW; ++x)
-                content[static_cast<size_t>(y)*editSrcW + x] =
+        for (short y = 0; y < needSrcH; ++y)
+            for (short x = 0; x < needSrcW; ++x)
+                content[static_cast<size_t>(y)*needSrcW + x] =
                     getPx(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y));
 
-        for (short y = 0; y < editSrcH; ++y)
-            for (short x = 0; x < editSrcW; ++x)
+        for (short y = 0; y < needSrcH; ++y)
+            for (short x = 0; x < needSrcW; ++x)
                 setPx(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y),
-                      under[static_cast<size_t>(y)*editSrcW + x]);
+                      under[static_cast<size_t>(y)*needSrcW + x]);
 
-        if (stageShiftX != 0 || stageShiftY != 0) {
-            (*teh)->viewRect = savedViewRect;
-            (*teh)->destRect = savedDestRect;
-        }
+        (*teh)->viewRect = savedViewRect;
+        (*teh)->destRect = savedDestRect;
 
         std::vector<bool> ink(n);
         for (size_t i = 0; i < n; ++i)
@@ -4013,7 +4170,7 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
                      content[i].blue != bgCaptured.blue;
 
         HideCursor();  // raw pixel writes bypass QuickDraw -- see FastPixelWriter
-        PaintRotatedPixelBlock(content, &ink, editSrcW, editSrcH, editR, full, fastW, useFast);
+        PaintRotatedPixelBlock(content, &ink, needSrcW, needSrcH, needR, full, fastW, useFast);
         ShowCursor();
 
         // Rotated border around the edit area, matching the rotated
@@ -4037,17 +4194,12 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
         // zero visible change, so this reads out the real values instead of
         // guessing a fourth time.
         {
-            short dMinX = std::min(std::min(rc[0].h,rc[1].h), std::min(rc[2].h,rc[3].h));
-            short dMaxX = std::max(std::max(rc[0].h,rc[1].h), std::max(rc[2].h,rc[3].h));
-            short dMinY = std::min(std::min(rc[0].v,rc[1].v), std::min(rc[2].v,rc[3].v));
-            short dMaxY = std::max(std::max(rc[0].v,rc[1].v), std::max(rc[2].v,rc[3].v));
             std::string dbg = "eR " + std::to_string(editR.left) + "," + std::to_string(editR.top) +
                                "-" + std::to_string(editR.right) + "," + std::to_string(editR.bottom) +
-                               "  dst " + std::to_string(dMinX) + "," + std::to_string(dMinY) +
-                               "-" + std::to_string(dMaxX) + "," + std::to_string(dMaxY) +
+                               "  needR " + std::to_string(needR.left) + "," + std::to_string(needR.top) +
+                               "-" + std::to_string(needR.right) + "," + std::to_string(needR.bottom) +
                                "  win " + std::to_string(gActivePortBounds.left) + "," + std::to_string(gActivePortBounds.top) +
                                "-" + std::to_string(gActivePortBounds.right) + "," + std::to_string(gActivePortBounds.bottom) +
-                               "  srcWH " + std::to_string(editSrcW) + "x" + std::to_string(editSrcH) +
                                "  shift " + std::to_string(stageShiftX) + "," + std::to_string(stageShiftY);
             Str255 dbgP; ToPStr(dbg, dbgP);
             RGBColor red = {0xFFFF, 0, 0}; RGBForeColor(&red);
