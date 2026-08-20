@@ -35,6 +35,15 @@ int        gNextTextNum    = 1;
 // DrawShape skips rendering it normally so the live TextEdit overlay shows
 // through instead.
 static TextShape* gEditingTextShape = nullptr;
+// The current document window's local content rect, refreshed at the top of
+// DrawWindowContent and EditTextInPlace -- the only two places that call
+// GetWindowPortBounds with the real, actual WindowRef in hand. Rotated-text
+// clipping reads this instead of re-deriving a WindowRef from GetPort()'s
+// GrafPtr (a cast that assumes a classic-Mac pointer equivalence Carbon
+// doesn't actually guarantee) or reading portRect directly off the raw
+// CGrafPort struct (assumes an unverified struct layout) -- both were tried
+// and both silently produced a wrong-sized rect at least once.
+static Rect gActivePortBounds = {0, 0, 0, 0};
 
 // ---- Cursor management -------------------------------------------------------
 // Helper: compute 8-connected dilation mask from a 16-row bitmap
@@ -1016,27 +1025,17 @@ static FastPixelWriter GetFastPixelWriter() {
     return w;
 }
 
-// The current port's own local content rect. Rotated text destinations are
-// computed purely from the shape's geometry and can swing well outside the
-// window (a wide box rotated near 90 degrees can extend far above its own
-// position) -- neither FastPixelWriter's bounds (the pixmap's own bounds,
-// not necessarily the window's visible content area) nor SetCPixel reliably
-// stop that from landing on the title bar, menu bar, or desktop, so every
-// rotated-text destination pixel must be explicitly clipped to this rect
-// before it's ever written.
+// The current document window's local content rect. Rotated text
+// destinations are computed purely from the shape's geometry and can swing
+// well outside the window (a wide box rotated near 90 degrees can extend
+// far above its own position) -- neither FastPixelWriter's bounds (the
+// pixmap's own bounds, not necessarily the window's visible content area)
+// nor SetCPixel reliably stop that from landing on the title bar, menu bar,
+// or desktop, so every rotated-text destination pixel must be explicitly
+// clipped to this rect before it's ever written. See gActivePortBounds for
+// why this reads a cached value instead of re-deriving it here.
 static Rect CurrentPortBounds() {
-    GrafPtr gp;
-    GetPort(&gp);
-    // GetWindowPortBounds is the same proven call used everywhere else in
-    // this file (20+ call sites) -- reading portRect directly off the raw
-    // CGrafPort struct instead relies on an unverified assumption about
-    // this toolchain's exact struct layout, and a wrong offset there would
-    // silently produce a bogus (likely too-small) rect: every rotated-text
-    // destination would get clipped far too early, well inside the visible
-    // canvas, as a hard straight-line cut through otherwise-rotated content.
-    Rect r;
-    GetWindowPortBounds(reinterpret_cast<WindowRef>(gp), &r);
-    return r;
+    return gActivePortBounds;
 }
 
 // Paints a captured, unrotated `srcW`x`srcH` pixel block (read from
@@ -2102,6 +2101,7 @@ void DrawWindowContent(WindowRef win, const Rect* clipTo) {
     SetPortWindowPort(win);
     Rect portRect;
     GetWindowPortBounds(win, &portRect);
+    gActivePortBounds = portRect;
 
     UpdateAllTextShapeBounds(gDocument);
     RunDocumentLayout(gDocument);
@@ -3657,6 +3657,7 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
     Rect editR = CanvasRect(ts->bounds);
     Rect portRect;
     GetWindowPortBounds(win, &portRect);
+    gActivePortBounds = portRect;
 
     short fontID = 0;
     if (!ts->fontFamily.empty()) {
