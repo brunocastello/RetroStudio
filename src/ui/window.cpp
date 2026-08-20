@@ -979,13 +979,24 @@ struct FastPixelWriter {
         UInt8* row = reinterpret_cast<UInt8*>(base) + static_cast<SInt32>(ly) * rowBytes;
         if (pixelSize == 32) {
             UInt8* p = row + lx * 4;
-            return RGBColor{ static_cast<UInt16>(p[1] << 8), static_cast<UInt16>(p[2] << 8),
-                              static_cast<UInt16>(p[3] << 8) };
+            // Bit-replicate 8 -> 16 bits ((v<<8)|v) so a round-tripped pure
+            // white/black channel comes back as exactly 0xFFFF/0x0000, not
+            // 0xFF00/0x0000 -- callers compare captured pixels against exact
+            // RGBColor constants (e.g. live-edit's white-background ink
+            // check), and a truncated round-trip made every pixel compare
+            // unequal to white, so every pixel looked like "ink".
+            UInt16 r = p[1], g = p[2], b = p[3];
+            return RGBColor{ static_cast<UInt16>((r << 8) | r), static_cast<UInt16>((g << 8) | g),
+                              static_cast<UInt16>((b << 8) | b) };
         }
         UInt16 pixel = *reinterpret_cast<UInt16*>(row + lx * 2);
         UInt16 r5 = (pixel >> 10) & 0x1F, g5 = (pixel >> 5) & 0x1F, b5 = pixel & 0x1F;
-        return RGBColor{ static_cast<UInt16>(r5 << 11), static_cast<UInt16>(g5 << 11),
-                          static_cast<UInt16>(b5 << 11) };
+        // Same bit-replication idea, 5 -> 16 bits: (v<<11)|(v<<6)|(v<<1)|(v>>4)
+        // maps 31 -> exactly 0xFFFF instead of 0xF800.
+        auto expand5 = [](UInt16 v) -> UInt16 {
+            return static_cast<UInt16>((v << 11) | (v << 6) | (v << 1) | (v >> 4));
+        };
+        return RGBColor{ expand5(r5), expand5(g5), expand5(b5) };
     }
 };
 
