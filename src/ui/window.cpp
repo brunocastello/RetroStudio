@@ -3936,6 +3936,34 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
         LineTo(rc[1].h, rc[1].v); LineTo(rc[2].h, rc[2].v);
         LineTo(rc[3].h, rc[3].v); LineTo(rc[0].h, rc[0].v);
         PenSize(1, 1);
+
+        // DIAGNOSTIC (temporary): print the exact numbers driving the clip,
+        // fixed at the window's top-left so it's never itself rotated/cut.
+        // Three straight attempts at "it's the window-bounds clip" produced
+        // zero visible change, so this reads out the real values instead of
+        // guessing a fourth time.
+        {
+            short dMinX = std::min(std::min(rc[0].h,rc[1].h), std::min(rc[2].h,rc[3].h));
+            short dMaxX = std::max(std::max(rc[0].h,rc[1].h), std::max(rc[2].h,rc[3].h));
+            short dMinY = std::min(std::min(rc[0].v,rc[1].v), std::min(rc[2].v,rc[3].v));
+            short dMaxY = std::max(std::max(rc[0].v,rc[1].v), std::max(rc[2].v,rc[3].v));
+            std::string dbg = "eR " + std::to_string(editR.left) + "," + std::to_string(editR.top) +
+                               "-" + std::to_string(editR.right) + "," + std::to_string(editR.bottom) +
+                               "  dst " + std::to_string(dMinX) + "," + std::to_string(dMinY) +
+                               "-" + std::to_string(dMaxX) + "," + std::to_string(dMaxY) +
+                               "  win " + std::to_string(gActivePortBounds.left) + "," + std::to_string(gActivePortBounds.top) +
+                               "-" + std::to_string(gActivePortBounds.right) + "," + std::to_string(gActivePortBounds.bottom) +
+                               "  srcWH " + std::to_string(editSrcW) + "x" + std::to_string(editSrcH);
+            Str255 dbgP; ToPStr(dbg, dbgP);
+            RGBColor red = {0xFFFF, 0, 0}; RGBForeColor(&red);
+            TextFont(0); TextSize(9); TextFace(0);
+            RGBColor bgw = {0xFFFF,0xFFFF,0xFFFF}; RGBBackColor(&bgw);
+            Rect dbgBg = { static_cast<short>(portRect.top+2), static_cast<short>(portRect.left+2),
+                            static_cast<short>(portRect.top+14), static_cast<short>(portRect.left+520) };
+            EraseRect(&dbgBg);
+            MoveTo(static_cast<short>(portRect.left+4), static_cast<short>(portRect.top+12));
+            DrawString(dbgP);
+        }
     };
     redraw();
 
