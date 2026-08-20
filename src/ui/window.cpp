@@ -1238,7 +1238,7 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                     size_t len = (nl == std::string::npos) ? str.size() - pos : nl - pos;
                     if (len > 0) {
                         Str255 pline; pline[0] = 0;
-                        for (size_t ci = 0; ci < len && ci < 63; ++ci) {
+                        for (size_t ci = 0; ci < len && ci < 255; ++ci) {
                             pline[ci+1] = static_cast<unsigned char>(str[pos+ci]); pline[0]++;
                         }
                         // Line width for alignment
@@ -1910,7 +1910,7 @@ static void UpdateTextShapeBounds(TextShape& ts) {
         size_t nl  = str.find('\n', pos);
         size_t len = (nl == std::string::npos) ? str.size() - pos : nl - pos;
         Str255 pl; pl[0] = 0;
-        for (size_t ci = 0; ci < len && ci < 63; ++ci) {
+        for (size_t ci = 0; ci < len && ci < 255; ++ci) {
             pl[ci+1] = static_cast<unsigned char>(str[pos+ci]); pl[0]++;
         }
         short lw;
@@ -2509,6 +2509,20 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                     } else if (widthChanged && ts->textSizing == TextSizing::AutoWidth) {
                         ts->textSizing = TextSizing::AutoHeight;
                     }
+                }
+                // Same idea for a Frame using Auto Layout Hug/Fill sizing:
+                // manually dragging a resize handle always overrides that
+                // axis to Fixed, same as Figma, or the frame just snaps
+                // right back to its hugged size on the very next redraw
+                // (RunDocumentLayout re-derives Hug/Fill dimensions every
+                // frame) and the drag looks like it does nothing.
+                if (gSelectedFrame) {
+                    bool widthChanged  = bL[hi] || bR[hi];
+                    bool heightChanged = bT[hi] || bB[hi];
+                    if (widthChanged  && gSelectedFrame->widthSizing  != SizingMode::Fixed)
+                        gSelectedFrame->widthSizing  = SizingMode::Fixed;
+                    if (heightChanged && gSelectedFrame->heightSizing != SizingMode::Fixed)
+                        gSelectedFrame->heightSizing = SizingMode::Fixed;
                 }
             }
 
@@ -3637,25 +3651,32 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
     short lineH = static_cast<short>(SInt32(scaledSize) * ts->lineHeight / 100);
     if (lineH < 1) lineH = scaledSize;
 
-    // Rotation pivot is fixed at editR's ORIGINAL center for the whole
-    // editing session, computed once here and never touched again. If it
-    // instead tracked editR's center live (which is what the settled/
-    // static renderer does, recentering on whatever the current bounds
-    // are), AutoWidth growth -- which extends editR's right/bottom edge
-    // while keeping left/top fixed -- would continuously shift the center,
-    // and rotating around a moving pivot makes the whole box visibly swing
-    // around as you type instead of just growing outward from a stable
-    // anchor. (The settled view still recenters on commit, matching
-    // existing behavior elsewhere in the app; this only stabilizes the
-    // live-typing view, which previously had no such view at all.)
-    double pivotX = (editR.left + editR.right) * 0.5, pivotY = (editR.top + editR.bottom) * 0.5;
+    // Rotation pivot is fixed RELATIVE TO editR's top-left corner (not an
+    // absolute screen point) for the whole editing session, established
+    // once here from the box's ORIGINAL center. Two things can move editR
+    // afterward, and they need to be treated differently:
+    //  - AutoWidth growth extends the right/bottom edge while left/top
+    //    stay put. If the pivot tracked editR's center live (like the
+    //    settled/static renderer does), the center would shift every
+    //    keystroke and rotating around a moving pivot makes the box
+    //    visibly swing as you type. Keeping the pivot fixed relative to
+    //    the (unmoving) top-left corner stops that.
+    //  - A parent using Auto Layout can legitimately reposition editR's
+    //    top-left (see the ts->bounds resync in redraw() below) -- that's
+    //    a real move, not growth, so the pivot SHOULD track it, or the
+    //    rotated view would be left pointing at the shape's old location.
+    // Storing the pivot as an offset from top-left (rebuilt into an
+    // absolute point every rebuildFull() call) gets both right at once.
+    double pivotOffsetX = (editR.right - editR.left) * 0.5;
+    double pivotOffsetY = (editR.bottom - editR.top) * 0.5;
 
-    // Rebuilds `full` (rotation chain, pivoted at the FIXED point above)
+    // Rebuilds `full` (rotation chain, pivoted per the fixed offset above)
     // and the derived src dimensions/cap check -- called once up front and
-    // again after every AutoWidth remeasure below, since editR's size (but
-    // not the pivot) changes while typing.
+    // again after every remeasure/resync below, since editR changes while
+    // typing (size from AutoWidth growth, position from layout reflow).
     auto rebuildFull = [&]() {
         full.clear();
+        double pivotX = editR.left + pivotOffsetX, pivotY = editR.top + pivotOffsetY;
         if (ownRot != 0.0) full.push_back({ownRot, pivotX, pivotY});
         full.insert(full.end(), ambient.begin(), ambient.end());
         editSrcW = static_cast<short>(editR.right - editR.left);
@@ -3670,6 +3691,11 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
     // oversized (see TENew above) specifically so this can resize editR
     // independently of it. Keeps the box's top-left anchored, matching how
     // UpdateTextShapeBounds grows AutoWidth boxes elsewhere in the app.
+    // Also writes the live measured size into ts->bounds itself (not just
+    // the local editR) so a parent frame using Auto Layout can grow/reflow
+    // to follow the text while it's actively being typed, not just after
+    // commit -- ts->bounds is otherwise frozen during editing (see
+    // UpdateAllTextShapeBounds's gEditingTextShape check).
     auto remeasureAutoWidth = [&]() {
         if (ts->textSizing != TextSizing::AutoWidth) return;
         Handle h = (*teh)->hText; long len = (*teh)->teLength;
@@ -3684,7 +3710,7 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
             size_t nl  = cur.find('\r', pos);
             size_t len2 = (nl == std::string::npos) ? cur.size() - pos : nl - pos;
             Str255 pl; pl[0] = 0;
-            for (size_t ci = 0; ci < len2 && ci < 63; ++ci) { pl[ci+1] = static_cast<unsigned char>(cur[pos+ci]); pl[0]++; }
+            for (size_t ci = 0; ci < len2 && ci < 255; ++ci) { pl[ci+1] = static_cast<unsigned char>(cur[pos+ci]); pl[0]++; }
             short lw = StringWidth(pl);
             if (lw > maxW) maxW = lw;
             ++nLines;
@@ -3693,12 +3719,42 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
         } while (pos < cur.size());
         if (nLines == 0) nLines = 1;
 
-        editR.right  = static_cast<short>(editR.left + maxW + 8);
-        editR.bottom = static_cast<short>(editR.top + lineH * nLines + 4);
+        short newW = static_cast<short>(maxW + 8);
+        short newH = static_cast<short>(lineH * nLines + 4);
+        editR.right  = static_cast<short>(editR.left + newW);
+        editR.bottom = static_cast<short>(editR.top + newH);
         (*teh)->viewRect = editR;
+        if (gCanvasZoom > 0) {
+            ts->bounds.w = static_cast<SInt32>((SInt32)newW * 100 / gCanvasZoom);
+            ts->bounds.h = static_cast<SInt32>((SInt32)newH * 100 / gCanvasZoom);
+        }
         rebuildFull();
     };
     remeasureAutoWidth();
+
+    // Catches any position change to ts->bounds that happened OUTSIDE this
+    // function -- specifically, an Auto Layout parent reflowing after
+    // remeasureAutoWidth just fed it a fresh live size. editR (and TE's
+    // own destRect/viewRect, which is where it actually draws/erases) are
+    // otherwise a frozen snapshot from whenever editing started or last
+    // resynced; without this, the live-edit view would keep rendering at
+    // the shape's OLD location after layout moved it to a new one.
+    auto resyncPositionFromModel = [&]() {
+        Rect modelR = CanvasRect(ts->bounds);
+        short dx = static_cast<short>(modelR.left - editR.left);
+        short dy = static_cast<short>(modelR.top  - editR.top);
+        if (dx == 0 && dy == 0) return;
+        editR.left   = static_cast<short>(editR.left   + dx);
+        editR.right  = static_cast<short>(editR.right  + dx);
+        editR.top    = static_cast<short>(editR.top    + dy);
+        editR.bottom = static_cast<short>(editR.bottom + dy);
+        (*teh)->destRect.left   = static_cast<short>((*teh)->destRect.left   + dx);
+        (*teh)->destRect.right  = static_cast<short>((*teh)->destRect.right  + dx);
+        (*teh)->destRect.top    = static_cast<short>((*teh)->destRect.top    + dy);
+        (*teh)->destRect.bottom = static_cast<short>((*teh)->destRect.bottom + dy);
+        (*teh)->viewRect = editR;
+        rebuildFull();
+    };
 
     RGBColor white = {0xFFFF,0xFFFF,0xFFFF}, black = {0,0,0}, blue = {0x1177,0x55AA,0xFFFF};
 
@@ -3719,9 +3775,11 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
     };
 
     auto redraw = [&]() {
-        DrawWindowContent(win);   // full canvas, minus `ts` (skipped by DrawShape while editing)
         SetPortWindowPort(win);
-        remeasureAutoWidth();
+        remeasureAutoWidth();     // update ts->bounds live BEFORE layout sees it
+        DrawWindowContent(win);   // full canvas, minus `ts` (skipped by DrawShape while editing); runs layout, which may reposition ts->bounds.x/y
+        SetPortWindowPort(win);
+        resyncPositionFromModel(); // pick up any position change layout just made
         if (!canRotateEdit) { redrawStraight(); return; }
 
         FastPixelWriter fastW = GetFastPixelWriter();
