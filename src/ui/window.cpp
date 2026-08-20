@@ -1344,7 +1344,17 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
             short srcH = static_cast<short>(r.bottom - r.top);
             bool didPixelRotate = false;
 
-            if (anyRotation && !str.empty() && srcW > 0 && srcH > 0 &&
+            // A box wider or taller than the window itself can never be
+            // shifted to fit entirely inside it for the staging draw (see
+            // the stageR shift below) -- no position exists where the whole
+            // thing is on real screen pixels, so some part of it always
+            // reads/writes undefined content. Fall back to the upright
+            // renderer in that case.
+            Rect fitCheckBounds = CurrentPortBounds();
+            bool fitsWindow = srcW <= (fitCheckBounds.right - fitCheckBounds.left) &&
+                               srcH <= (fitCheckBounds.bottom - fitCheckBounds.top);
+
+            if (anyRotation && !str.empty() && srcW > 0 && srcH > 0 && fitsWindow &&
                 (SInt32)srcW * (SInt32)srcH <= 150000) {
                 Point c0, c1, c2, c3;
                 { double fx,fy;
@@ -3773,7 +3783,16 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
         full.insert(full.end(), ambient.begin(), ambient.end());
         editSrcW = static_cast<short>(editR.right - editR.left);
         editSrcH = static_cast<short>(editR.bottom - editR.top);
-        canRotateEdit = anyRot && editSrcW > 0 && editSrcH > 0 &&
+        // A box wider or taller than the window itself can never be shifted
+        // to fit entirely inside it for the staging draw (see the stageR
+        // shift below) -- no position exists where the whole thing is on
+        // real screen pixels, so some part of it always reads/writes
+        // undefined content. Fall back to the plain upright renderer in
+        // that case, same as the existing "too large to cheaply
+        // pixel-rotate" fallback.
+        bool fitsWindow = editSrcW <= (portRect.right - portRect.left) &&
+                           editSrcH <= (portRect.bottom - portRect.top);
+        canRotateEdit = anyRot && editSrcW > 0 && editSrcH > 0 && fitsWindow &&
                         (SInt32)editSrcW * editSrcH <= 150000;
     };
     rebuildFull();
@@ -4035,7 +4054,7 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
             TextFont(0); TextSize(9); TextFace(0);
             RGBColor bgw = {0xFFFF,0xFFFF,0xFFFF}; RGBBackColor(&bgw);
             Rect dbgBg = { static_cast<short>(portRect.top+2), static_cast<short>(portRect.left+2),
-                            static_cast<short>(portRect.top+14), static_cast<short>(portRect.left+520) };
+                            static_cast<short>(portRect.top+14), static_cast<short>(portRect.left+700) };
             EraseRect(&dbgBg);
             MoveTo(static_cast<short>(portRect.left+4), static_cast<short>(portRect.top+12));
             DrawString(dbgP);
