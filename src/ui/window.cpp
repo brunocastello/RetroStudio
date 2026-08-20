@@ -1071,7 +1071,11 @@ static void PaintRotatedPixelBlock(const std::vector<RGBColor>& pixels, const st
     maxY = std::min(maxY, static_cast<short>(winBounds.bottom - 1));
 
     SInt32 dstW = (SInt32)maxX - minX + 1, dstH = (SInt32)maxY - minY + 1;
-    if (dstW <= 0 || dstH <= 0 || dstW * dstH > 300000) return;
+    // Cap raised from 300000: the destination is already clipped to the
+    // window, so a window close to full-screen-sized (640x530 = 339200
+    // alone exceeds the old cap) needs headroom above typical window
+    // dimensions, not a guard tighter than a single ordinary window.
+    if (dstW <= 0 || dstH <= 0 || dstW * dstH > 2000000) return;
 
     double baseOx, baseOy, stepXOx, stepXOy, stepYOx, stepYOy;
     ApplyRotChainInverse(full, minX+0.5, minY+0.5, baseOx,  baseOy);
@@ -1401,7 +1405,7 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                 FastPixelWriter fastW;
                 bool useFast = false;
 
-                if (dstW > 0 && dstH > 0 && dstW * dstH <= 300000 && !fitsWindow) {
+                if (dstW > 0 && dstH > 0 && dstW * dstH <= 2000000 && !fitsWindow) {
                     double nx0,ny0, nx1,ny1, nx2,ny2, nx3,ny3;
                     ApplyRotChainInverse(full, minX, minY, nx0, ny0);
                     ApplyRotChainInverse(full, maxX, minY, nx1, ny1);
@@ -1495,7 +1499,7 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                     }
                 }
 
-                if (fitsWindow && dstW > 0 && dstH > 0 && dstW * dstH <= 300000) {
+                if (fitsWindow && dstW > 0 && dstH > 0 && dstW * dstH <= 2000000) {
                     TextGlyphCacheKey key;
                     key.text = str; key.fontID = fontID; key.size = scaledSize;
                     key.face = static_cast<short>(t.fontFace | (shape.hasStroke ? 8 : 0));
