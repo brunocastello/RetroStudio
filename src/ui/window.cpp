@@ -1005,6 +1005,20 @@ static FastPixelWriter GetFastPixelWriter() {
     return w;
 }
 
+// The current port's own local content rect. Rotated text destinations are
+// computed purely from the shape's geometry and can swing well outside the
+// window (a wide box rotated near 90 degrees can extend far above its own
+// position) -- neither FastPixelWriter's bounds (the pixmap's own bounds,
+// not necessarily the window's visible content area) nor SetCPixel reliably
+// stop that from landing on the title bar, menu bar, or desktop, so every
+// rotated-text destination pixel must be explicitly clipped to this rect
+// before it's ever written.
+static Rect CurrentPortBounds() {
+    GrafPtr gp;
+    GetPort(&gp);
+    return reinterpret_cast<CGrafPort*>(gp)->portRect;
+}
+
 // Paints a captured, unrotated `srcW`x`srcH` pixel block (read from
 // `srcRect` on the real port) into its rotated destination on screen —
 // same inverse-mapped affine-stepping technique as DrawShape's kText case
@@ -1028,6 +1042,15 @@ static void PaintRotatedPixelBlock(const std::vector<RGBColor>& pixels, const st
     short maxX = std::max(std::max(c0.h,c1.h), std::max(c2.h,c3.h));
     short minY = std::min(std::min(c0.v,c1.v), std::min(c2.v,c3.v));
     short maxY = std::max(std::max(c0.v,c1.v), std::max(c2.v,c3.v));
+
+    // Clip the destination AABB to the window's own content rect -- see
+    // CurrentPortBounds() for why this can't be skipped.
+    Rect winBounds = CurrentPortBounds();
+    minX = std::max(minX, winBounds.left);
+    maxX = std::min(maxX, static_cast<short>(winBounds.right - 1));
+    minY = std::max(minY, winBounds.top);
+    maxY = std::min(maxY, static_cast<short>(winBounds.bottom - 1));
+
     SInt32 dstW = (SInt32)maxX - minX + 1, dstH = (SInt32)maxY - minY + 1;
     if (dstW <= 0 || dstH <= 0 || dstW * dstH > 300000) return;
 
@@ -1314,6 +1337,15 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                 short maxX = std::max(std::max(c0.h,c1.h), std::max(c2.h,c3.h));
                 short minY = std::min(std::min(c0.v,c1.v), std::min(c2.v,c3.v));
                 short maxY = std::max(std::max(c0.v,c1.v), std::max(c2.v,c3.v));
+
+                // Clip the destination AABB to the window's own content rect --
+                // see CurrentPortBounds() for why this can't be skipped.
+                Rect winBounds = CurrentPortBounds();
+                minX = std::max(minX, winBounds.left);
+                maxX = std::min(maxX, static_cast<short>(winBounds.right - 1));
+                minY = std::max(minY, winBounds.top);
+                maxY = std::min(maxY, static_cast<short>(winBounds.bottom - 1));
+
                 SInt32 dstW = (SInt32)maxX - minX + 1, dstH = (SInt32)maxY - minY + 1;
 
                 if (dstW > 0 && dstH > 0 && dstW * dstH <= 300000) {
