@@ -2385,14 +2385,17 @@ static short EffectiveRotateZone(const short hx[8], const short hy[8], int corne
     return (cap < kRotateZone) ? cap : kRotateZone;
 }
 
-// Returns the corner handle index (0,2,4,6) if pt is in that corner's rotate zone
-// (near the corner, outside the handle square), or -1 if not in any rotate zone.
+// Returns the handle index (0-7 — corners AND edge midpoints) if pt is in
+// that handle's rotate zone (near the handle, outside its square), or -1 if
+// not in any rotate zone. HandleRotateDrag always rotates around the
+// shape's own center regardless of which handle started the drag, and
+// HandleBucket/cursor selection is already index-agnostic, so edge
+// midpoints support rotation exactly like corners do — nothing past this
+// hit-test itself was corner-specific.
 static int HitTestRotateZone(Point pt) {
     short hx[8], hy[8];
     if (!ComputeSelectionHandles(hx, hy)) return -1;
-    static const int kCorner[4] = {0, 2, 4, 6};
-    for (int ci = 0; ci < 4; ++ci) {
-        int i = kCorner[ci];
+    for (int i = 0; i < 8; ++i) {
         short adx = static_cast<short>(pt.h - hx[i]); if (adx < 0) adx = -adx;
         short ady = static_cast<short>(pt.v - hy[i]); if (ady < 0) ady = -ady;
         short dist = adx > ady ? adx : ady;
