@@ -1381,6 +1381,32 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                     bool useFast = fastW.Ready();
                     bool wasCacheHit = (entry.key == key) && entry.pixels.size() == static_cast<size_t>(srcW) * srcH;
                     if (!wasCacheHit) {
+                        // The capture below stages its draw at a real screen
+                        // location before reading it back -- but r (the
+                        // shape's own box) can sit partly or fully outside
+                        // the window (e.g. dragged off the left edge), and
+                        // any part of that staging draw landing outside the
+                        // window reads/writes undefined pixels, baking
+                        // corruption into the cached glyph bitmap right at
+                        // the window edge. Shift (never resize) a staging
+                        // copy of r so it fits inside the window and draw/
+                        // capture there instead -- same fix as the live-edit
+                        // overlay's stageR. r itself stays untouched for the
+                        // rotation transform below.
+                        Rect stageWinBounds = CurrentPortBounds();
+                        Rect stageR = r;
+                        short stageShiftX = 0, stageShiftY = 0;
+                        if (stageR.right > stageWinBounds.right) stageShiftX = static_cast<short>(stageWinBounds.right - stageR.right);
+                        if (static_cast<short>(stageR.left + stageShiftX) < stageWinBounds.left)
+                            stageShiftX = static_cast<short>(stageWinBounds.left - stageR.left);
+                        if (stageR.bottom > stageWinBounds.bottom) stageShiftY = static_cast<short>(stageWinBounds.bottom - stageR.bottom);
+                        if (static_cast<short>(stageR.top + stageShiftY) < stageWinBounds.top)
+                            stageShiftY = static_cast<short>(stageWinBounds.top - stageR.top);
+                        stageR.left   = static_cast<short>(stageR.left   + stageShiftX);
+                        stageR.right  = static_cast<short>(stageR.right  + stageShiftX);
+                        stageR.top    = static_cast<short>(stageR.top    + stageShiftY);
+                        stageR.bottom = static_cast<short>(stageR.bottom + stageShiftY);
+
                         // A live resize changes srcW/srcH on every mouse-move,
                         // which invalidates this cache every frame -- capture
                         // (normally rare) becomes the hot path for the whole
@@ -1389,37 +1415,38 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                         std::vector<RGBColor> under(static_cast<size_t>(srcW) * srcH);
                         for (short y = 0; y < srcH; ++y)
                             for (short x = 0; x < srcW; ++x) {
-                                short px = static_cast<short>(r.left+x), py = static_cast<short>(r.top+y);
+                                short px = static_cast<short>(stageR.left+x), py = static_cast<short>(stageR.top+y);
                                 under[static_cast<size_t>(y)*srcW + x] =
                                     useFast ? fastW.Get(px, py) : ([&]{ RGBColor c; GetCPixel(px, py, &c); return c; }());
                             }
 
-                        // Clip the capture-phase draw to r: drawLines has no
-                        // real word-wrap (only explicit newlines break a line),
-                        // so text wider than r draws straight past r.right onto
-                        // the real screen. The restore step below only restores
-                        // pixels inside [0,srcW)x[0,srcH), so any unclipped
-                        // overflow here would never get erased -- a permanent
-                        // upright ghost of the overflowing text left behind.
+                        // Clip the capture-phase draw to stageR: drawLines has
+                        // no real word-wrap (only explicit newlines break a
+                        // line), so text wider than the box draws straight
+                        // past its right edge onto the real screen. The
+                        // restore step below only restores pixels inside
+                        // [0,srcW)x[0,srcH), so any unclipped overflow here
+                        // would never get erased -- a permanent upright ghost
+                        // of the overflowing text left behind.
                         RgnHandle savedClip = NewRgn();
                         GetClip(savedClip);
-                        { Rect cr = r; ClipRect(&cr); }
+                        { Rect cr = stageR; ClipRect(&cr); }
                         setTextDrawState();
-                        drawLines(r);
+                        drawLines(stageR);
                         SetClip(savedClip);
                         DisposeRgn(savedClip);
 
                         std::vector<RGBColor> glyph(static_cast<size_t>(srcW) * srcH);
                         for (short y = 0; y < srcH; ++y)
                             for (short x = 0; x < srcW; ++x) {
-                                short px = static_cast<short>(r.left+x), py = static_cast<short>(r.top+y);
+                                short px = static_cast<short>(stageR.left+x), py = static_cast<short>(stageR.top+y);
                                 glyph[static_cast<size_t>(y)*srcW + x] =
                                     useFast ? fastW.Get(px, py) : ([&]{ RGBColor c; GetCPixel(px, py, &c); return c; }());
                             }
 
                         for (short y = 0; y < srcH; ++y)
                             for (short x = 0; x < srcW; ++x) {
-                                short px = static_cast<short>(r.left+x), py = static_cast<short>(r.top+y);
+                                short px = static_cast<short>(stageR.left+x), py = static_cast<short>(stageR.top+y);
                                 const RGBColor& u = under[static_cast<size_t>(y)*srcW + x];
                                 if (useFast) fastW.Set(px, py, u);
                                 else         SetCPixel(px, py, const_cast<RGBColor*>(&u));
