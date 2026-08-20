@@ -3864,16 +3864,29 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
                 under[static_cast<size_t>(y)*editSrcW + x] =
                     getPx(static_cast<short>(editR.left+x), static_cast<short>(editR.top+y));
 
-        RGBBackColor(&white); RGBForeColor(&black);
+        // Erase to a flat color sampled from the real background (editR's
+        // own top-left pixel) instead of a hardcoded white constant, and
+        // compare captured content against a RE-READ sample of that same
+        // erase (not the RGBColor we asked for) -- comparing against a
+        // literal constant depends on the erase color round-tripping
+        // through the port's actual color depth byte-for-identical, which
+        // isn't reliable at every depth/quantization (that mismatch is what
+        // made the whole box, then smaller margins, paint as an opaque
+        // block instead of being transparent). Comparing two values that
+        // went through the exact same read path cancels out whatever that
+        // path does, regardless of depth.
+        RGBColor bg = white;
+        if (editSrcW > 0 && editSrcH > 0) bg = under[0];
+        RGBBackColor(&bg); RGBForeColor(&black);
         // See redrawStraight() for why the clip must be reset to the full
         // window before erasing -- otherwise a leftover narrower clip (e.g.
         // a frame's own clipContent region) can make EraseRect only wipe
         // part of editR, leaving stale background pixels that then get
-        // captured as `content` and misread as real ink (not equal to pure
-        // white), painting a solid block of stale color into the rotated
-        // destination.
+        // captured as `content` and misread as real ink, painting a solid
+        // block of stale color into the rotated destination.
         { Rect cr = portRect; ClipRect(&cr); }
         EraseRect(&editR);
+        RGBColor bgCaptured = getPx(editR.left, editR.top);
         applyFont();
         { Rect cr = editR; ClipRect(&cr); }
         TEUpdate(&editR, teh);
@@ -3889,15 +3902,11 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
                 setPx(static_cast<short>(editR.left+x), static_cast<short>(editR.top+y),
                       under[static_cast<size_t>(y)*editSrcW + x]);
 
-        // content was captured against a pure-white erase (see EraseRect above),
-        // so any pixel that isn't white is real ink (glyph/cursor/selection) --
-        // only those should paint into the rotated destination, or the white
-        // erase itself shows through as an opaque box behind the text.
         std::vector<bool> ink(n);
         for (size_t i = 0; i < n; ++i)
-            ink[i] = content[i].red != white.red ||
-                     content[i].green != white.green ||
-                     content[i].blue != white.blue;
+            ink[i] = content[i].red != bgCaptured.red ||
+                     content[i].green != bgCaptured.green ||
+                     content[i].blue != bgCaptured.blue;
 
         HideCursor();  // raw pixel writes bypass QuickDraw -- see FastPixelWriter
         PaintRotatedPixelBlock(content, &ink, editSrcW, editSrcH, editR, full, fastW, useFast);
