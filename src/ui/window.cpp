@@ -2315,8 +2315,6 @@ struct HitResult { Frame* frame = nullptr; Shape* shape = nullptr; bool found = 
 // rotation chain accumulated from f's ancestors (empty if f is top-level or
 // no ancestor is rotated) — see RotChain / DrawFrame for the convention.
 static HitResult HitTestFrame(Frame* f, Point pt, const RotChain& ambient = {}) {
-    if (!PtInLocalRect(f->bounds, pt, ambient)) return {};
-
     Rect r = CanvasRect(f->bounds);
     RotChain childChain;
     if (f->rotation != 0) {
@@ -2324,6 +2322,16 @@ static HitResult HitTestFrame(Frame* f, Point pt, const RotChain& ambient = {}) 
         childChain.push_back({ static_cast<double>(f->rotation), cx, cy });
     }
     childChain.insert(childChain.end(), ambient.begin(), ambient.end());
+
+    // Children are checked even when pt falls outside the frame's own
+    // rect (unless clipContent visually cuts them off there too): a
+    // rotated child can legitimately extend past its parent and remain
+    // fully visible, and needs to stay clickable/draggable there --
+    // bailing out early on the frame's own bounds made an overflowing
+    // rotated shape impossible to select once enough of it sat outside
+    // its parent frame.
+    bool insideFrame = PtInLocalRect(f->bounds, pt, ambient);
+    if (!insideFrame && f->clipContent) return {};
 
     if (!f->childOrder.empty()) {
         // Iterate in reverse childOrder (topmost first for correct z-order hit-testing)
@@ -2353,6 +2361,7 @@ static HitResult HitTestFrame(Frame* f, Point pt, const RotChain& ambient = {}) 
             if (hit) return { f, s.get(), true };
         }
     }
+    if (!insideFrame) return {};  // no overflowing child hit, and click wasn't on the frame body itself
     return { f, nullptr, true };  // hit frame body
 }
 
