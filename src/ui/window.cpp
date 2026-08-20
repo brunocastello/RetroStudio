@@ -3869,48 +3869,96 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
             else         SetCPixel(px, py, const_cast<RGBColor*>(&c));
         };
 
+        // The staging draw below happens at a real screen location, read
+        // back with GetCPixel/FastPixelWriter afterward -- but editR can
+        // grow wider/taller than the window itself as AutoWidth text grows
+        // (expected for a long sentence), and any part of that staging
+        // draw landing outside the window reads/writes undefined pixels,
+        // which then get baked into the rotated paint as corruption right
+        // at the point the box crosses the window edge. That's what "cuts
+        // exactly where it would disappear at 0 degrees" actually was --
+        // the window edge, evaluated in unrotated/local terms.
+        //
+        // Fix: shift (never resize) a copy of editR so it fits entirely
+        // inside portRect, and stage the draw/capture there instead.
+        // editR itself -- and everything derived from it for the rotation
+        // transform (full/rebuildFull, the border, PaintRotatedPixelBlock's
+        // srcRect) -- stays at its real logical position throughout; only
+        // the *captured pixel content* needs to be correct, and that's
+        // indexed relative to the block's own origin, not any actual
+        // screen coordinate, so painting it via editR's true geometry
+        // after capturing it from a shifted location is still correct.
+        Rect stageR = editR;
+        short stageShiftX = 0, stageShiftY = 0;
+        if (stageR.right > portRect.right) stageShiftX = static_cast<short>(portRect.right - stageR.right);
+        if (static_cast<short>(stageR.left + stageShiftX) < portRect.left)
+            stageShiftX = static_cast<short>(portRect.left - stageR.left);
+        if (stageR.bottom > portRect.bottom) stageShiftY = static_cast<short>(portRect.bottom - stageR.bottom);
+        if (static_cast<short>(stageR.top + stageShiftY) < portRect.top)
+            stageShiftY = static_cast<short>(portRect.top - stageR.top);
+        stageR.left   = static_cast<short>(stageR.left   + stageShiftX);
+        stageR.right  = static_cast<short>(stageR.right  + stageShiftX);
+        stageR.top    = static_cast<short>(stageR.top    + stageShiftY);
+        stageR.bottom = static_cast<short>(stageR.bottom + stageShiftY);
+
+        Rect savedViewRect = (*teh)->viewRect;
+        Rect savedDestRect = (*teh)->destRect;
+        if (stageShiftX != 0 || stageShiftY != 0) {
+            (*teh)->viewRect = stageR;
+            (*teh)->destRect.left   = static_cast<short>(savedDestRect.left   + stageShiftX);
+            (*teh)->destRect.right  = static_cast<short>(savedDestRect.right  + stageShiftX);
+            (*teh)->destRect.top    = static_cast<short>(savedDestRect.top    + stageShiftY);
+            (*teh)->destRect.bottom = static_cast<short>(savedDestRect.bottom + stageShiftY);
+        }
+
         for (short y = 0; y < editSrcH; ++y)
             for (short x = 0; x < editSrcW; ++x)
                 under[static_cast<size_t>(y)*editSrcW + x] =
-                    getPx(static_cast<short>(editR.left+x), static_cast<short>(editR.top+y));
+                    getPx(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y));
 
-        // Erase to a flat color sampled from the real background (editR's
-        // own top-left pixel) instead of a hardcoded white constant, and
-        // compare captured content against a RE-READ sample of that same
-        // erase (not the RGBColor we asked for) -- comparing against a
-        // literal constant depends on the erase color round-tripping
-        // through the port's actual color depth byte-for-identical, which
-        // isn't reliable at every depth/quantization (that mismatch is what
-        // made the whole box, then smaller margins, paint as an opaque
-        // block instead of being transparent). Comparing two values that
-        // went through the exact same read path cancels out whatever that
-        // path does, regardless of depth.
+        // Erase to a flat color sampled from the real background (the
+        // staging box's own top-left pixel) instead of a hardcoded white
+        // constant, and compare captured content against a RE-READ sample
+        // of that same erase (not the RGBColor we asked for) -- comparing
+        // against a literal constant depends on the erase color
+        // round-tripping through the port's actual color depth
+        // byte-for-identical, which isn't reliable at every depth/
+        // quantization (that mismatch is what made the whole box, then
+        // smaller margins, paint as an opaque block instead of being
+        // transparent). Comparing two values that went through the exact
+        // same read path cancels out whatever that path does, regardless
+        // of depth.
         RGBColor bg = white;
         if (editSrcW > 0 && editSrcH > 0) bg = under[0];
         RGBBackColor(&bg); RGBForeColor(&black);
         // See redrawStraight() for why the clip must be reset to the full
         // window before erasing -- otherwise a leftover narrower clip (e.g.
         // a frame's own clipContent region) can make EraseRect only wipe
-        // part of editR, leaving stale background pixels that then get
-        // captured as `content` and misread as real ink, painting a solid
-        // block of stale color into the rotated destination.
+        // part of the staging box, leaving stale background pixels that
+        // then get captured as `content` and misread as real ink, painting
+        // a solid block of stale color into the rotated destination.
         { Rect cr = portRect; ClipRect(&cr); }
-        EraseRect(&editR);
-        RGBColor bgCaptured = getPx(editR.left, editR.top);
+        EraseRect(&stageR);
+        RGBColor bgCaptured = getPx(stageR.left, stageR.top);
         applyFont();
-        { Rect cr = editR; ClipRect(&cr); }
-        TEUpdate(&editR, teh);
+        { Rect cr = stageR; ClipRect(&cr); }
+        TEUpdate(&stageR, teh);
         { Rect cr = portRect; ClipRect(&cr); }
 
         for (short y = 0; y < editSrcH; ++y)
             for (short x = 0; x < editSrcW; ++x)
                 content[static_cast<size_t>(y)*editSrcW + x] =
-                    getPx(static_cast<short>(editR.left+x), static_cast<short>(editR.top+y));
+                    getPx(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y));
 
         for (short y = 0; y < editSrcH; ++y)
             for (short x = 0; x < editSrcW; ++x)
-                setPx(static_cast<short>(editR.left+x), static_cast<short>(editR.top+y),
+                setPx(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y),
                       under[static_cast<size_t>(y)*editSrcW + x]);
+
+        if (stageShiftX != 0 || stageShiftY != 0) {
+            (*teh)->viewRect = savedViewRect;
+            (*teh)->destRect = savedDestRect;
+        }
 
         std::vector<bool> ink(n);
         for (size_t i = 0; i < n; ++i)
@@ -3953,7 +4001,8 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
                                "-" + std::to_string(dMaxX) + "," + std::to_string(dMaxY) +
                                "  win " + std::to_string(gActivePortBounds.left) + "," + std::to_string(gActivePortBounds.top) +
                                "-" + std::to_string(gActivePortBounds.right) + "," + std::to_string(gActivePortBounds.bottom) +
-                               "  srcWH " + std::to_string(editSrcW) + "x" + std::to_string(editSrcH);
+                               "  srcWH " + std::to_string(editSrcW) + "x" + std::to_string(editSrcH) +
+                               "  shift " + std::to_string(stageShiftX) + "," + std::to_string(stageShiftY);
             Str255 dbgP; ToPStr(dbg, dbgP);
             RGBColor red = {0xFFFF, 0, 0}; RGBForeColor(&red);
             TextFont(0); TextSize(9); TextFace(0);
