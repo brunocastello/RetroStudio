@@ -1316,6 +1316,23 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                 short maxY = std::max(std::max(c0.v,c1.v), std::max(c2.v,c3.v));
                 SInt32 dstW = (SInt32)maxX - minX + 1, dstH = (SInt32)maxY - minY + 1;
 
+                // DIAGNOSTIC (temporary): mark where the paint loop believes the
+                // source box's right edge (c1=top-right, c2=bottom-right) lands
+                // in rotated screen space, so a "missing tail of text" report can
+                // be checked against whether the loop's own math already excludes
+                // that area (dots land short of the visible cut) vs. computes it
+                // correctly but fails to paint it (dots land past the cut).
+                {
+                    RGBColor magenta = {0xFFFF, 0x0000, 0xFFFF};
+                    RGBForeColor(&magenta);
+                    Rect m1 = { static_cast<short>(c1.v-2), static_cast<short>(c1.h-2),
+                                static_cast<short>(c1.v+2), static_cast<short>(c1.h+2) };
+                    PaintRect(&m1);
+                    Rect m2 = { static_cast<short>(c2.v-2), static_cast<short>(c2.h-2),
+                                static_cast<short>(c2.v+2), static_cast<short>(c2.h+2) };
+                    PaintRect(&m2);
+                }
+
                 if (dstW > 0 && dstH > 0 && dstW * dstH <= 300000) {
                     TextGlyphCacheKey key;
                     key.text = str; key.fontID = fontID; key.size = scaledSize;
@@ -1437,6 +1454,15 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                     }
 
                     didPixelRotate = true;
+                } else {
+                    // DIAGNOSTIC (temporary): dstW*dstH exceeded the 300000 cap --
+                    // this text fell back to the upright/ambient-only path. Mark
+                    // it orange so that's visually distinguishable from a paint
+                    // that ran but dropped pixels.
+                    RGBColor orange = {0xFFFF, 0x8800, 0x0000};
+                    RGBForeColor(&orange);
+                    Rect om = { r.top, r.left, static_cast<short>(r.top+6), static_cast<short>(r.left+6) };
+                    PaintRect(&om);
                 }
             }
 
