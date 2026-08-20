@@ -3817,8 +3817,18 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
                 setPx(static_cast<short>(editR.left+x), static_cast<short>(editR.top+y),
                       under[static_cast<size_t>(y)*editSrcW + x]);
 
+        // content was captured against a pure-white erase (see EraseRect above),
+        // so any pixel that isn't white is real ink (glyph/cursor/selection) --
+        // only those should paint into the rotated destination, or the white
+        // erase itself shows through as an opaque box behind the text.
+        std::vector<bool> ink(n);
+        for (size_t i = 0; i < n; ++i)
+            ink[i] = content[i].red != white.red ||
+                     content[i].green != white.green ||
+                     content[i].blue != white.blue;
+
         HideCursor();  // raw pixel writes bypass QuickDraw -- see FastPixelWriter
-        PaintRotatedPixelBlock(content, nullptr, editSrcW, editSrcH, editR, full, fastW, useFast);
+        PaintRotatedPixelBlock(content, &ink, editSrcW, editSrcH, editR, full, fastW, useFast);
         ShowCursor();
 
         // Rotated border around the edit area, matching the rotated
