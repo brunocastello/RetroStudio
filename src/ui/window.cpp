@@ -3806,6 +3806,15 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
     // isn't rotated, or the box is too large to cheaply rotate-capture.
     auto redrawStraight = [&]() {
         RGBBackColor(&white); RGBForeColor(&black);
+        // Reset to the full window clip before erasing: DrawWindowContent
+        // (just called by our caller / about to be called again next redraw)
+        // sets and restores several narrower clips of its own (e.g. a
+        // frame's own clipContent region) as it draws -- if editR happens to
+        // extend past whatever clip was left active, EraseRect only wipes
+        // the clipped sub-area, leaving stale background pixels (frame fill,
+        // canvas gray) in the rest of editR that later get captured as if
+        // they were real content and painted as a solid block.
+        { Rect cr = portRect; ClipRect(&cr); }
         EraseRect(&editR);
         applyFont();
         // Clip to editR: content that wraps/overflows past the box's
@@ -3845,6 +3854,14 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
                     getPx(static_cast<short>(editR.left+x), static_cast<short>(editR.top+y));
 
         RGBBackColor(&white); RGBForeColor(&black);
+        // See redrawStraight() for why the clip must be reset to the full
+        // window before erasing -- otherwise a leftover narrower clip (e.g.
+        // a frame's own clipContent region) can make EraseRect only wipe
+        // part of editR, leaving stale background pixels that then get
+        // captured as `content` and misread as real ink (not equal to pure
+        // white), painting a solid block of stale color into the rotated
+        // destination.
+        { Rect cr = portRect; ClipRect(&cr); }
         EraseRect(&editR);
         applyFont();
         { Rect cr = editR; ClipRect(&cr); }
