@@ -4340,8 +4340,7 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
                                "  needR " + std::to_string(needR.left) + "," + std::to_string(needR.top) +
                                "-" + std::to_string(needR.right) + "," + std::to_string(needR.bottom) +
                                "  win " + std::to_string(gActivePortBounds.left) + "," + std::to_string(gActivePortBounds.top) +
-                               "-" + std::to_string(gActivePortBounds.right) + "," + std::to_string(gActivePortBounds.bottom) +
-                               "  shift " + std::to_string(stageShiftX) + "," + std::to_string(stageShiftY);
+                               "-" + std::to_string(gActivePortBounds.right) + "," + std::to_string(gActivePortBounds.bottom);
             Str255 dbgP; ToPStr(dbg, dbgP);
             RGBColor red = {0xFFFF, 0, 0}; RGBForeColor(&red);
             TextFont(0); TextSize(9); TextFace(0);
