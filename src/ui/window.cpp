@@ -1976,11 +1976,7 @@ static void DrawFrame(const Frame& frame, const RotChain& ambient) {
 
     // Name label — only on top-level frames (no parent). Top-level frames are
     // always drawn with an empty incoming `ambient`, so only the frame's own
-    // rotation matters here. QuickDraw can't rotate the label text itself (an
-    // offscreen-GWorld-based true rotation was tried here and removed — see
-    // project memory: CopyBits screen corruption), so when rotated this just
-    // anchors above whichever of the 4 corners is currently highest on
-    // screen, keeping the label visually near the frame at any angle.
+    // rotation matters here.
     if (frame.parent == nullptr) {
         RGBColor lc = { 0x4444, 0x4444, 0x4444 };
         RGBForeColor(&lc);
@@ -1998,12 +1994,76 @@ static void DrawFrame(const Frame& frame, const RotChain& ambient) {
                 double py = cy + lx4[i]*sinA + ly4[i]*cosA;
                 if (py < topY) { topY = py; topX = px; }
             }
-            Point lp = ToQDPoint(topX, topY - 5);
-            MoveTo(lp.h, lp.v);
+            short anchorX = static_cast<short>(topX), anchorY = static_cast<short>(topY - 5);
+
+            // Tilt the label in place around this same anchor point
+            // (whichever corner is currently highest on screen), instead
+            // of leaving it upright -- same capture/rotate/paint
+            // technique already proven for rotated text shapes, just
+            // uncached and single-pass since a frame name is always
+            // short enough to stage in one shot.
+            FontInfo fi; GetFontInfo(&fi);
+            short labelW = static_cast<short>(StringWidth(pn) + 4);
+            Rect srcR = { static_cast<short>(anchorY - fi.ascent), anchorX,
+                           static_cast<short>(anchorY + fi.descent + 2), static_cast<short>(anchorX + labelW) };
+            Rect winBoundsLbl = CurrentPortBounds();
+            bool fitsOnScreen = srcR.right <= winBoundsLbl.right && srcR.left >= winBoundsLbl.left &&
+                                 srcR.bottom <= winBoundsLbl.bottom && srcR.top >= winBoundsLbl.top &&
+                                 srcR.right > srcR.left && srcR.bottom > srcR.top;
+            if (fitsOnScreen) {
+                short lsW = static_cast<short>(srcR.right - srcR.left);
+                short lsH = static_cast<short>(srcR.bottom - srcR.top);
+                FastPixelWriter lfw = GetFastPixelWriter();
+                bool lUseFast = lfw.Ready();
+                auto lGetPx = [&](short px, short py) -> RGBColor {
+                    if (lUseFast) return lfw.Get(px, py);
+                    RGBColor c; GetCPixel(px, py, &c); return c;
+                };
+                auto lSetPx = [&](short px, short py, const RGBColor& c) {
+                    if (lUseFast) lfw.Set(px, py, c);
+                    else          SetCPixel(px, py, const_cast<RGBColor*>(&c));
+                };
+                std::vector<RGBColor> lUnder(static_cast<size_t>(lsW) * lsH);
+                for (short y = 0; y < lsH; ++y)
+                    for (short x = 0; x < lsW; ++x)
+                        lUnder[static_cast<size_t>(y)*lsW+x] =
+                            lGetPx(static_cast<short>(srcR.left+x), static_cast<short>(srcR.top+y));
+
+                MoveTo(anchorX, anchorY);
+                DrawString(pn);
+
+                std::vector<RGBColor> lGlyph(static_cast<size_t>(lsW) * lsH);
+                for (short y = 0; y < lsH; ++y)
+                    for (short x = 0; x < lsW; ++x)
+                        lGlyph[static_cast<size_t>(y)*lsW+x] =
+                            lGetPx(static_cast<short>(srcR.left+x), static_cast<short>(srcR.top+y));
+
+                for (short y = 0; y < lsH; ++y)
+                    for (short x = 0; x < lsW; ++x)
+                        lSetPx(static_cast<short>(srcR.left+x), static_cast<short>(srcR.top+y),
+                               lUnder[static_cast<size_t>(y)*lsW+x]);
+
+                std::vector<bool> lInk(static_cast<size_t>(lsW) * lsH);
+                for (size_t i = 0; i < lInk.size(); ++i)
+                    lInk[i] = lGlyph[i].red   != lUnder[i].red ||
+                              lGlyph[i].green != lUnder[i].green ||
+                              lGlyph[i].blue  != lUnder[i].blue;
+
+                RotChain labelChain;
+                labelChain.push_back({frame.rotation, static_cast<double>(anchorX), static_cast<double>(anchorY)});
+                HideCursor();
+                PaintRotatedPixelBlock(lGlyph, &lInk, lsW, lsH, srcR, labelChain, lfw, lUseFast);
+                ShowCursor();
+            } else {
+                // Off-screen for staging purposes -- fall back to upright
+                // rather than skip the label entirely.
+                MoveTo(anchorX, anchorY);
+                DrawString(pn);
+            }
         } else {
             MoveTo(r.left, static_cast<short>(r.top - 5));
+            DrawString(pn);
         }
-        DrawString(pn);
         TextSize(12);
     }
 }
@@ -2137,24 +2197,37 @@ static void DrawSelectionHighlight() {
         LineTo(px[3], py[3]); LineTo(px[0], py[0]);
         PenSize(1, 1);
 
-        // 8 handle positions, corners interleaved with edge midpoints — same
-        // 0=TL,1=N,2=TR,3=E,4=BR,5=S,6=BL,7=W convention as ComputeSelectionHandles.
-        short hpx[8], hpy[8];
-        hpx[0] = px[0]; hpy[0] = py[0];
-        hpx[1] = static_cast<short>((px[0]+px[1])/2); hpy[1] = static_cast<short>((py[0]+py[1])/2);
-        hpx[2] = px[1]; hpy[2] = py[1];
-        hpx[3] = static_cast<short>((px[1]+px[2])/2); hpy[3] = static_cast<short>((py[1]+py[2])/2);
-        hpx[4] = px[2]; hpy[4] = py[2];
-        hpx[5] = static_cast<short>((px[2]+px[3])/2); hpy[5] = static_cast<short>((py[2]+py[3])/2);
-        hpx[6] = px[3]; hpy[6] = py[3];
-        hpx[7] = static_cast<short>((px[3]+px[0])/2); hpy[7] = static_cast<short>((py[3]+py[0])/2);
+        // 8 handle positions in LOCAL (pre-rotation) space, corners
+        // interleaved with edge midpoints — same 0=TL,1=N,2=TR,3=E,4=BR,
+        // 5=S,6=BL,7=W convention as ComputeSelectionHandles.
+        double hlx[8] = { -hw, 0,  hw,  hw,  hw,  0, -hw, -hw };
+        double hly[8] = { -hh, -hh, -hh, 0,  hh, hh,  hh,  0 };
         for (int i = 0; i < 8; ++i) {
-            Rect h = {
-                static_cast<short>(hpy[i]-kHW), static_cast<short>(hpx[i]-kHW),
-                static_cast<short>(hpy[i]+kHW), static_cast<short>(hpx[i]+kHW)
-            };
-            RGBForeColor(&white); PaintRect(&h);
-            RGBForeColor(&selBlue); FrameRect(&h);
+            // Each handle is drawn as a small square rotated the same way
+            // as the object itself, not a plain axis-aligned box: build
+            // its 4 corners in local space (centered on the handle's own
+            // local position), then run them through the exact same
+            // own-rotation + ambient transform as the shape's own corners
+            // above, instead of just rotating the handle's CENTER position
+            // and leaving its square shape upright.
+            double sx[4] = { hlx[i]-kHW, hlx[i]+kHW, hlx[i]+kHW, hlx[i]-kHW };
+            double sy[4] = { hly[i]-kHW, hly[i]-kHW, hly[i]+kHW, hly[i]+kHW };
+            Point hp[4];
+            for (int k = 0; k < 4; ++k) {
+                double ox = cx + sx[k]*cosA - sy[k]*sinA;
+                double oy = cy + sx[k]*sinA + sy[k]*cosA;
+                double fx, fy;
+                ApplyRotChain(ambient, ox, oy, fx, fy);
+                hp[k] = ToQDPoint(fx, fy);
+            }
+            PolyHandle hpoly = OpenPoly();
+            MoveTo(hp[0].h, hp[0].v);
+            LineTo(hp[1].h, hp[1].v); LineTo(hp[2].h, hp[2].v);
+            LineTo(hp[3].h, hp[3].v); LineTo(hp[0].h, hp[0].v);
+            ClosePoly();
+            RGBForeColor(&white); PaintPoly(hpoly);
+            RGBForeColor(&selBlue); FramePoly(hpoly);
+            KillPoly(hpoly);
         }
     };
 
@@ -2719,17 +2792,20 @@ static short EffectiveRotateZone(const short hx[8], const short hy[8], int corne
     return (cap < kRotateZone) ? cap : kRotateZone;
 }
 
-// Returns the handle index (0-7 — corners AND edge midpoints) if pt is in
-// that handle's rotate zone (near the handle, outside its square), or -1 if
-// not in any rotate zone. HandleRotateDrag always rotates around the
-// shape's own center regardless of which handle started the drag, and
-// HandleBucket/cursor selection is already index-agnostic, so edge
-// midpoints support rotation exactly like corners do — nothing past this
-// hit-test itself was corner-specific.
+// Returns the handle index (corners only — 0,2,4,6) if pt is in that
+// handle's rotate zone (near the handle, outside its square), or -1 if not
+// in any rotate zone. Edge midpoints (1,3,5,7) are resize-only by design:
+// corners do both resize (click directly on the handle) and rotate (click
+// just outside it), matching UpdateCanvasCursor's cursor selection above,
+// which never showed a rotate cursor over an edge handle in the first
+// place -- extending the hit-test to edges (a prior session's change) left
+// the cursor and the actual click behavior inconsistent with each other.
 static int HitTestRotateZone(Point pt) {
     short hx[8], hy[8];
     if (!ComputeSelectionHandles(hx, hy)) return -1;
-    for (int i = 0; i < 8; ++i) {
+    static const int kCorner[4] = {0, 2, 4, 6};
+    for (int ci = 0; ci < 4; ++ci) {
+        int i = kCorner[ci];
         short adx = static_cast<short>(pt.h - hx[i]); if (adx < 0) adx = -adx;
         short ady = static_cast<short>(pt.v - hy[i]); if (ady < 0) ady = -ady;
         short dist = adx > ady ? adx : ady;
