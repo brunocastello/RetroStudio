@@ -4440,15 +4440,57 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
                         confirmed = true; done = true;  // click elsewhere commits
                     } else {
                         applyFont();
-                        // TEClick blocks internally, tracking drag-select
-                        // itself; it draws that live feedback upright at
-                        // editR's real screen position, so a drag-select
-                        // gesture on rotated text will flash unrotated
-                        // for its duration -- a Toolbox limitation (no
-                        // hook into TEClick's internal drawing). The
-                        // selection itself, and everything drawn once it
-                        // returns, is correctly rotated again.
-                        TEClick(teLocal, (evt.modifiers & shiftKey) != 0, teh);
+                        if (!canRotateEdit) {
+                            // Not rotated: TEClick's own internal drag
+                            // feedback already draws at editR's real
+                            // (unrotated) screen position, which is
+                            // correct here, so there's nothing to work
+                            // around.
+                            TEClick(teLocal, (evt.modifiers & shiftKey) != 0, teh);
+                        } else {
+                            // Rotated: TEClick blocks internally and draws
+                            // its own live drag-select highlight upright,
+                            // at editR's real (unrotated) screen position,
+                            // with no hook to intercept or redirect that
+                            // per-frame drawing -- so a drag-select gesture
+                            // on rotated text used to flash an upright
+                            // selection block for the gesture's duration.
+                            // Replace TEClick with a manual click+drag
+                            // implementation: hit-test each point to a
+                            // character offset ourselves (inverse-rotating
+                            // it first, same as the initial click above),
+                            // update the selection, and redraw through the
+                            // normal rotated capture/paint path on every
+                            // move, so the live highlight is correctly
+                            // rotated throughout instead of just in the
+                            // final, settled result.
+                            short clickOffset = TEGetOffset(teLocal, teh);
+                            short anchor;
+                            if (evt.modifiers & shiftKey) {
+                                short selStart = (*teh)->selStart, selEnd = (*teh)->selEnd;
+                                anchor = (std::abs(clickOffset - selStart) > std::abs(clickOffset - selEnd))
+                                         ? selStart : selEnd;
+                            } else {
+                                anchor = clickOffset;
+                            }
+                            TESetSelect(std::min(anchor, clickOffset), std::max(anchor, clickOffset), teh);
+                            redraw();
+                            short lastOffset = clickOffset;
+                            while (Button()) {
+                                Point dragLocal;
+                                SetPortWindowPort(win);
+                                GetMouse(&dragLocal);
+                                double lx, ly;
+                                ApplyRotChainInverse(full, dragLocal.h, dragLocal.v, lx, ly);
+                                Point dragTeLocal = ToQDPoint(lx, ly);
+                                short dragOffset = TEGetOffset(dragTeLocal, teh);
+                                if (dragOffset != lastOffset) {
+                                    TESetSelect(std::min(anchor, dragOffset), std::max(anchor, dragOffset), teh);
+                                    redraw();
+                                    lastOffset = dragOffset;
+                                }
+                            }
+                        }
                         redraw();
                     }
                     break;
