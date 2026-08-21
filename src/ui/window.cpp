@@ -1446,6 +1446,30 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                     short needSrcW = static_cast<short>(needR.right - needR.left);
                     short needSrcH = static_cast<short>(needR.bottom - needR.top);
 
+                    // Hard cap regardless of how the above computed: capping
+                    // only the padding wasn't enough (confirmed by report --
+                    // needR still came out ~777px against a 640px window)
+                    // because the strict/unpadded AABB-of-rotated-corners
+                    // bound can itself already exceed the window's own size
+                    // at some angles, independent of any padding on top of
+                    // it. Trim symmetrically down to a size that's
+                    // guaranteed to fit after stageR's shift, no matter what
+                    // the geometry produced above.
+                    short hardCapW = static_cast<short>(std::max<short>(1, winW - 4));
+                    short hardCapH = static_cast<short>(std::max<short>(1, winH - 4));
+                    if (needSrcW > hardCapW) {
+                        short excess = static_cast<short>(needSrcW - hardCapW);
+                        needR.left  = static_cast<short>(needR.left  + excess / 2);
+                        needR.right = static_cast<short>(needR.right - (excess - excess / 2));
+                        needSrcW = hardCapW;
+                    }
+                    if (needSrcH > hardCapH) {
+                        short excess = static_cast<short>(needSrcH - hardCapH);
+                        needR.top    = static_cast<short>(needR.top    + excess / 2);
+                        needR.bottom = static_cast<short>(needR.bottom - (excess - excess / 2));
+                        needSrcH = hardCapH;
+                    }
+
                     if (needR.right > needR.left && needR.bottom > needR.top &&
                         (SInt32)needSrcW * needSrcH <= 500000) {
                         fastW = GetFastPixelWriter();
@@ -4190,6 +4214,27 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
         if (needR.right <= needR.left || needR.bottom <= needR.top) return;
         short needSrcW = static_cast<short>(needR.right - needR.left);
         short needSrcH = static_cast<short>(needR.bottom - needR.top);
+
+        // Hard cap regardless of how the above computed -- see the settled
+        // renderer's identical hard cap for why capping only the padding
+        // wasn't enough (the strict/unpadded bound itself can already
+        // exceed the window at some angles).
+        {
+            short hardCapW = static_cast<short>(std::max<short>(1, winW - 4));
+            short hardCapH = static_cast<short>(std::max<short>(1, winH - 4));
+            if (needSrcW > hardCapW) {
+                short excess = static_cast<short>(needSrcW - hardCapW);
+                needR.left  = static_cast<short>(needR.left  + excess / 2);
+                needR.right = static_cast<short>(needR.right - (excess - excess / 2));
+                needSrcW = hardCapW;
+            }
+            if (needSrcH > hardCapH) {
+                short excess = static_cast<short>(needSrcH - hardCapH);
+                needR.top    = static_cast<short>(needR.top    + excess / 2);
+                needR.bottom = static_cast<short>(needR.bottom - (excess - excess / 2));
+                needSrcH = hardCapH;
+            }
+        }
         if ((SInt32)needSrcW * needSrcH > 500000) return; // pathological angle/size guard
 
         FastPixelWriter fastW = GetFastPixelWriter();
