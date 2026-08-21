@@ -2838,6 +2838,14 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     Point prev = startPt, curr = startPt;
     bool pushedUndo = false;
 
+    // Aspect-ratio basis for the Shift lock: re-snapshotted at the instant
+    // Shift transitions from up to down (see the loop below), not fixed at
+    // drag start -- so locking mid-drag preserves whatever W:H the shape
+    // already had at that moment (matches Figma) instead of snapping back
+    // to the shape's pre-drag proportions.
+    bool prevShiftHeld = false;
+    double shiftLockW = origB.w, shiftLockH = origB.h;
+
     // Same dirty-rect clipping HandleRotateDrag already uses, adapted for
     // resize: unlike rotation the object's on-screen footprint isn't a
     // fixed radius (it's changing every frame by definition), so recompute
@@ -2931,9 +2939,20 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
             // Aspect ratio lock: inspector button OR Shift currently held (polled
             // live every mouse-move, not just at drag start, so toggling Shift
             // mid-drag engages/disengages the lock in real time, matching Figma).
-            bool lockAR = isCorner && (IsAspectLocked() || IsShiftKeyDownNow());
-            if (lockAR && origB.w > 0 && origB.h > 0)
-                newH = newW * origB.h / origB.w;
+            bool aspectBtnLocked = IsAspectLocked();
+            bool shiftHeldNow    = IsShiftKeyDownNow();
+            if (shiftHeldNow && !prevShiftHeld) {
+                shiftLockW = b->w;
+                shiftLockH = b->h;
+            }
+            prevShiftHeld = shiftHeldNow;
+
+            bool lockAR = isCorner && (aspectBtnLocked || shiftHeldNow);
+            if (lockAR) {
+                double baseW = aspectBtnLocked ? origB.w : shiftLockW;
+                double baseH = aspectBtnLocked ? origB.h : shiftLockH;
+                if (baseW > 0 && baseH > 0) newH = newW * baseH / baseW;
+            }
 
             if (newW < kMin) newW = kMin;
             if (newH < kMin) newH = kMin;
@@ -4710,13 +4729,32 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
 
     Point prevPt = startPt, currPt = startPt;
 
+    // Holding Shift constrains the new shape/frame to a square (1:1), same
+    // as Figma -- polled live each frame so it engages/disengages in real
+    // time as Shift is held/released, not just when down at drag start.
+    // Grows from startPt using whichever axis the mouse has moved farther
+    // on, preserving drag direction on both axes.
+    auto effectiveEnd = [&](Point end) -> Point {
+        if (!IsShiftKeyDownNow()) return end;
+        short dx = static_cast<short>(end.h - startPt.h);
+        short dy = static_cast<short>(end.v - startPt.v);
+        short adx = dx < 0 ? static_cast<short>(-dx) : dx;
+        short ady = dy < 0 ? static_cast<short>(-dy) : dy;
+        short m = adx > ady ? adx : ady;
+        Point out;
+        out.h = static_cast<short>(startPt.h + (dx < 0 ? -m : m));
+        out.v = static_cast<short>(startPt.v + (dy < 0 ? -m : m));
+        return out;
+    };
+
     while (Button()) {
         GetMouse(&currPt);
         if (currPt.h != prevPt.h || currPt.v != prevPt.v) {
             DrawWindowContent(win);
+            Point dispPt = effectiveEnd(currPt);
             Rect rb = {
-                sMin(startPt.v, currPt.v), sMin(startPt.h, currPt.h),
-                sMax(startPt.v, currPt.v), sMax(startPt.h, currPt.h)
+                sMin(startPt.v, dispPt.v), sMin(startPt.h, dispPt.h),
+                sMax(startPt.v, dispPt.v), sMax(startPt.h, dispPt.h)
             };
             if (rb.right > rb.left && rb.bottom > rb.top) {
                 RGBColor blue = { 0x1177, 0x55AA, 0xFFFF };
@@ -4726,6 +4764,7 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
         }
     }
 
+    currPt = effectiveEnd(currPt);
     short dw = sMax(currPt.h, startPt.h) - sMin(currPt.h, startPt.h);
     short dh = sMax(currPt.v, startPt.v) - sMin(currPt.v, startPt.v);
 
