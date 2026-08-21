@@ -434,185 +434,93 @@ static void UpdateMenuState() {
     DrawMenuBar();
 }
 
-// Illustrator-9-style "Save changes before closing?" alert: yellow caution
-// triangle, wrapped message naming the document, and Don't Save / Cancel /
-// Save buttons in that left-to-right order (Save is the bold default,
-// responds to Return/Enter; Escape = Cancel). Hand-drawn custom window
-// (same NewCWindow + WaitNextEvent-loop family as ShowRenameDialog) rather
-// than the classic DLOG/DITL Dialog Manager this used to go through —
-// that path had no keyboard-shortcut support and no room for an icon or
-// document-name substitution without brittle Rez/UPP work.
+// UserItem proc for DITL 129 item 2: draws the thick default-button "ring"
+// around item 1 (Save) -- the exact ButtonFrameProc technique Retro68's own
+// Samples/Dialog uses for its default button.
+static pascal void DrawSaveDefaultRing(DialogRef dlg, short itemNo) {
+    (void)itemNo;
+    DialogItemType type; Handle itemH; Rect box;
+    GetDialogItem(dlg, 1, &type, &itemH, &box);
+    InsetRect(&box, -4, -4);
+    PenSize(3, 3);
+    FrameRoundRect(&box, 16, 16);
+    PenSize(1, 1);
+}
+
+// UserItem proc for DITL 129 item 5: yellow caution triangle + "!", drawn
+// in its reserved {20,20,52,52} rect (RetroStudio.r) -- Retro68 has no
+// bundled color caution ICON resource to reference instead.
+static pascal void DrawCautionIcon(DialogRef dlg, short itemNo) {
+    (void)dlg; (void)itemNo;
+    RGBColor black  = { 0, 0, 0 };
+    RGBColor yellow = { 0xFFFF, 0xCCCC, 0x0000 };
+    PolyHandle tri = OpenPoly();
+    MoveTo(36, 20);
+    LineTo(52, 50);
+    LineTo(20, 50);
+    LineTo(36, 20);
+    ClosePoly();
+    RGBForeColor(&yellow); PaintPoly(tri);
+    RGBForeColor(&black);  FramePoly(tri);
+    KillPoly(tri);
+    TextFont(0); TextSize(18); TextFace(bold);
+    char bang[1] = { '!' };
+    short w = TextWidth(bang, 0, 1);
+    MoveTo(static_cast<short>(36 - w / 2), 47);
+    DrawText(bang, 0, 1);
+    TextFace(normal); TextSize(12);
+    RGBForeColor(&black);
+}
+
+// Return/Enter -> item 1 (Save, the default); Escape -> item 4 (Cancel).
+// Standard ModalFilterProc keystroke-to-item-hit translation, same pattern
+// every classic dialog with keyboard shortcuts uses.
+static pascal Boolean ConfirmCloseFilterProc(DialogPtr dlg, EventRecord* event, short* itemHit) {
+    (void)dlg;
+    if (event->what == keyDown || event->what == autoKey) {
+        char c = static_cast<char>(event->message & charCodeMask);
+        if (c == 0x0D || c == 0x03) { *itemHit = 1; return true; }  // Return/Enter
+        if (c == 0x1B)              { *itemHit = 4; return true; }  // Escape
+    }
+    return false;
+}
+
+// Illustrator-9-style "Save changes before closing?" alert -- real Dialog
+// Manager DLOG/DITL 129 (RetroStudio.r), same family as Retro68's own
+// Samples/Dialog: Button items are drawn by the OS itself (real
+// Appearance-themed 3D buttons, no DrawThemeButton call needed from us),
+// and centerMainScreen has the OS compute genuine screen centering. Item
+// 1 = Save (default), 3 = Don't Save, 4 = Cancel; items 2/5 are UserItems
+// (default-ring, caution icon); item 6 is the StaticText message, which
+// takes the document name via ParamText's "^0" substitution.
 // Returns: 0 = Save, 1 = Don't Save, 2 = Cancel.
 static int ShowConfirmCloseDialog(const std::string& docName) {
-    const short kAlertDBoxProc = 1;  // plain modal box, no title bar/grow/zoom
-    const short kW = 340, kH = 125;
+    Str255 nameP; ToPStr(docName, nameP);
+    Str255 emptyP = { 0 };
+    ParamText(nameP, emptyP, emptyP, emptyP);
 
-    // Center over the main document window rather than a hardcoded screen
-    // position (GetQDGlobalsScreenBits etc. aren't verified against this
-    // toolchain's headers, and this session already ate three CI round
-    // trips on unverified Toolbox signatures -- gMainWindow's own bounds
-    // are a real, already-proven-safe source of an on-screen rect).
-    Rect mainGlobalR = { 100, 100, 500, 700 };  // fallback if no window is open
-    if (gMainWindow) {
-        SetPortWindowPort(gMainWindow);
-        Rect mp; GetWindowPortBounds(gMainWindow, &mp);
-        Point tl; tl.h = mp.left;  tl.v = mp.top;
-        Point br; br.h = mp.right; br.v = mp.bottom;
-        LocalToGlobal(&tl); LocalToGlobal(&br);
-        mainGlobalR = { tl.v, tl.h, br.v, br.h };
-    }
-    short cx = static_cast<short>((mainGlobalR.left + mainGlobalR.right) / 2);
-    short cy = static_cast<short>((mainGlobalR.top + mainGlobalR.bottom) / 2);
-    short left = static_cast<short>(cx - kW / 2);
-    short top  = static_cast<short>(cy - kH / 2);
-    Rect wr = { top, left, static_cast<short>(top + kH), static_cast<short>(left + kW) };
-
-    Str255 emptyTitle = { 0 };
-    WindowRef dlg = NewCWindow(nullptr, &wr, emptyTitle, true,
-                               kAlertDBoxProc, (WindowRef)-1L, false, 0);
+    DialogPtr dlg = GetNewDialog(129, nullptr, (WindowPtr)-1L);
     if (!dlg) return 2;
 
-    SetPortWindowPort(dlg);
-    Rect portR; GetWindowPortBounds(dlg, &portR);
+    DialogItemType type; Handle itemH; Rect box;
+    GetDialogItem(dlg, 2, &type, &itemH, &box);
+    SetDialogItem(dlg, 2, type, reinterpret_cast<Handle>(NewUserItemUPP(DrawSaveDefaultRing)), &box);
+    GetDialogItem(dlg, 5, &type, &itemH, &box);
+    SetDialogItem(dlg, 5, type, reinterpret_cast<Handle>(NewUserItemUPP(DrawCautionIcon)), &box);
 
-    RGBColor black    = { 0, 0, 0 };
-    RGBColor white    = { 0xFFFF, 0xFFFF, 0xFFFF };
-    RGBColor platGray = { 0xCCCC, 0xCCCC, 0xCCCC };  // Platinum window/button gray, same as InspectorPanel
-    RGBColor shadow   = { 0x5555, 0x5555, 0x5555 };
-    RGBColor yellow   = { 0xFFFF, 0xCCCC, 0x0000 };  // classic Mac caution-icon yellow
+    ModalFilterUPP filterUPP = NewModalFilterUPP(ConfirmCloseFilterProc);
 
-    Rect btnSave     = { 85, 242, 105, 320 };
-    Rect btnCancel   = { 85, 160, 105, 232 };
-    Rect btnDontSave = { 85,  50, 105, 150 };
+    short item = 0;
+    do {
+        ModalDialog(filterUPP, &item);
+    } while (item != 1 && item != 3 && item != 4);
 
-    // Platinum pushbutton: gray fill, black outer frame, white top/left +
-    // dark bottom/right inner bevel lines -- same recipe InspectorPanel's
-    // popup buttons use (no DrawThemeButton in this toolchain, see CLAUDE.md
-    // section 7.3). Default button gets a thicker outer frame instead of a
-    // separate collar, which is the simplest reliable way to read as
-    // "default" at this resolution.
-    auto drawButton = [&](const Rect& r, const char* label, bool isDefault) {
-        RGBForeColor(&platGray);
-        Rect fillR = r; PaintRoundRect(&fillR, 12, 12);
+    DisposeModalFilterUPP(filterUPP);
+    DisposeDialog(dlg);
 
-        RGBForeColor(&white);
-        MoveTo(static_cast<short>(r.left + 2), static_cast<short>(r.bottom - 3));
-        LineTo(static_cast<short>(r.left + 2), static_cast<short>(r.top + 2));
-        LineTo(static_cast<short>(r.right - 3), static_cast<short>(r.top + 2));
-        RGBForeColor(&shadow);
-        MoveTo(static_cast<short>(r.left + 3), static_cast<short>(r.bottom - 2));
-        LineTo(static_cast<short>(r.right - 2), static_cast<short>(r.bottom - 2));
-        LineTo(static_cast<short>(r.right - 2), static_cast<short>(r.top + 3));
-
-        RGBForeColor(&black);
-        PenSize(isDefault ? 2 : 1, isDefault ? 2 : 1);
-        Rect frameR = r; FrameRoundRect(&frameR, 12, 12);
-        PenSize(1, 1);
-
-        TextFont(0); TextSize(12); TextFace(isDefault ? bold : normal);
-        short len = 0; while (label[len]) ++len;
-        char* p = const_cast<char*>(label);
-        short tw = TextWidth(p, 0, len);
-        MoveTo(static_cast<short>((r.left + r.right) / 2 - tw / 2),
-               static_cast<short>((r.top + r.bottom) / 2 + 4));
-        DrawText(p, 0, len);
-        TextFace(normal);
-    };
-
-    auto drawAll = [&]() {
-        RGBBackColor(&platGray); RGBForeColor(&black);
-        EraseRect(&portR);
-        FrameRect(&portR);
-
-        // Caution icon: yellow triangle, black border + bold "!"
-        PolyHandle tri = OpenPoly();
-        MoveTo(36, 22);
-        LineTo(52, 50);
-        LineTo(20, 50);
-        LineTo(36, 22);
-        ClosePoly();
-        RGBForeColor(&yellow); PaintPoly(tri);
-        RGBForeColor(&black);  FramePoly(tri);
-        KillPoly(tri);
-        TextFont(0); TextSize(18); TextFace(bold);
-        {
-            char bang[1] = { '!' };
-            short exW = TextWidth(bang, 0, 1);
-            MoveTo(static_cast<short>(36 - exW / 2), 47);
-            DrawText(bang, 0, 1);
-        }
-        TextFace(normal); TextSize(12);
-
-        // Message (this codebase has no real word-wrap -- two fixed lines,
-        // same convention used everywhere else text is laid out here)
-        std::string line1 = "Save changes to the RetroStudio document";
-        std::string line2 = "\"" + docName + "\" before closing?";
-        MoveTo(66, 38);
-        { char* p = const_cast<char*>(line1.c_str()); DrawText(p, 0, static_cast<short>(line1.size())); }
-        MoveTo(66, 56);
-        { char* p = const_cast<char*>(line2.c_str()); DrawText(p, 0, static_cast<short>(line2.size())); }
-
-        drawButton(btnDontSave, "Don't Save", false);
-        drawButton(btnCancel,   "Cancel",     false);
-        drawButton(btnSave,     "Save",       true);
-    };
-
-    drawAll();
-
-    // Wait for the triggering mouse-up before entering the loop (same
-    // guard ShowRenameDialog uses, so the click that opened this alert
-    // doesn't also register as a click inside it).
-    while (Button()) {}
-
-    int  result = 2;   // Cancel if the loop ever exits some other way
-    bool done   = false;
-    EventRecord evt;
-
-    while (!done) {
-        bool got = WaitNextEvent(everyEvent, &evt, 15, nullptr);
-        if (!got) continue;
-        switch (evt.what) {
-            case keyDown:
-            case autoKey: {
-                char c = static_cast<char>(evt.message & charCodeMask);
-                if (c == 0x0D || c == 0x03)      { result = 0; done = true; }  // Return/Enter = Save
-                else if (c == 0x1B)               { result = 2; done = true; }  // Escape = Cancel
-                break;
-            }
-            case mouseDown: {
-                // Match ShowRenameDialog's own hit-test exactly: only check
-                // which window was hit, not FindWindow's `part` -- a plain
-                // dBoxProc window (no title bar/grow/zoom regions at all)
-                // was seen returning something other than inContent here,
-                // which silently swallowed every click inside the dialog
-                // and left it (and the whole app, since this loop blocks
-                // main.cpp's event loop) stuck open forever.
-                WindowRef hitWin;
-                FindWindow(evt.where, &hitWin);
-                if (hitWin != dlg) break;
-                SetPortWindowPort(dlg);
-                Point pt = evt.where;
-                GlobalToLocal(&pt);
-                if (PtInRect(pt, &btnSave))          { result = 0; done = true; }
-                else if (PtInRect(pt, &btnDontSave)) { result = 1; done = true; }
-                else if (PtInRect(pt, &btnCancel))   { result = 2; done = true; }
-                break;
-            }
-            case updateEvt: {
-                WindowRef updWin = reinterpret_cast<WindowRef>(evt.message);
-                if (updWin == dlg) {
-                    BeginUpdate(dlg);
-                    SetPortWindowPort(dlg);
-                    drawAll();
-                    EndUpdate(dlg);
-                }
-                break;
-            }
-        }
-    }
-
-    DisposeWindow(dlg);
-    return result;
+    if (item == 1) return 0;  // Save
+    if (item == 3) return 1;  // Don't Save
+    return 2;                 // Cancel
 }
 
 void SwitchActiveDocument(WindowRef win) {
