@@ -1723,35 +1723,6 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
 
                     didPixelRotate = true;
                 }
-
-                // DIAGNOSTIC (temporary): same style of readout as the
-                // live-edit overlay, but for the settled renderer -- the
-                // path actually active while dragging a committed shape,
-                // which is where "text stays hidden until I keep dragging"
-                // was reported. Printed unconditionally whenever a
-                // rotation was in play, so whatever the user screenshots
-                // next carries the real numbers automatically.
-                {
-                    std::string dbg2 = "r " + std::to_string(r.left) + "," + std::to_string(r.top) +
-                                        "-" + std::to_string(r.right) + "," + std::to_string(r.bottom) +
-                                        "  paintR " + std::to_string(paintSrcRect.left) + "," + std::to_string(paintSrcRect.top) +
-                                        "-" + std::to_string(paintSrcRect.right) + "," + std::to_string(paintSrcRect.bottom) +
-                                        "  win " + std::to_string(winBounds.left) + "," + std::to_string(winBounds.top) +
-                                        "-" + std::to_string(winBounds.right) + "," + std::to_string(winBounds.bottom) +
-                                        "  fits " + (fitsWindow ? "1" : "0") +
-                                        "  rot " + (didPixelRotate ? "1" : "0");
-                    Str255 dbgP2; ToPStr(dbg2, dbgP2);
-                    RGBColor savedFg; GetForeColor(&savedFg);
-                    RGBColor blueDbg = {0, 0, 0xFFFF}; RGBForeColor(&blueDbg);
-                    TextFont(0); TextSize(9); TextFace(0);
-                    RGBColor bgw2 = {0xFFFF,0xFFFF,0xFFFF}; RGBBackColor(&bgw2);
-                    Rect dbgBg2 = { static_cast<short>(winBounds.top+16), static_cast<short>(winBounds.left+2),
-                                     static_cast<short>(winBounds.top+28), static_cast<short>(winBounds.left+700) };
-                    EraseRect(&dbgBg2);
-                    MoveTo(static_cast<short>(winBounds.left+4), static_cast<short>(winBounds.top+26));
-                    DrawString(dbgP2);
-                    RGBForeColor(&savedFg);
-                }
             }
 
             if (!didPixelRotate) {
@@ -1788,13 +1759,106 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
     if (shapeOp) PenNormal();
 }
 
+// Draws a small label rigidly attached just above r's own LOCAL top-left
+// corner, rotated along with r around r's own center (same pivot/angle as
+// the owning shape or frame's own border) -- so the label keeps a
+// constant gap from its owner at any rotation angle, tilting together
+// with it, instead of either staying upright or being recomputed in
+// screen space every frame (which let the gap balloon or shrink as the
+// angle changed, and made the anchor jump between corners). Uses the
+// same capture/rotate/paint technique already proven for rotated text
+// shapes, uncached and single-pass since a name label is always short
+// enough to stage in one shot. Falls back to a plain upright draw when
+// unrotated, or in the rare case the staging area can't fit on screen.
+static void DrawRotatedLabel(const unsigned char* pn, const Rect& r, double ownRotDeg, const RotChain& ambient) {
+    bool anyRotation = (ownRotDeg != 0.0) || !ambient.empty();
+    if (!anyRotation) {
+        MoveTo(r.left, static_cast<short>(r.top - 5));
+        DrawString(pn);
+        return;
+    }
+
+    FontInfo fi; GetFontInfo(&fi);
+    short labelW = static_cast<short>(StringWidth(pn) + 4);
+    short labelH = static_cast<short>(fi.ascent + fi.descent + 2);
+
+    // Logical (unrotated, LOCAL) position -- this is what gets rotated,
+    // not a screen-space anchor recomputed per-angle.
+    short labelBottom = static_cast<short>(r.top - 5);
+    short labelTop    = static_cast<short>(labelBottom - labelH);
+    Rect srcR = { labelTop, r.left, labelBottom, static_cast<short>(r.left + labelW) };
+
+    double cx = (r.left + r.right) * 0.5, cy = (r.top + r.bottom) * 0.5;
+    RotChain full;
+    if (ownRotDeg != 0.0) full.push_back({ownRotDeg, cx, cy});
+    full.insert(full.end(), ambient.begin(), ambient.end());
+
+    // srcR's own LOGICAL position may not correspond to any real
+    // on-screen location once rotated, so the upright staging draw can't
+    // just happen there directly -- shift a staging copy into the window
+    // first, same technique used for wide rotated text boxes. A label is
+    // always small, so this always fits.
+    Rect winBoundsLbl = CurrentPortBounds();
+    Rect stageR = srcR;
+    short shiftX = 0, shiftY = 0;
+    if (stageR.right > winBoundsLbl.right) shiftX = static_cast<short>(winBoundsLbl.right - stageR.right);
+    if (static_cast<short>(stageR.left + shiftX) < winBoundsLbl.left)
+        shiftX = static_cast<short>(winBoundsLbl.left - stageR.left);
+    if (stageR.bottom > winBoundsLbl.bottom) shiftY = static_cast<short>(winBoundsLbl.bottom - stageR.bottom);
+    if (static_cast<short>(stageR.top + shiftY) < winBoundsLbl.top)
+        shiftY = static_cast<short>(winBoundsLbl.top - stageR.top);
+    stageR.left   = static_cast<short>(stageR.left   + shiftX);
+    stageR.right  = static_cast<short>(stageR.right  + shiftX);
+    stageR.top    = static_cast<short>(stageR.top    + shiftY);
+    stageR.bottom = static_cast<short>(stageR.bottom + shiftY);
+    if (stageR.right <= stageR.left || stageR.bottom <= stageR.top) return;
+
+    short lsW = static_cast<short>(stageR.right - stageR.left);
+    short lsH = static_cast<short>(stageR.bottom - stageR.top);
+    FastPixelWriter lfw = GetFastPixelWriter();
+    bool lUseFast = lfw.Ready();
+    auto lGetPx = [&](short px, short py) -> RGBColor {
+        if (lUseFast) return lfw.Get(px, py);
+        RGBColor c; GetCPixel(px, py, &c); return c;
+    };
+    auto lSetPx = [&](short px, short py, const RGBColor& c) {
+        if (lUseFast) lfw.Set(px, py, c);
+        else          SetCPixel(px, py, const_cast<RGBColor*>(&c));
+    };
+
+    std::vector<RGBColor> lUnder(static_cast<size_t>(lsW) * lsH);
+    for (short y = 0; y < lsH; ++y)
+        for (short x = 0; x < lsW; ++x)
+            lUnder[static_cast<size_t>(y)*lsW+x] =
+                lGetPx(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y));
+
+    MoveTo(stageR.left, static_cast<short>(stageR.bottom - fi.descent));
+    DrawString(pn);
+
+    std::vector<RGBColor> lGlyph(static_cast<size_t>(lsW) * lsH);
+    for (short y = 0; y < lsH; ++y)
+        for (short x = 0; x < lsW; ++x)
+            lGlyph[static_cast<size_t>(y)*lsW+x] =
+                lGetPx(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y));
+
+    for (short y = 0; y < lsH; ++y)
+        for (short x = 0; x < lsW; ++x)
+            lSetPx(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y),
+                   lUnder[static_cast<size_t>(y)*lsW+x]);
+
+    std::vector<bool> lInk(static_cast<size_t>(lsW) * lsH);
+    for (size_t i = 0; i < lInk.size(); ++i)
+        lInk[i] = lGlyph[i].red   != lUnder[i].red ||
+                  lGlyph[i].green != lUnder[i].green ||
+                  lGlyph[i].blue  != lUnder[i].blue;
+
+    HideCursor();
+    PaintRotatedPixelBlock(lGlyph, &lInk, lsW, lsH, srcR, full, lfw, lUseFast);
+    ShowCursor();
+}
+
 // Root-level shapes get a small name label above them (nested shapes don't —
-// see DrawFrame). QuickDraw can't rotate the label text itself (an
-// offscreen-GWorld-based true rotation was tried here and removed — see
-// project memory: CopyBits screen corruption), so when the shape is rotated
-// this just anchors the label above whichever of its 4 corners is currently
-// highest on screen, keeping it visually near the shape at any angle without
-// spinning the text itself.
+// see DrawFrame).
 static void DrawShapeNameLabel(const Shape& shape) {
     Rect r = CanvasRect(shape.bounds);
     std::string label = shape.name;
@@ -1807,24 +1871,9 @@ static void DrawShapeNameLabel(const Shape& shape) {
     RGBColor lc = { 0x8888, 0x8888, 0x8888 };
     RGBForeColor(&lc);
     TextSize(10);
-    if (shape.rotation != 0) {
-        double cx = (r.left + r.right) * 0.5, cy = (r.top + r.bottom) * 0.5;
-        double hw = (r.right - r.left) * 0.5, hh = (r.bottom - r.top) * 0.5;
-        double rad = shape.rotation * 3.14159265358979323846 / 180.0;
-        double cosA = std::cos(rad), sinA = std::sin(rad);
-        double lx4[4] = {-hw, hw, hw, -hw}, ly4[4] = {-hh, -hh, hh, hh};
-        double topX = 0, topY = 1e18;
-        for (int i = 0; i < 4; ++i) {
-            double px = cx + lx4[i]*cosA - ly4[i]*sinA;
-            double py = cy + lx4[i]*sinA + ly4[i]*cosA;
-            if (py < topY) { topY = py; topX = px; }
-        }
-        Point lp = ToQDPoint(topX, topY - 5);
-        MoveTo(lp.h, lp.v);
-    } else {
-        MoveTo(r.left, static_cast<short>(r.top - 5));
-    }
-    DrawString(pn);
+    // Root-level shapes have no rotated ancestor frame (nested shapes
+    // don't get a label at all), so their own rotation is the only input.
+    DrawRotatedLabel(pn, r, static_cast<double>(shape.rotation), {});
     TextSize(12);
 }
 
@@ -1982,88 +2031,7 @@ static void DrawFrame(const Frame& frame, const RotChain& ambient) {
         RGBForeColor(&lc);
         TextSize(10);
         Str255 pn; ToPStr(frame.name, pn);
-        if (anyRotation) {
-            double cx = (r.left + r.right) * 0.5, cy = (r.top + r.bottom) * 0.5;
-            double hw = (r.right - r.left) * 0.5, hh = (r.bottom - r.top) * 0.5;
-            double rad = frame.rotation * 3.14159265358979323846 / 180.0;
-            double cosA = std::cos(rad), sinA = std::sin(rad);
-            double lx4[4] = {-hw, hw, hw, -hw}, ly4[4] = {-hh, -hh, hh, hh};
-            double topX = 0, topY = 1e18;
-            for (int i = 0; i < 4; ++i) {
-                double px = cx + lx4[i]*cosA - ly4[i]*sinA;
-                double py = cy + lx4[i]*sinA + ly4[i]*cosA;
-                if (py < topY) { topY = py; topX = px; }
-            }
-            short anchorX = static_cast<short>(topX), anchorY = static_cast<short>(topY - 5);
-
-            // Tilt the label in place around this same anchor point
-            // (whichever corner is currently highest on screen), instead
-            // of leaving it upright -- same capture/rotate/paint
-            // technique already proven for rotated text shapes, just
-            // uncached and single-pass since a frame name is always
-            // short enough to stage in one shot.
-            FontInfo fi; GetFontInfo(&fi);
-            short labelW = static_cast<short>(StringWidth(pn) + 4);
-            Rect srcR = { static_cast<short>(anchorY - fi.ascent), anchorX,
-                           static_cast<short>(anchorY + fi.descent + 2), static_cast<short>(anchorX + labelW) };
-            Rect winBoundsLbl = CurrentPortBounds();
-            bool fitsOnScreen = srcR.right <= winBoundsLbl.right && srcR.left >= winBoundsLbl.left &&
-                                 srcR.bottom <= winBoundsLbl.bottom && srcR.top >= winBoundsLbl.top &&
-                                 srcR.right > srcR.left && srcR.bottom > srcR.top;
-            if (fitsOnScreen) {
-                short lsW = static_cast<short>(srcR.right - srcR.left);
-                short lsH = static_cast<short>(srcR.bottom - srcR.top);
-                FastPixelWriter lfw = GetFastPixelWriter();
-                bool lUseFast = lfw.Ready();
-                auto lGetPx = [&](short px, short py) -> RGBColor {
-                    if (lUseFast) return lfw.Get(px, py);
-                    RGBColor c; GetCPixel(px, py, &c); return c;
-                };
-                auto lSetPx = [&](short px, short py, const RGBColor& c) {
-                    if (lUseFast) lfw.Set(px, py, c);
-                    else          SetCPixel(px, py, const_cast<RGBColor*>(&c));
-                };
-                std::vector<RGBColor> lUnder(static_cast<size_t>(lsW) * lsH);
-                for (short y = 0; y < lsH; ++y)
-                    for (short x = 0; x < lsW; ++x)
-                        lUnder[static_cast<size_t>(y)*lsW+x] =
-                            lGetPx(static_cast<short>(srcR.left+x), static_cast<short>(srcR.top+y));
-
-                MoveTo(anchorX, anchorY);
-                DrawString(pn);
-
-                std::vector<RGBColor> lGlyph(static_cast<size_t>(lsW) * lsH);
-                for (short y = 0; y < lsH; ++y)
-                    for (short x = 0; x < lsW; ++x)
-                        lGlyph[static_cast<size_t>(y)*lsW+x] =
-                            lGetPx(static_cast<short>(srcR.left+x), static_cast<short>(srcR.top+y));
-
-                for (short y = 0; y < lsH; ++y)
-                    for (short x = 0; x < lsW; ++x)
-                        lSetPx(static_cast<short>(srcR.left+x), static_cast<short>(srcR.top+y),
-                               lUnder[static_cast<size_t>(y)*lsW+x]);
-
-                std::vector<bool> lInk(static_cast<size_t>(lsW) * lsH);
-                for (size_t i = 0; i < lInk.size(); ++i)
-                    lInk[i] = lGlyph[i].red   != lUnder[i].red ||
-                              lGlyph[i].green != lUnder[i].green ||
-                              lGlyph[i].blue  != lUnder[i].blue;
-
-                RotChain labelChain;
-                labelChain.push_back({frame.rotation, static_cast<double>(anchorX), static_cast<double>(anchorY)});
-                HideCursor();
-                PaintRotatedPixelBlock(lGlyph, &lInk, lsW, lsH, srcR, labelChain, lfw, lUseFast);
-                ShowCursor();
-            } else {
-                // Off-screen for staging purposes -- fall back to upright
-                // rather than skip the label entirely.
-                MoveTo(anchorX, anchorY);
-                DrawString(pn);
-            }
-        } else {
-            MoveTo(r.left, static_cast<short>(r.top - 5));
-            DrawString(pn);
-        }
+        DrawRotatedLabel(pn, r, static_cast<double>(frame.rotation), {});
         TextSize(12);
     }
 }
@@ -4416,29 +4384,6 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
         LineTo(rc[1].h, rc[1].v); LineTo(rc[2].h, rc[2].v);
         LineTo(rc[3].h, rc[3].v); LineTo(rc[0].h, rc[0].v);
         PenSize(1, 1);
-
-        // DIAGNOSTIC (temporary): print the exact numbers driving the clip,
-        // fixed at the window's top-left so it's never itself rotated/cut.
-        // Three straight attempts at "it's the window-bounds clip" produced
-        // zero visible change, so this reads out the real values instead of
-        // guessing a fourth time.
-        {
-            std::string dbg = "eR " + std::to_string(editR.left) + "," + std::to_string(editR.top) +
-                               "-" + std::to_string(editR.right) + "," + std::to_string(editR.bottom) +
-                               "  needR " + std::to_string(needR.left) + "," + std::to_string(needR.top) +
-                               "-" + std::to_string(needR.right) + "," + std::to_string(needR.bottom) +
-                               "  win " + std::to_string(gActivePortBounds.left) + "," + std::to_string(gActivePortBounds.top) +
-                               "-" + std::to_string(gActivePortBounds.right) + "," + std::to_string(gActivePortBounds.bottom);
-            Str255 dbgP; ToPStr(dbg, dbgP);
-            RGBColor red = {0xFFFF, 0, 0}; RGBForeColor(&red);
-            TextFont(0); TextSize(9); TextFace(0);
-            RGBColor bgw = {0xFFFF,0xFFFF,0xFFFF}; RGBBackColor(&bgw);
-            Rect dbgBg = { static_cast<short>(portRect.top+2), static_cast<short>(portRect.left+2),
-                            static_cast<short>(portRect.top+14), static_cast<short>(portRect.left+700) };
-            EraseRect(&dbgBg);
-            MoveTo(static_cast<short>(portRect.left+4), static_cast<short>(portRect.top+12));
-            DrawString(dbgP);
-        }
     };
     redraw();
 
