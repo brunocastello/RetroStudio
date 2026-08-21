@@ -1276,7 +1276,19 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
             // must already be set via setTextDrawState).
             auto drawLines = [&](Rect rect) {
                 if (str.empty()) return;
-                short drawY = static_cast<short>(rect.top + scaledSize);
+                // Baseline offset from the box's top: the font's real
+                // ascent, not the raw point size. TextEdit (used during
+                // live editing) positions the first line's baseline using
+                // the font's actual ascent metric internally -- ascent is
+                // smaller than the full point size for virtually every
+                // font, so approximating it with scaledSize placed the
+                // settled/committed text measurably lower than the same
+                // text looked while being edited, showing up as a
+                // position jump on every add or edit commit regardless of
+                // auto layout or rotation.
+                FontInfo fi; GetFontInfo(&fi);
+                short baselineOffset = fi.ascent > 0 ? fi.ascent : scaledSize;
+                short drawY = static_cast<short>(rect.top + baselineOffset);
                 short boxW  = static_cast<short>(rect.right - rect.left);
                 size_t pos = 0;
                 do {
