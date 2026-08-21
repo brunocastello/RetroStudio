@@ -1425,68 +1425,26 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                     // minimum so any small mismatch elsewhere (rounding,
                     // TE's own glyph metrics vs measured width, etc.)
                     // can't manifest as a visible cut right at this edge.
-                    // The padded size must never exceed the window's own
-                    // dimensions though: stageR below can only be SHIFTED
-                    // to fit inside the window, never shrunk, so once
-                    // needR is wider/taller than the window no shift fits
-                    // it and the excess reads undefined off-window pixels
-                    // regardless -- shrink the padding first if needed.
+                    // Not capped to the window's size -- see the striping
+                    // loop below for why capping needR itself was the bug,
+                    // not the fix (the STAGING draw fundamentally needs
+                    // source-width screen space regardless of how compact
+                    // the final rotated result is).
                     short needPad = 60;
                     short winW = static_cast<short>(winBounds.right - winBounds.left);
                     short winH = static_cast<short>(winBounds.bottom - winBounds.top);
-                    short strictW = static_cast<short>(std::ceil(needMaxXd) - std::floor(needMinXd));
-                    short strictH = static_cast<short>(std::ceil(needMaxYd) - std::floor(needMinYd));
-                    short padX = std::min(needPad, std::max<short>(0, static_cast<short>((winW - strictW) / 2)));
-                    short padY = std::min(needPad, std::max<short>(0, static_cast<short>((winH - strictH) / 2)));
                     Rect needR;
-                    needR.left   = std::max(r.left,   static_cast<short>(std::floor(needMinXd) - padX));
-                    needR.right  = std::min(r.right,  static_cast<short>(std::ceil(needMaxXd)  + padX));
-                    needR.top    = std::max(r.top,    static_cast<short>(std::floor(needMinYd) - padY));
-                    needR.bottom = std::min(r.bottom, static_cast<short>(std::ceil(needMaxYd)  + padY));
+                    needR.left   = std::max(r.left,   static_cast<short>(std::floor(needMinXd) - needPad));
+                    needR.right  = std::min(r.right,  static_cast<short>(std::ceil(needMaxXd)  + needPad));
+                    needR.top    = std::max(r.top,    static_cast<short>(std::floor(needMinYd) - needPad));
+                    needR.bottom = std::min(r.bottom, static_cast<short>(std::ceil(needMaxYd)  + needPad));
                     short needSrcW = static_cast<short>(needR.right - needR.left);
                     short needSrcH = static_cast<short>(needR.bottom - needR.top);
 
-                    // Hard cap regardless of how the above computed: capping
-                    // only the padding wasn't enough (confirmed by report --
-                    // needR still came out ~777px against a 640px window)
-                    // because the strict/unpadded AABB-of-rotated-corners
-                    // bound can itself already exceed the window's own size
-                    // at some angles, independent of any padding on top of
-                    // it. Trim symmetrically down to a size that's
-                    // guaranteed to fit after stageR's shift, no matter what
-                    // the geometry produced above.
-                    short hardCapW = static_cast<short>(std::max<short>(1, winW - 4));
-                    short hardCapH = static_cast<short>(std::max<short>(1, winH - 4));
-                    if (needSrcW > hardCapW) {
-                        short excess = static_cast<short>(needSrcW - hardCapW);
-                        needR.left  = static_cast<short>(needR.left  + excess / 2);
-                        needR.right = static_cast<short>(needR.right - (excess - excess / 2));
-                        needSrcW = hardCapW;
-                    }
-                    if (needSrcH > hardCapH) {
-                        short excess = static_cast<short>(needSrcH - hardCapH);
-                        needR.top    = static_cast<short>(needR.top    + excess / 2);
-                        needR.bottom = static_cast<short>(needR.bottom - (excess - excess / 2));
-                        needSrcH = hardCapH;
-                    }
-
                     if (needR.right > needR.left && needR.bottom > needR.top &&
-                        (SInt32)needSrcW * needSrcH <= 500000) {
+                        (SInt32)needSrcW * needSrcH <= 2000000) {
                         fastW = GetFastPixelWriter();
                         useFast = fastW.Ready();
-                        Rect stageR = needR;
-                        short stageShiftX = 0, stageShiftY = 0;
-                        if (stageR.right > winBounds.right) stageShiftX = static_cast<short>(winBounds.right - stageR.right);
-                        if (static_cast<short>(stageR.left + stageShiftX) < winBounds.left)
-                            stageShiftX = static_cast<short>(winBounds.left - stageR.left);
-                        if (stageR.bottom > winBounds.bottom) stageShiftY = static_cast<short>(winBounds.bottom - stageR.bottom);
-                        if (static_cast<short>(stageR.top + stageShiftY) < winBounds.top)
-                            stageShiftY = static_cast<short>(winBounds.top - stageR.top);
-                        stageR.left   = static_cast<short>(stageR.left   + stageShiftX);
-                        stageR.right  = static_cast<short>(stageR.right  + stageShiftX);
-                        stageR.top    = static_cast<short>(stageR.top    + stageShiftY);
-                        stageR.bottom = static_cast<short>(stageR.bottom + stageShiftY);
-
                         auto getPxU = [&](short px, short py) -> RGBColor {
                             if (useFast) return fastW.Get(px, py);
                             RGBColor c; GetCPixel(px, py, &c); return c;
@@ -1496,46 +1454,85 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                             else         SetCPixel(px, py, const_cast<RGBColor*>(&c));
                         };
 
-                        std::vector<RGBColor> under(static_cast<size_t>(needSrcW) * needSrcH);
-                        for (short y = 0; y < needSrcH; ++y)
-                            for (short x = 0; x < needSrcW; ++x)
-                                under[static_cast<size_t>(y)*needSrcW + x] =
-                                    getPxU(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y));
+                        uncachedGlyph.assign(static_cast<size_t>(needSrcW) * needSrcH, RGBColor{0,0,0});
+                        uncachedInk.assign(static_cast<size_t>(needSrcW) * needSrcH, false);
 
-                        RgnHandle savedClipU = NewRgn();
-                        GetClip(savedClipU);
-                        { Rect cr = stageR; ClipRect(&cr); }
-                        setTextDrawState();
-                        // drawLines aligns/positions text using the rect's
-                        // own left/right, which must stay r's real extent
-                        // (not the narrower stageR) or a centered/right-
-                        // aligned line would be drawn in the wrong spot;
-                        // the clip above still confines the actual pixels
-                        // touched to stageR.
-                        Rect alignR = r;
-                        alignR.left  = static_cast<short>(r.left  + stageShiftX);
-                        alignR.right = static_cast<short>(r.right + stageShiftX);
-                        alignR.top   = stageR.top; alignR.bottom = stageR.bottom;
-                        drawLines(alignR);
-                        SetClip(savedClipU);
-                        DisposeRgn(savedClipU);
+                        // Capping needR only ever moved the cutoff point
+                        // around: the STAGING draw needs source-width
+                        // screen space no matter how compact the rotated
+                        // result is (rotation compacts the footprint;
+                        // staging happens before rotation is applied).
+                        // Capture in successive window-sized STRIPS
+                        // instead, each shifted into the window
+                        // independently and stitched into the full
+                        // buffers at the right offset.
+                        short stripMaxW = static_cast<short>(std::max<short>(8, winW - 4));
+                        for (short stripLeft = 0; stripLeft < needSrcW; stripLeft = static_cast<short>(stripLeft + stripMaxW)) {
+                            short stripW = static_cast<short>(std::min<short>(stripMaxW, needSrcW - stripLeft));
+                            Rect stripR = { needR.top, static_cast<short>(needR.left + stripLeft),
+                                             needR.bottom, static_cast<short>(needR.left + stripLeft + stripW) };
 
-                        uncachedGlyph.resize(static_cast<size_t>(needSrcW) * needSrcH);
-                        for (short y = 0; y < needSrcH; ++y)
-                            for (short x = 0; x < needSrcW; ++x)
-                                uncachedGlyph[static_cast<size_t>(y)*needSrcW + x] =
-                                    getPxU(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y));
+                            Rect stageR = stripR;
+                            short stageShiftX = 0, stageShiftY = 0;
+                            if (stageR.right > winBounds.right) stageShiftX = static_cast<short>(winBounds.right - stageR.right);
+                            if (static_cast<short>(stageR.left + stageShiftX) < winBounds.left)
+                                stageShiftX = static_cast<short>(winBounds.left - stageR.left);
+                            if (stageR.bottom > winBounds.bottom) stageShiftY = static_cast<short>(winBounds.bottom - stageR.bottom);
+                            if (static_cast<short>(stageR.top + stageShiftY) < winBounds.top)
+                                stageShiftY = static_cast<short>(winBounds.top - stageR.top);
+                            stageR.left   = static_cast<short>(stageR.left   + stageShiftX);
+                            stageR.right  = static_cast<short>(stageR.right  + stageShiftX);
+                            stageR.top    = static_cast<short>(stageR.top    + stageShiftY);
+                            stageR.bottom = static_cast<short>(stageR.bottom + stageShiftY);
 
-                        for (short y = 0; y < needSrcH; ++y)
-                            for (short x = 0; x < needSrcW; ++x)
-                                setPxU(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y),
-                                       under[static_cast<size_t>(y)*needSrcW + x]);
+                            std::vector<RGBColor> under(static_cast<size_t>(stripW) * needSrcH);
+                            for (short y = 0; y < needSrcH; ++y)
+                                for (short x = 0; x < stripW; ++x)
+                                    under[static_cast<size_t>(y)*stripW + x] =
+                                        getPxU(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y));
 
-                        uncachedInk.resize(static_cast<size_t>(needSrcW) * needSrcH);
-                        for (size_t i = 0; i < uncachedInk.size(); ++i) {
-                            uncachedInk[i] = uncachedGlyph[i].red   != under[i].red ||
-                                              uncachedGlyph[i].green != under[i].green ||
-                                              uncachedGlyph[i].blue  != under[i].blue;
+                            RgnHandle savedClipU = NewRgn();
+                            GetClip(savedClipU);
+                            { Rect cr = stageR; ClipRect(&cr); }
+                            setTextDrawState();
+                            // drawLines aligns/positions text using the
+                            // rect's own left/right, which must stay r's
+                            // full real extent (shifted by this strip's
+                            // own offset), not just the strip's own
+                            // narrower width, or a centered/right-aligned
+                            // line would land in the wrong spot; the clip
+                            // above still confines the actual pixels
+                            // touched to this strip's stageR.
+                            short shift = static_cast<short>(stageR.left - stripR.left);
+                            Rect alignR = r;
+                            alignR.left  = static_cast<short>(r.left  + shift);
+                            alignR.right = static_cast<short>(r.right + shift);
+                            alignR.top   = stageR.top; alignR.bottom = stageR.bottom;
+                            drawLines(alignR);
+                            SetClip(savedClipU);
+                            DisposeRgn(savedClipU);
+
+                            // Per-pixel comparison against this strip's own
+                            // captured background (not a single sampled
+                            // color): the settled renderer draws directly
+                            // on top of whatever was already there rather
+                            // than erasing first, so the real background
+                            // can vary pixel-to-pixel (e.g. partly inside
+                            // a filled frame, partly on plain canvas).
+                            for (short y = 0; y < needSrcH; ++y) {
+                                for (short x = 0; x < stripW; ++x) {
+                                    RGBColor c = getPxU(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y));
+                                    const RGBColor& u = under[static_cast<size_t>(y)*stripW + x];
+                                    size_t di = static_cast<size_t>(y)*needSrcW + static_cast<size_t>(stripLeft+x);
+                                    uncachedGlyph[di] = c;
+                                    uncachedInk[di] = c.red != u.red || c.green != u.green || c.blue != u.blue;
+                                }
+                            }
+
+                            for (short y = 0; y < needSrcH; ++y)
+                                for (short x = 0; x < stripW; ++x)
+                                    setPxU(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y),
+                                           under[static_cast<size_t>(y)*stripW + x]);
                         }
 
                         paintSrcRect = needR;
@@ -4190,57 +4187,44 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
         double needMinYd = std::min(std::min(isy0,isy1), std::min(isy2,isy3));
         double needMaxYd = std::max(std::max(isy0,isy1), std::max(isy2,isy3));
 
-        // See the settled renderer's identical needR computation for why
-        // this uses a generous margin instead of +-1px -- but the margin
-        // must never let needR grow wider/taller than the window itself:
-        // stageR can only be SHIFTED to fit inside the window afterward,
-        // never shrunk, so once needR exceeds the window's own size no
-        // shift exists that fits it, and the excess reads undefined
-        // off-window pixels regardless -- the exact regression that
-        // reintroduced the "gray border, blank tail" artifact on a box
-        // whose visible slice grew back up to the window's own width.
+        // Generous margin on the geometrically-strict bound (not just
+        // +-1px), in case of any small mismatch elsewhere (rounding, TE's
+        // own glyph metrics vs measured width, etc.). No longer capped to
+        // the window's size -- see the striping loop below for why that
+        // capping approach was itself the bug, not the fix.
         short needPad = 60;
         short winW = static_cast<short>(portRect.right - portRect.left);
         short winH = static_cast<short>(portRect.bottom - portRect.top);
-        short strictW = static_cast<short>(std::ceil(needMaxXd) - std::floor(needMinXd));
-        short strictH = static_cast<short>(std::ceil(needMaxYd) - std::floor(needMinYd));
-        short padX = std::min(needPad, std::max<short>(0, static_cast<short>((winW - strictW) / 2)));
-        short padY = std::min(needPad, std::max<short>(0, static_cast<short>((winH - strictH) / 2)));
         Rect needR;
-        needR.left   = std::max(editR.left,   static_cast<short>(std::floor(needMinXd) - padX));
-        needR.right  = std::min(editR.right,  static_cast<short>(std::ceil(needMaxXd)  + padX));
-        needR.top    = std::max(editR.top,    static_cast<short>(std::floor(needMinYd) - padY));
-        needR.bottom = std::min(editR.bottom, static_cast<short>(std::ceil(needMaxYd)  + padY));
+        needR.left   = std::max(editR.left,   static_cast<short>(std::floor(needMinXd) - needPad));
+        needR.right  = std::min(editR.right,  static_cast<short>(std::ceil(needMaxXd)  + needPad));
+        needR.top    = std::max(editR.top,    static_cast<short>(std::floor(needMinYd) - needPad));
+        needR.bottom = std::min(editR.bottom, static_cast<short>(std::ceil(needMaxYd)  + needPad));
         if (needR.right <= needR.left || needR.bottom <= needR.top) return;
         short needSrcW = static_cast<short>(needR.right - needR.left);
         short needSrcH = static_cast<short>(needR.bottom - needR.top);
 
-        // Hard cap regardless of how the above computed -- see the settled
-        // renderer's identical hard cap for why capping only the padding
-        // wasn't enough (the strict/unpadded bound itself can already
-        // exceed the window at some angles).
-        {
-            short hardCapW = static_cast<short>(std::max<short>(1, winW - 4));
-            short hardCapH = static_cast<short>(std::max<short>(1, winH - 4));
-            if (needSrcW > hardCapW) {
-                short excess = static_cast<short>(needSrcW - hardCapW);
-                needR.left  = static_cast<short>(needR.left  + excess / 2);
-                needR.right = static_cast<short>(needR.right - (excess - excess / 2));
-                needSrcW = hardCapW;
-            }
-            if (needSrcH > hardCapH) {
-                short excess = static_cast<short>(needSrcH - hardCapH);
-                needR.top    = static_cast<short>(needR.top    + excess / 2);
-                needR.bottom = static_cast<short>(needR.bottom - (excess - excess / 2));
-                needSrcH = hardCapH;
-            }
-        }
-        if ((SInt32)needSrcW * needSrcH > 500000) return; // pathological angle/size guard
+        // No hard cap on needR anymore: capping it (however computed)
+        // only ever moved the cutoff point around, because the STAGING
+        // draw fundamentally needs source-width screen space regardless
+        // of how compact the final rotated result is (rotation is what
+        // compacts the footprint, and staging happens before rotation is
+        // applied -- an upright 776px line needs a 776px-wide place to
+        // draw into no matter how small it looks once rotated). Instead,
+        // capture needR in successive window-sized STRIPS, each shifted
+        // into the window independently and stitched into the full
+        // content/ink buffers at the right offset, then rotate the whole
+        // thing in one paint pass. A single strip is always <= the
+        // window's width, so it always fits for staging regardless of
+        // how wide needR itself is.
+        if ((SInt32)needSrcW * needSrcH > 2000000) return; // pathological angle/size guard
+
+        size_t n = static_cast<size_t>(needSrcW) * needSrcH;
+        std::vector<RGBColor> content(n);
+        std::vector<bool> ink(n);
 
         FastPixelWriter fastW = GetFastPixelWriter();
         bool useFast = fastW.Ready();
-        size_t n = static_cast<size_t>(needSrcW) * needSrcH;
-        std::vector<RGBColor> under(n), content(n);
         auto getPx = [&](short px, short py) -> RGBColor {
             if (useFast) return fastW.Get(px, py);
             RGBColor c; GetCPixel(px, py, &c); return c;
@@ -4250,91 +4234,81 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
             else         SetCPixel(px, py, const_cast<RGBColor*>(&c));
         };
 
-        // Shift (never resize) a staging copy of needR so it fits inside
-        // the window -- needR is already bounded to roughly the window's
-        // own size by construction above, so this always succeeds, unlike
-        // trying to shift the full (possibly much wider) editR.
-        Rect stageR = needR;
-        short stageShiftX = 0, stageShiftY = 0;
-        if (stageR.right > portRect.right) stageShiftX = static_cast<short>(portRect.right - stageR.right);
-        if (static_cast<short>(stageR.left + stageShiftX) < portRect.left)
-            stageShiftX = static_cast<short>(portRect.left - stageR.left);
-        if (stageR.bottom > portRect.bottom) stageShiftY = static_cast<short>(portRect.bottom - stageR.bottom);
-        if (static_cast<short>(stageR.top + stageShiftY) < portRect.top)
-            stageShiftY = static_cast<short>(portRect.top - stageR.top);
-        stageR.left   = static_cast<short>(stageR.left   + stageShiftX);
-        stageR.right  = static_cast<short>(stageR.right  + stageShiftX);
-        stageR.top    = static_cast<short>(stageR.top    + stageShiftY);
-        stageR.bottom = static_cast<short>(stageR.bottom + stageShiftY);
-
-        // Temporarily repoint TE at the staging location: destRect shifts
-        // by the same amount as everything else (preserving the text's
-        // real flow/wrap geometry, just translated), and viewRect becomes
-        // the staging rect itself, so TEUpdate only draws/erases (and so
-        // only what we read back covers) the needed slice -- not the
-        // whole, possibly much wider, box.
         Rect savedViewRect = (*teh)->viewRect;
         Rect savedDestRect = (*teh)->destRect;
-        short teShiftX = static_cast<short>(stageR.left - needR.left);
-        short teShiftY = static_cast<short>(stageR.top  - needR.top);
-        (*teh)->viewRect = stageR;
-        (*teh)->destRect.left   = static_cast<short>(savedDestRect.left   + teShiftX);
-        (*teh)->destRect.right  = static_cast<short>(savedDestRect.right  + teShiftX);
-        (*teh)->destRect.top    = static_cast<short>(savedDestRect.top    + teShiftY);
-        (*teh)->destRect.bottom = static_cast<short>(savedDestRect.bottom + teShiftY);
+        short stripMaxW = static_cast<short>(std::max<short>(8, winW - 4));
 
-        for (short y = 0; y < needSrcH; ++y)
-            for (short x = 0; x < needSrcW; ++x)
-                under[static_cast<size_t>(y)*needSrcW + x] =
-                    getPx(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y));
+        for (short stripLeft = 0; stripLeft < needSrcW; stripLeft = static_cast<short>(stripLeft + stripMaxW)) {
+            short stripW = static_cast<short>(std::min<short>(stripMaxW, needSrcW - stripLeft));
+            Rect stripR = { needR.top, static_cast<short>(needR.left + stripLeft),
+                             needR.bottom, static_cast<short>(needR.left + stripLeft + stripW) };
 
-        // Erase to a flat color sampled from the real background (the
-        // staging box's own top-left pixel) instead of a hardcoded white
-        // constant, and compare captured content against a RE-READ sample
-        // of that same erase (not the RGBColor we asked for) -- comparing
-        // against a literal constant depends on the erase color
-        // round-tripping through the port's actual color depth
-        // byte-for-identical, which isn't reliable at every depth/
-        // quantization (that mismatch is what made the whole box, then
-        // smaller margins, paint as an opaque block instead of being
-        // transparent). Comparing two values that went through the exact
-        // same read path cancels out whatever that path does, regardless
-        // of depth.
-        RGBColor bg = white;
-        if (needSrcW > 0 && needSrcH > 0) bg = under[0];
-        RGBBackColor(&bg); RGBForeColor(&black);
-        // See redrawStraight() for why the clip must be reset to the full
-        // window before erasing -- otherwise a leftover narrower clip (e.g.
-        // a frame's own clipContent region) can make EraseRect only wipe
-        // part of the staging box, leaving stale background pixels that
-        // then get captured as `content` and misread as real ink, painting
-        // a solid block of stale color into the rotated destination.
-        { Rect cr = portRect; ClipRect(&cr); }
-        EraseRect(&stageR);
-        RGBColor bgCaptured = getPx(stageR.left, stageR.top);
-        applyFont();
-        { Rect cr = stageR; ClipRect(&cr); }
-        TEUpdate(&stageR, teh);
-        { Rect cr = portRect; ClipRect(&cr); }
+            // Shift THIS STRIP (never the whole needR) to fit inside the
+            // window -- a single strip is always <= window width, so
+            // this always succeeds.
+            Rect stageR = stripR;
+            short stageShiftX = 0, stageShiftY = 0;
+            if (stageR.right > portRect.right) stageShiftX = static_cast<short>(portRect.right - stageR.right);
+            if (static_cast<short>(stageR.left + stageShiftX) < portRect.left)
+                stageShiftX = static_cast<short>(portRect.left - stageR.left);
+            if (stageR.bottom > portRect.bottom) stageShiftY = static_cast<short>(portRect.bottom - stageR.bottom);
+            if (static_cast<short>(stageR.top + stageShiftY) < portRect.top)
+                stageShiftY = static_cast<short>(portRect.top - stageR.top);
+            stageR.left   = static_cast<short>(stageR.left   + stageShiftX);
+            stageR.right  = static_cast<short>(stageR.right  + stageShiftX);
+            stageR.top    = static_cast<short>(stageR.top    + stageShiftY);
+            stageR.bottom = static_cast<short>(stageR.bottom + stageShiftY);
 
-        for (short y = 0; y < needSrcH; ++y)
-            for (short x = 0; x < needSrcW; ++x)
-                content[static_cast<size_t>(y)*needSrcW + x] =
-                    getPx(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y));
+            // Repoint TE so this strip's slice of the real text lands at
+            // the staging position: destRect shifts by the same amount as
+            // everything else (preserving flow geometry, just translated),
+            // viewRect becomes the staging rect itself.
+            short teShiftX = static_cast<short>(stageR.left - stripR.left);
+            short teShiftY = static_cast<short>(stageR.top  - stripR.top);
+            (*teh)->viewRect = stageR;
+            (*teh)->destRect.left   = static_cast<short>(savedDestRect.left   + teShiftX);
+            (*teh)->destRect.right  = static_cast<short>(savedDestRect.right  + teShiftX);
+            (*teh)->destRect.top    = static_cast<short>(savedDestRect.top    + teShiftY);
+            (*teh)->destRect.bottom = static_cast<short>(savedDestRect.bottom + teShiftY);
 
-        for (short y = 0; y < needSrcH; ++y)
-            for (short x = 0; x < needSrcW; ++x)
-                setPx(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y),
-                      under[static_cast<size_t>(y)*needSrcW + x]);
+            std::vector<RGBColor> under(static_cast<size_t>(stripW) * needSrcH);
+            for (short y = 0; y < needSrcH; ++y)
+                for (short x = 0; x < stripW; ++x)
+                    under[static_cast<size_t>(y)*stripW + x] =
+                        getPx(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y));
+
+            // Erase to a flat color sampled from this strip's own real
+            // background instead of a hardcoded white constant, and
+            // compare captured content against a RE-READ sample of that
+            // same erase -- see the older version of this comment for why
+            // a literal constant isn't reliable across color depths.
+            RGBColor bg = (stripW > 0 && needSrcH > 0) ? under[0] : white;
+            RGBBackColor(&bg); RGBForeColor(&black);
+            { Rect cr = portRect; ClipRect(&cr); }
+            EraseRect(&stageR);
+            RGBColor bgCaptured = getPx(stageR.left, stageR.top);
+            applyFont();
+            { Rect cr = stageR; ClipRect(&cr); }
+            TEUpdate(&stageR, teh);
+            { Rect cr = portRect; ClipRect(&cr); }
+
+            for (short y = 0; y < needSrcH; ++y) {
+                for (short x = 0; x < stripW; ++x) {
+                    RGBColor c = getPx(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y));
+                    size_t di = static_cast<size_t>(y)*needSrcW + static_cast<size_t>(stripLeft+x);
+                    content[di] = c;
+                    ink[di] = c.red != bgCaptured.red || c.green != bgCaptured.green || c.blue != bgCaptured.blue;
+                }
+            }
+
+            for (short y = 0; y < needSrcH; ++y)
+                for (short x = 0; x < stripW; ++x)
+                    setPx(static_cast<short>(stageR.left+x), static_cast<short>(stageR.top+y),
+                          under[static_cast<size_t>(y)*stripW + x]);
+        }
 
         (*teh)->viewRect = savedViewRect;
         (*teh)->destRect = savedDestRect;
-
-        std::vector<bool> ink(n);
-        for (size_t i = 0; i < n; ++i)
-            ink[i] = content[i].red != bgCaptured.red ||
-                     content[i].green != bgCaptured.green ||
-                     content[i].blue != bgCaptured.blue;
 
         HideCursor();  // raw pixel writes bypass QuickDraw -- see FastPixelWriter
         PaintRotatedPixelBlock(content, &ink, needSrcW, needSrcH, needR, full, fastW, useFast);
