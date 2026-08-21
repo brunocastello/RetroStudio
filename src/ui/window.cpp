@@ -3534,7 +3534,11 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         // the physical mouse, and whatever frame last finished rendering
         // is what's left on screen, looking like newly-exposed content
         // stays hidden until you keep dragging.
-        bool singleShapeMove = !isMultiDrag && gSelectedFrames.empty() && hitShape != nullptr;
+        // Excludes isLayoutDrag: an auto-layout parent can reposition OTHER
+        // siblings live as a side effect of this drag (reflow), and a narrow
+        // dirty-rect covering only the dragged shape's own reach never erases
+        // those siblings' previous positions, leaving ghost copies on screen.
+        bool singleShapeMove = !isMultiDrag && gSelectedFrames.empty() && hitShape != nullptr && !isLayoutDrag;
         auto reachFor = [&](Shape* s) -> Rect {
             RotChain amb = AncestorChainFor(LocateShapeParent(s));
             Rect rr = CanvasRect(s->bounds);

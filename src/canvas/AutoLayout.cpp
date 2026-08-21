@@ -32,6 +32,13 @@ static void RunFrameLayout(Frame* f) {
 
     if (f->layoutMode == LayoutMode::None) return;
 
+    // While a shape/frame is being drag-sorted anywhere in the document, freeze
+    // every Hug frame's own width/height (Figma does not resize a Hug parent
+    // live during a child drag — only siblings reflow live; the parent's own
+    // size settles once the drag ends and RunDocumentLayout runs one more time
+    // with the drag-exclusion globals cleared).
+    bool dragActive = (gLayoutDragShape != nullptr || gLayoutDragFrame != nullptr || gIsLayoutMultiDrag);
+
     std::vector<LayoutItem> items;
     items.reserve(f->children.size() + f->childFrames.size());
 
@@ -137,8 +144,10 @@ static void RunFrameLayout(Frame* f) {
     }
 
     if (items.empty()) {
-        if (f->widthSizing  == SizingMode::Hug) f->bounds.w = f->paddingLeft  + f->paddingRight;
-        if (f->heightSizing == SizingMode::Hug) f->bounds.h = f->paddingTop   + f->paddingBottom;
+        if (!dragActive) {
+            if (f->widthSizing  == SizingMode::Hug) f->bounds.w = f->paddingLeft  + f->paddingRight;
+            if (f->heightSizing == SizingMode::Hug) f->bounds.h = f->paddingTop   + f->paddingBottom;
+        }
         return;
     }
 
@@ -317,15 +326,17 @@ static void RunFrameLayout(Frame* f) {
         for (auto& it : items) { if (it.xOff || it.yOff) { *it.x += it.xOff; *it.y += it.yOff; } }
 
         // Primary hug (matches Figma: wrap+Hug behaves like no-wrap+Hug on primary axis)
-        if (hugPri) {
-            SInt32 newPri = maxLineSpan + padPri1 + padPri2; if (newPri < 1) newPri = 1;
-            if (isHoriz) f->bounds.w = newPri; else f->bounds.h = newPri;
-        }
-        // Secondary hug
-        if (isHoriz && f->heightSizing == SizingMode::Hug) {
-            SInt32 h = totalCross + padSec1 + padSec2; f->bounds.h = (h > 0) ? h : 1;
-        } else if (!isHoriz && f->widthSizing == SizingMode::Hug) {
-            SInt32 w = totalCross + padSec1 + padSec2; f->bounds.w = (w > 0) ? w : 1;
+        if (!dragActive) {
+            if (hugPri) {
+                SInt32 newPri = maxLineSpan + padPri1 + padPri2; if (newPri < 1) newPri = 1;
+                if (isHoriz) f->bounds.w = newPri; else f->bounds.h = newPri;
+            }
+            // Secondary hug
+            if (isHoriz && f->heightSizing == SizingMode::Hug) {
+                SInt32 h = totalCross + padSec1 + padSec2; f->bounds.h = (h > 0) ? h : 1;
+            } else if (!isHoriz && f->widthSizing == SizingMode::Hug) {
+                SInt32 w = totalCross + padSec1 + padSec2; f->bounds.w = (w > 0) ? w : 1;
+            }
         }
         return;
     }
@@ -425,7 +436,7 @@ static void RunFrameLayout(Frame* f) {
     }
 
     // Hug: shrink frame to content.
-    if (f->widthSizing == SizingMode::Hug || f->heightSizing == SizingMode::Hug) {
+    if (!dragActive && (f->widthSizing == SizingMode::Hug || f->heightSizing == SizingMode::Hug)) {
         SInt32 newPri = totalWithGap + padPri1 + padPri2; if (newPri < 1) newPri = 1;
         SInt32 newSec = maxSecSize   + padSec1 + padSec2; if (newSec < 1) newSec = 1;
         if (isHoriz) {
