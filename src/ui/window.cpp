@@ -446,7 +446,27 @@ static void UpdateMenuState() {
 static int ShowConfirmCloseDialog(const std::string& docName) {
     const short kAlertDBoxProc = 1;  // plain modal box, no title bar/grow/zoom
     const short kW = 340, kH = 125;
-    Rect wr = { 175, 110, static_cast<short>(175 + kH), static_cast<short>(110 + kW) };
+
+    // Center over the main document window rather than a hardcoded screen
+    // position (GetQDGlobalsScreenBits etc. aren't verified against this
+    // toolchain's headers, and this session already ate three CI round
+    // trips on unverified Toolbox signatures -- gMainWindow's own bounds
+    // are a real, already-proven-safe source of an on-screen rect).
+    Rect mainGlobalR = { 100, 100, 500, 700 };  // fallback if no window is open
+    if (gMainWindow) {
+        SetPortWindowPort(gMainWindow);
+        Rect mp; GetWindowPortBounds(gMainWindow, &mp);
+        Point tl; tl.h = mp.left;  tl.v = mp.top;
+        Point br; br.h = mp.right; br.v = mp.bottom;
+        LocalToGlobal(&tl); LocalToGlobal(&br);
+        mainGlobalR = { tl.v, tl.h, br.v, br.h };
+    }
+    short cx = static_cast<short>((mainGlobalR.left + mainGlobalR.right) / 2);
+    short cy = static_cast<short>((mainGlobalR.top + mainGlobalR.bottom) / 2);
+    short left = static_cast<short>(cx - kW / 2);
+    short top  = static_cast<short>(cy - kH / 2);
+    Rect wr = { top, left, static_cast<short>(top + kH), static_cast<short>(left + kW) };
+
     Str255 emptyTitle = { 0 };
     WindowRef dlg = NewCWindow(nullptr, &wr, emptyTitle, true,
                                kAlertDBoxProc, (WindowRef)-1L, false, 0);
@@ -455,19 +475,37 @@ static int ShowConfirmCloseDialog(const std::string& docName) {
     SetPortWindowPort(dlg);
     Rect portR; GetWindowPortBounds(dlg, &portR);
 
-    RGBColor black  = { 0, 0, 0 };
-    RGBColor white  = { 0xFFFF, 0xFFFF, 0xFFFF };
-    RGBColor yellow = { 0xFFFF, 0xCCCC, 0x0000 };
+    RGBColor black    = { 0, 0, 0 };
+    RGBColor white    = { 0xFFFF, 0xFFFF, 0xFFFF };
+    RGBColor platGray = { 0xCCCC, 0xCCCC, 0xCCCC };  // Platinum window/button gray, same as InspectorPanel
+    RGBColor shadow   = { 0x5555, 0x5555, 0x5555 };
+    RGBColor yellow   = { 0xFFFF, 0xCCCC, 0x0000 };  // classic Mac caution-icon yellow
 
     Rect btnSave     = { 85, 242, 105, 320 };
     Rect btnCancel   = { 85, 160, 105, 232 };
     Rect btnDontSave = { 85,  50, 105, 150 };
 
+    // Platinum pushbutton: gray fill, black outer frame, white top/left +
+    // dark bottom/right inner bevel lines -- same recipe InspectorPanel's
+    // popup buttons use (no DrawThemeButton in this toolchain, see CLAUDE.md
+    // section 7.3). Default button gets a thicker outer frame instead of a
+    // separate collar, which is the simplest reliable way to read as
+    // "default" at this resolution.
     auto drawButton = [&](const Rect& r, const char* label, bool isDefault) {
-        RGBForeColor(&white);
+        RGBForeColor(&platGray);
         Rect fillR = r; PaintRoundRect(&fillR, 12, 12);
+
+        RGBForeColor(&white);
+        MoveTo(static_cast<short>(r.left + 2), static_cast<short>(r.bottom - 3));
+        LineTo(static_cast<short>(r.left + 2), static_cast<short>(r.top + 2));
+        LineTo(static_cast<short>(r.right - 3), static_cast<short>(r.top + 2));
+        RGBForeColor(&shadow);
+        MoveTo(static_cast<short>(r.left + 3), static_cast<short>(r.bottom - 2));
+        LineTo(static_cast<short>(r.right - 2), static_cast<short>(r.bottom - 2));
+        LineTo(static_cast<short>(r.right - 2), static_cast<short>(r.top + 3));
+
         RGBForeColor(&black);
-        PenSize(isDefault ? 3 : 1, isDefault ? 3 : 1);
+        PenSize(isDefault ? 2 : 1, isDefault ? 2 : 1);
         Rect frameR = r; FrameRoundRect(&frameR, 12, 12);
         PenSize(1, 1);
 
@@ -482,7 +520,7 @@ static int ShowConfirmCloseDialog(const std::string& docName) {
     };
 
     auto drawAll = [&]() {
-        RGBBackColor(&white); RGBForeColor(&black);
+        RGBBackColor(&platGray); RGBForeColor(&black);
         EraseRect(&portR);
         FrameRect(&portR);
 
@@ -542,9 +580,16 @@ static int ShowConfirmCloseDialog(const std::string& docName) {
                 break;
             }
             case mouseDown: {
+                // Match ShowRenameDialog's own hit-test exactly: only check
+                // which window was hit, not FindWindow's `part` -- a plain
+                // dBoxProc window (no title bar/grow/zoom regions at all)
+                // was seen returning something other than inContent here,
+                // which silently swallowed every click inside the dialog
+                // and left it (and the whole app, since this loop blocks
+                // main.cpp's event loop) stuck open forever.
                 WindowRef hitWin;
-                short part = FindWindow(evt.where, &hitWin);
-                if (hitWin != dlg || part != inContent) break;  // outside clicks stay modal, ignored
+                FindWindow(evt.where, &hitWin);
+                if (hitWin != dlg) break;
                 SetPortWindowPort(dlg);
                 Point pt = evt.where;
                 GlobalToLocal(&pt);
