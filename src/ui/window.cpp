@@ -2783,6 +2783,17 @@ static int HitTestRotateZone(Point pt) {
     return -1;
 }
 
+// Live poll of the physical Shift key, independent of whatever modifiers
+// were latched at mouseDown -- used so aspect-lock during a resize drag
+// engages/disengages in real time as the user holds/releases Shift mid-drag
+// (matches Figma), rather than being fixed for the whole drag by whether
+// Shift happened to be down at the initial click.
+static bool IsShiftKeyDownNow() {
+    KeyMap km;
+    GetKeys(km);
+    return (reinterpret_cast<UInt8*>(km)[56 >> 3] & (1 << (56 & 7))) != 0;
+}
+
 // Drag the selected object's bounds by moving only the edge(s) implied by
 // handleIdx, then redraw live.  Minimum dimension: 10px.
 static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startMods = 0) {
@@ -2911,8 +2922,10 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
             if (bT[hi]) newH = origB.h - localDY;
             if (bB[hi]) newH = origB.h + localDY;
 
-            // Aspect ratio lock: inspector button OR Shift held at drag start
-            bool lockAR = isCorner && (IsAspectLocked() || (startMods & shiftKey));
+            // Aspect ratio lock: inspector button OR Shift currently held (polled
+            // live every mouse-move, not just at drag start, so toggling Shift
+            // mid-drag engages/disengages the lock in real time, matching Figma).
+            bool lockAR = isCorner && (IsAspectLocked() || IsShiftKeyDownNow());
             if (lockAR && origB.w > 0 && origB.h > 0)
                 newH = newW * origB.h / origB.w;
 
