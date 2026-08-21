@@ -2789,11 +2789,15 @@ static int HitTestRotateZone(Point pt) {
 // (matches Figma), rather than being fixed for the whole drag by whether
 // Shift happened to be down at the initial click.
 static bool IsShiftKeyDownNow() {
-    // GetKeys()/KeyMap aren't declared in Retro68's Multiversal headers (same
-    // gap as MenuItemIndex -- see CLAUDE.md). GetCurrentEventKeyModifiers is a
-    // Carbon Event Manager call that returns the live modifier state in the
-    // same bit layout as EventRecord.modifiers, without needing KeyMap at all.
-    return (GetCurrentEventKeyModifiers() & shiftKey) != 0;
+    // KeyMap (the typedef GetKeys normally takes) isn't declared in Retro68's
+    // Multiversal headers -- same gap as MenuItemIndex (see CLAUDE.md).
+    // GetCurrentEventKeyModifiers isn't declared there either. GetKeys ITSELF
+    // is declared, though, so pass a raw UInt32[4] local (decays to the same
+    // pointer type KeyMap would) instead of naming the missing typedef.
+    UInt32 km[4];
+    GetKeys(km);
+    const UInt8 shiftVKeyCode = 56;
+    return (reinterpret_cast<UInt8*>(km)[shiftVKeyCode >> 3] & (1 << (shiftVKeyCode & 7))) != 0;
 }
 
 // Drag the selected object's bounds by moving only the edge(s) implied by
