@@ -1668,6 +1668,35 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
 
                     didPixelRotate = true;
                 }
+
+                // DIAGNOSTIC (temporary): same style of readout as the
+                // live-edit overlay, but for the settled renderer -- the
+                // path actually active while dragging a committed shape,
+                // which is where "text stays hidden until I keep dragging"
+                // was reported. Printed unconditionally whenever a
+                // rotation was in play, so whatever the user screenshots
+                // next carries the real numbers automatically.
+                {
+                    std::string dbg2 = "r " + std::to_string(r.left) + "," + std::to_string(r.top) +
+                                        "-" + std::to_string(r.right) + "," + std::to_string(r.bottom) +
+                                        "  paintR " + std::to_string(paintSrcRect.left) + "," + std::to_string(paintSrcRect.top) +
+                                        "-" + std::to_string(paintSrcRect.right) + "," + std::to_string(paintSrcRect.bottom) +
+                                        "  win " + std::to_string(winBounds.left) + "," + std::to_string(winBounds.top) +
+                                        "-" + std::to_string(winBounds.right) + "," + std::to_string(winBounds.bottom) +
+                                        "  fits " + (fitsWindow ? "1" : "0") +
+                                        "  rot " + (didPixelRotate ? "1" : "0");
+                    Str255 dbgP2; ToPStr(dbg2, dbgP2);
+                    RGBColor savedFg; GetForeColor(&savedFg);
+                    RGBColor blueDbg = {0, 0, 0xFFFF}; RGBForeColor(&blueDbg);
+                    TextFont(0); TextSize(9); TextFace(0);
+                    RGBColor bgw2 = {0xFFFF,0xFFFF,0xFFFF}; RGBBackColor(&bgw2);
+                    Rect dbgBg2 = { static_cast<short>(winBounds.top+16), static_cast<short>(winBounds.left+2),
+                                     static_cast<short>(winBounds.top+28), static_cast<short>(winBounds.left+700) };
+                    EraseRect(&dbgBg2);
+                    MoveTo(static_cast<short>(winBounds.left+4), static_cast<short>(winBounds.top+26));
+                    DrawString(dbgP2);
+                    RGBForeColor(&savedFg);
+                }
             }
 
             if (!didPixelRotate) {
