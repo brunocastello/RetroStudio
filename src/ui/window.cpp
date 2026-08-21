@@ -1425,12 +1425,24 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                     // minimum so any small mismatch elsewhere (rounding,
                     // TE's own glyph metrics vs measured width, etc.)
                     // can't manifest as a visible cut right at this edge.
+                    // The padded size must never exceed the window's own
+                    // dimensions though: stageR below can only be SHIFTED
+                    // to fit inside the window, never shrunk, so once
+                    // needR is wider/taller than the window no shift fits
+                    // it and the excess reads undefined off-window pixels
+                    // regardless -- shrink the padding first if needed.
                     short needPad = 60;
+                    short winW = static_cast<short>(winBounds.right - winBounds.left);
+                    short winH = static_cast<short>(winBounds.bottom - winBounds.top);
+                    short strictW = static_cast<short>(std::ceil(needMaxXd) - std::floor(needMinXd));
+                    short strictH = static_cast<short>(std::ceil(needMaxYd) - std::floor(needMinYd));
+                    short padX = std::min(needPad, std::max<short>(0, static_cast<short>((winW - strictW) / 2)));
+                    short padY = std::min(needPad, std::max<short>(0, static_cast<short>((winH - strictH) / 2)));
                     Rect needR;
-                    needR.left   = std::max(r.left,   static_cast<short>(std::floor(needMinXd) - needPad));
-                    needR.right  = std::min(r.right,  static_cast<short>(std::ceil(needMaxXd)  + needPad));
-                    needR.top    = std::max(r.top,    static_cast<short>(std::floor(needMinYd) - needPad));
-                    needR.bottom = std::min(r.bottom, static_cast<short>(std::ceil(needMaxYd)  + needPad));
+                    needR.left   = std::max(r.left,   static_cast<short>(std::floor(needMinXd) - padX));
+                    needR.right  = std::min(r.right,  static_cast<short>(std::ceil(needMaxXd)  + padX));
+                    needR.top    = std::max(r.top,    static_cast<short>(std::floor(needMinYd) - padY));
+                    needR.bottom = std::min(r.bottom, static_cast<short>(std::ceil(needMaxYd)  + padY));
                     short needSrcW = static_cast<short>(needR.right - needR.left);
                     short needSrcH = static_cast<short>(needR.bottom - needR.top);
 
@@ -4155,13 +4167,26 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
         double needMaxYd = std::max(std::max(isy0,isy1), std::max(isy2,isy3));
 
         // See the settled renderer's identical needR computation for why
-        // this uses a generous margin instead of +-1px.
+        // this uses a generous margin instead of +-1px -- but the margin
+        // must never let needR grow wider/taller than the window itself:
+        // stageR can only be SHIFTED to fit inside the window afterward,
+        // never shrunk, so once needR exceeds the window's own size no
+        // shift exists that fits it, and the excess reads undefined
+        // off-window pixels regardless -- the exact regression that
+        // reintroduced the "gray border, blank tail" artifact on a box
+        // whose visible slice grew back up to the window's own width.
         short needPad = 60;
+        short winW = static_cast<short>(portRect.right - portRect.left);
+        short winH = static_cast<short>(portRect.bottom - portRect.top);
+        short strictW = static_cast<short>(std::ceil(needMaxXd) - std::floor(needMinXd));
+        short strictH = static_cast<short>(std::ceil(needMaxYd) - std::floor(needMinYd));
+        short padX = std::min(needPad, std::max<short>(0, static_cast<short>((winW - strictW) / 2)));
+        short padY = std::min(needPad, std::max<short>(0, static_cast<short>((winH - strictH) / 2)));
         Rect needR;
-        needR.left   = std::max(editR.left,   static_cast<short>(std::floor(needMinXd) - needPad));
-        needR.right  = std::min(editR.right,  static_cast<short>(std::ceil(needMaxXd)  + needPad));
-        needR.top    = std::max(editR.top,    static_cast<short>(std::floor(needMinYd) - needPad));
-        needR.bottom = std::min(editR.bottom, static_cast<short>(std::ceil(needMaxYd)  + needPad));
+        needR.left   = std::max(editR.left,   static_cast<short>(std::floor(needMinXd) - padX));
+        needR.right  = std::min(editR.right,  static_cast<short>(std::ceil(needMaxXd)  + padX));
+        needR.top    = std::max(editR.top,    static_cast<short>(std::floor(needMinYd) - padY));
+        needR.bottom = std::min(editR.bottom, static_cast<short>(std::ceil(needMaxYd)  + padY));
         if (needR.right <= needR.left || needR.bottom <= needR.top) return;
         short needSrcW = static_cast<short>(needR.right - needR.left);
         short needSrcH = static_cast<short>(needR.bottom - needR.top);
