@@ -4347,6 +4347,16 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
                             if (c2 == 0x03 || c2 == 0x1B) { confirmed = true; done = true; break; }
                             TEKey(c2, teh);
                         }
+                        // The captured/painted box now always exactly matches
+                        // editR (confirmed via the debug readout), yet text
+                        // still stopped mid-sentence with headroom left in
+                        // the box -- meaning TE's own drawn state wasn't
+                        // reflecting everything actually in its text buffer.
+                        // Force a full internal recalculation from the
+                        // current buffer before this redraw draws anything,
+                        // rather than trusting whatever incremental state
+                        // TEKey left behind.
+                        TECalText(teh);
                         redraw();
                     }
                     break;
