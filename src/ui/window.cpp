@@ -1416,11 +1416,21 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                     double needMinYd = std::min(std::min(ny0,ny1), std::min(ny2,ny3));
                     double needMaxYd = std::max(std::max(ny0,ny1), std::max(ny2,ny3));
 
+                    // Generous margin (not just +-1px): the AABB of the
+                    // inverse-mapped clipped-destination corners is a
+                    // mathematically conservative bound already, but this
+                    // is exactly the boundary that's been the repeated
+                    // source of "text near the edge gets cut/garbled"
+                    // reports all session -- pad it well beyond the bare
+                    // minimum so any small mismatch elsewhere (rounding,
+                    // TE's own glyph metrics vs measured width, etc.)
+                    // can't manifest as a visible cut right at this edge.
+                    short needPad = 60;
                     Rect needR;
-                    needR.left   = std::max(r.left,   static_cast<short>(std::floor(needMinXd) - 1));
-                    needR.right  = std::min(r.right,  static_cast<short>(std::ceil(needMaxXd)  + 1));
-                    needR.top    = std::max(r.top,    static_cast<short>(std::floor(needMinYd) - 1));
-                    needR.bottom = std::min(r.bottom, static_cast<short>(std::ceil(needMaxYd)  + 1));
+                    needR.left   = std::max(r.left,   static_cast<short>(std::floor(needMinXd) - needPad));
+                    needR.right  = std::min(r.right,  static_cast<short>(std::ceil(needMaxXd)  + needPad));
+                    needR.top    = std::max(r.top,    static_cast<short>(std::floor(needMinYd) - needPad));
+                    needR.bottom = std::min(r.bottom, static_cast<short>(std::ceil(needMaxYd)  + needPad));
                     short needSrcW = static_cast<short>(needR.right - needR.left);
                     short needSrcH = static_cast<short>(needR.bottom - needR.top);
 
@@ -4144,11 +4154,14 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
         double needMinYd = std::min(std::min(isy0,isy1), std::min(isy2,isy3));
         double needMaxYd = std::max(std::max(isy0,isy1), std::max(isy2,isy3));
 
+        // See the settled renderer's identical needR computation for why
+        // this uses a generous margin instead of +-1px.
+        short needPad = 60;
         Rect needR;
-        needR.left   = std::max(editR.left,   static_cast<short>(std::floor(needMinXd) - 1));
-        needR.right  = std::min(editR.right,  static_cast<short>(std::ceil(needMaxXd)  + 1));
-        needR.top    = std::max(editR.top,    static_cast<short>(std::floor(needMinYd) - 1));
-        needR.bottom = std::min(editR.bottom, static_cast<short>(std::ceil(needMaxYd)  + 1));
+        needR.left   = std::max(editR.left,   static_cast<short>(std::floor(needMinXd) - needPad));
+        needR.right  = std::min(editR.right,  static_cast<short>(std::ceil(needMaxXd)  + needPad));
+        needR.top    = std::max(editR.top,    static_cast<short>(std::floor(needMinYd) - needPad));
+        needR.bottom = std::min(editR.bottom, static_cast<short>(std::ceil(needMaxYd)  + needPad));
         if (needR.right <= needR.left || needR.bottom <= needR.top) return;
         short needSrcW = static_cast<short>(needR.right - needR.left);
         short needSrcH = static_cast<short>(needR.bottom - needR.top);
