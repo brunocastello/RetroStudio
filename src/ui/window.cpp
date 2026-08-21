@@ -434,18 +434,140 @@ static void UpdateMenuState() {
     DrawMenuBar();
 }
 
-// DLOG 129 = Save-confirmation dialog defined in RetroStudio.r
-// Returns: 0 = Save, 1 = Don't Save, 2 = Cancel
-static int ShowConfirmCloseDialog() {
-    DialogPtr dlg = GetNewDialog(129, nullptr, (WindowPtr)-1L);
+// Illustrator-9-style "Save changes before closing?" alert: yellow caution
+// triangle, wrapped message naming the document, and Don't Save / Cancel /
+// Save buttons in that left-to-right order (Save is the bold default,
+// responds to Return/Enter; Escape = Cancel). Hand-drawn custom window
+// (same NewCWindow + WaitNextEvent-loop family as ShowRenameDialog) rather
+// than the classic DLOG/DITL Dialog Manager this used to go through —
+// that path had no keyboard-shortcut support and no room for an icon or
+// document-name substitution without brittle Rez/UPP work.
+// Returns: 0 = Save, 1 = Don't Save, 2 = Cancel.
+static int ShowConfirmCloseDialog(const std::string& docName) {
+    const short kAlertDBoxProc = 1;  // plain modal box, no title bar/grow/zoom
+    const short kW = 340, kH = 125;
+    Rect wr = { 175, 110, static_cast<short>(175 + kH), static_cast<short>(110 + kW) };
+    Str255 emptyTitle = { 0 };
+    WindowRef dlg = NewCWindow(nullptr, &wr, emptyTitle, true,
+                               kAlertDBoxProc, (WindowRef)-1L, false, 0);
     if (!dlg) return 2;
-    short item = 0;
-    while (item < 1 || item > 3)
-        ModalDialog(nullptr, &item);
-    DisposeDialog(dlg);
-    if (item == 1) return 0; // Save
-    if (item == 2) return 1; // Don't Save
-    return 2;                // Cancel
+
+    SetPortWindowPort(dlg);
+    Rect portR; GetWindowPortBounds(dlg, &portR);
+
+    RGBColor black  = { 0, 0, 0 };
+    RGBColor white  = { 0xFFFF, 0xFFFF, 0xFFFF };
+    RGBColor yellow = { 0xFFFF, 0xCCCC, 0x0000 };
+
+    Rect btnSave     = { 85, 242, 105, 320 };
+    Rect btnCancel   = { 85, 160, 105, 232 };
+    Rect btnDontSave = { 85,  50, 105, 150 };
+
+    auto drawButton = [&](const Rect& r, const char* label, bool isDefault) {
+        RGBForeColor(&white);
+        Rect fillR = r; PaintRoundRect(&fillR, 12, 12);
+        RGBForeColor(&black);
+        PenSize(isDefault ? 3 : 1, isDefault ? 3 : 1);
+        Rect frameR = r; FrameRoundRect(&frameR, 12, 12);
+        PenSize(1, 1);
+
+        TextFont(0); TextSize(12); TextFace(isDefault ? bold : normal);
+        short len = 0; while (label[len]) ++len;
+        char* p = const_cast<char*>(label);
+        short tw = TextWidth(p, 0, len);
+        MoveTo(static_cast<short>((r.left + r.right) / 2 - tw / 2),
+               static_cast<short>((r.top + r.bottom) / 2 + 4));
+        DrawText(p, 0, len);
+        TextFace(normal);
+    };
+
+    auto drawAll = [&]() {
+        RGBBackColor(&white); RGBForeColor(&black);
+        EraseRect(&portR);
+        FrameRect(&portR);
+
+        // Caution icon: yellow triangle, black border + bold "!"
+        PolyHandle tri = OpenPoly();
+        MoveTo(36, 22);
+        LineTo(52, 50);
+        LineTo(20, 50);
+        LineTo(36, 22);
+        ClosePoly();
+        RGBForeColor(&yellow); PaintPoly(tri);
+        RGBForeColor(&black);  FramePoly(tri);
+        KillPoly(tri);
+        TextFont(0); TextSize(18); TextFace(bold);
+        {
+            char bang[1] = { '!' };
+            short exW = TextWidth(bang, 0, 1);
+            MoveTo(static_cast<short>(36 - exW / 2), 47);
+            DrawText(bang, 0, 1);
+        }
+        TextFace(normal); TextSize(12);
+
+        // Message (this codebase has no real word-wrap -- two fixed lines,
+        // same convention used everywhere else text is laid out here)
+        std::string line1 = "Save changes to the RetroStudio document";
+        std::string line2 = "\"" + docName + "\" before closing?";
+        MoveTo(66, 38);
+        { char* p = const_cast<char*>(line1.c_str()); DrawText(p, 0, static_cast<short>(line1.size())); }
+        MoveTo(66, 56);
+        { char* p = const_cast<char*>(line2.c_str()); DrawText(p, 0, static_cast<short>(line2.size())); }
+
+        drawButton(btnDontSave, "Don't Save", false);
+        drawButton(btnCancel,   "Cancel",     false);
+        drawButton(btnSave,     "Save",       true);
+    };
+
+    drawAll();
+
+    // Wait for the triggering mouse-up before entering the loop (same
+    // guard ShowRenameDialog uses, so the click that opened this alert
+    // doesn't also register as a click inside it).
+    while (Button()) {}
+
+    int  result = 2;   // Cancel if the loop ever exits some other way
+    bool done   = false;
+    EventRecord evt;
+
+    while (!done) {
+        bool got = WaitNextEvent(everyEvent, &evt, 15, nullptr);
+        if (!got) continue;
+        switch (evt.what) {
+            case keyDown:
+            case autoKey: {
+                char c = static_cast<char>(evt.message & charCodeMask);
+                if (c == 0x0D || c == 0x03)      { result = 0; done = true; }  // Return/Enter = Save
+                else if (c == 0x1B)               { result = 2; done = true; }  // Escape = Cancel
+                break;
+            }
+            case mouseDown: {
+                WindowRef hitWin;
+                short part = FindWindow(evt.where, &hitWin);
+                if (hitWin != dlg || part != inContent) break;  // outside clicks stay modal, ignored
+                SetPortWindowPort(dlg);
+                Point pt = evt.where;
+                GlobalToLocal(&pt);
+                if (PtInRect(pt, &btnSave))          { result = 0; done = true; }
+                else if (PtInRect(pt, &btnDontSave)) { result = 1; done = true; }
+                else if (PtInRect(pt, &btnCancel))   { result = 2; done = true; }
+                break;
+            }
+            case updateEvt: {
+                WindowRef updWin = reinterpret_cast<WindowRef>(evt.message);
+                if (updWin == dlg) {
+                    BeginUpdate(dlg);
+                    SetPortWindowPort(dlg);
+                    drawAll();
+                    EndUpdate(dlg);
+                }
+                break;
+            }
+        }
+    }
+
+    DisposeWindow(dlg);
+    return result;
 }
 
 void SwitchActiveDocument(WindowRef win) {
@@ -467,11 +589,13 @@ bool IsDocumentCanvas(WindowRef win) {
     return false;
 }
 
-void CloseDocumentWindow(WindowRef win) {
+// Returns false if the user cancelled (window stays open, untouched);
+// true if the window was actually closed (whether saved or discarded).
+bool CloseDocumentWindow(WindowRef win) {
     DocCtx* closingCtx = nullptr;
     for (auto& ctx : sDocWindows)
         if (ctx->win == win) { closingCtx = ctx.get(); break; }
-    if (!closingCtx) return;
+    if (!closingCtx) return true;
 
     bool wasActive = (win == gMainWindow);
     DocCtx* prevCtx = nullptr;
@@ -482,7 +606,7 @@ void CloseDocumentWindow(WindowRef win) {
     }
 
     if (!sUndoStack.empty()) {
-        int conf = ShowConfirmCloseDialog(); // 0=Save, 1=Don't Save, 2=Cancel
+        int conf = ShowConfirmCloseDialog(gDocument->name); // 0=Save, 1=Don't Save, 2=Cancel
         if (conf == 2) {
             if (!wasActive && prevCtx) {
                 SaveGlobalsToCtx(*closingCtx);
@@ -491,7 +615,7 @@ void CloseDocumentWindow(WindowRef win) {
                 UpdateWindowTitle();
                 Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
             }
-            return;
+            return false;
         }
         if (conf == 0)
             SaveDocument(gDocument);
@@ -528,6 +652,20 @@ void CloseDocumentWindow(WindowRef win) {
         RefreshInspector();
         Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
     }
+    return true;
+}
+
+// Closes every open document window, prompting to save unsaved changes on
+// each (same alert as a single Close). Stops at the first Cancel, leaving
+// whatever's left open exactly as it was -- matches how Quit-with-multiple-
+// unsaved-documents behaves on real Mac OS. Returns true only if every
+// window closed (i.e. it's actually safe to quit).
+static bool CloseAllDocumentWindows() {
+    while (!sDocWindows.empty()) {
+        WindowRef win = sDocWindows.front()->win;
+        if (!CloseDocumentWindow(win)) return false;
+    }
+    return true;
 }
 
 // --------------------------------------------------------------------------
@@ -591,7 +729,10 @@ extern "C" OSErr NavLoad();
 
 // Apple Event handlers — installed during init so tools like A-Dock can quit us
 static pascal OSErr AEHandleOpenApp(const AppleEvent*, AppleEvent*, long) { return noErr; }
-static pascal OSErr AEHandleQuit   (const AppleEvent*, AppleEvent*, long) { gQuitFlag = true; return noErr; }
+static pascal OSErr AEHandleQuit   (const AppleEvent*, AppleEvent*, long) {
+    if (CloseAllDocumentWindows()) gQuitFlag = true;
+    return noErr;
+}
 
 void SetupWindow() {
     auto* doc = new Document();
@@ -5271,7 +5412,7 @@ void HandleMenuCommand(long menuResult) {
                 SaveDocument(gDocument);
                 break;
             case kFileQuit:
-                gQuitFlag = true;
+                if (CloseAllDocumentWindows()) gQuitFlag = true;
                 break;
         }
     } else if (menuID == kEditMenuID) {

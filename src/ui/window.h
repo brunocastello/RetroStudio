@@ -36,7 +36,8 @@ void SetupWindow();
 void DrawAboutWindow();
 bool IsDocumentCanvas(WindowRef win);
 void SwitchActiveDocument(WindowRef win);
-void CloseDocumentWindow(WindowRef win);
+// Returns false if the user cancelled (window stays open); true if closed.
+bool CloseDocumentWindow(WindowRef win);
 // `clipTo`, if non-null, restricts the redraw to that screen-local rect
 // instead of the whole window content area (see HandleRotateDrag) -- applied
 // AFTER this function's own SetPortWindowPort, since that resets the port's

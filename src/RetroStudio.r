@@ -6,36 +6,10 @@
 #include "Dialogs.r"
 #include "Processes.r"
 
-/* ---- Save-before-close confirmation (DLOG 129 + DITL 129) ---- */
-resource 'DLOG' (129) {
-    { 175, 110, 300, 450 },
-    dBoxProc,
-    visible,
-    noGoAway,
-    0,
-    129,
-    "",
-    centerMainScreen
-};
-
-resource 'DITL' (129) {
-    {
-        { 82, 248, 102, 326 },
-        Button { enabled, "Save" };
-
-        { 82, 130, 102, 242 },
-        Button { enabled, "Don't Save" };
-
-        { 82, 10, 102, 82 },
-        Button { enabled, "Cancel" };
-
-        { 10, 10, 30, 326 },
-        StaticText { disabled, "Save changes before closing?" };
-
-        { 40, 10, 60, 326 },
-        StaticText { disabled, "Unsaved changes will be lost." }
-    }
-};
+/* Save-before-close confirmation is a hand-drawn NewCWindow (see
+   ShowConfirmCloseDialog in window.cpp), not a DLOG/DITL resource --
+   that gave more control over layout, the caution icon, and Return/Escape
+   keyboard shortcuts than the classic Dialog Manager path allowed. */
 
 /* ---- SIZE resource (from official Retro68 Dialog sample) ---- */
 resource 'SIZE' (-1) {
