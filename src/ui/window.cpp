@@ -4497,6 +4497,43 @@ static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit)
     gEditingTextShape = nullptr;
 
     UpdateTextShapeBounds(*ts);
+
+    // Reconcile the rotation pivot mismatch between the live-edit view
+    // (which deliberately freezes its pivot at the box's ORIGINAL,
+    // pre-typing center to avoid visibly swinging as AutoWidth grows the
+    // box -- see pivotOffsetX/Y above) and the settled renderer (which
+    // always rotates around the box's CURRENT true center, recomputed
+    // fresh every draw with no memory of "where the pivot used to be").
+    // Once the box's size has changed during editing, those two pivots
+    // differ, and the text visibly jumps at the instant editing ends --
+    // even though ts->bounds.x/y themselves never change, which is why
+    // this only shows up on rotated text (no pivot-dependent transform to
+    // mismatch when rotation is 0) and only on commit (the live view is
+    // internally consistent with its own frozen pivot throughout typing).
+    //
+    // Fix: recompute ts->bounds.x/y so the settled renderer's own
+    // true-center pivot produces the exact same on-screen result the live
+    // view's last frame did, instead of leaving x/y untouched and letting
+    // the effective pivot silently change out from under the shape.
+    if (ownRot != 0.0 && gCanvasZoom > 0) {
+        double liveTopLeftX, liveTopLeftY;
+        ApplyRotChain(full, editR.left, editR.top, liveTopLeftX, liveTopLeftY);
+
+        double preAmbientX, preAmbientY;
+        ApplyRotChainInverse(ambient, liveTopLeftX, liveTopLeftY, preAmbientX, preAmbientY);
+
+        Rect newR = CanvasRect(ts->bounds);
+        double W = newR.right - newR.left, H = newR.bottom - newR.top;
+        RotChain ownOnly; ownOnly.push_back({ownRot, 0.0, 0.0});
+        double rx, ry;
+        ApplyRotChain(ownOnly, -W / 2.0, -H / 2.0, rx, ry);
+
+        double newLocalX = preAmbientX - W / 2.0 - rx;
+        double newLocalY = preAmbientY - H / 2.0 - ry;
+        ts->bounds.x = static_cast<SInt32>(std::lround((newLocalX - gCanvasOffsetX) * 100.0 / gCanvasZoom));
+        ts->bounds.y = static_cast<SInt32>(std::lround((newLocalY - gCanvasOffsetY) * 100.0 / gCanvasZoom));
+    }
+
     RunDocumentLayout(gDocument);
     // Redraw immediately rather than just InvalWindowRect-ing and waiting
     // for the next async updateEvt: for a rotated text shape, the plain
