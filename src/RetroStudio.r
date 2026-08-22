@@ -18,7 +18,7 @@
    for the document name, and centerMainScreen has the OS compute real
    screen centering. See ShowConfirmCloseDialog in window.cpp. */
 resource 'DLOG' (129) {
-    { 0, 0, 128, 366 },
+    { 0, 0, 123, 360 },
     dBoxProc,
     visible,
     noGoAway,
@@ -29,28 +29,40 @@ resource 'DLOG' (129) {
 };
 
 /* Geometry below is pixel-measured off a real Adobe Illustrator 9 / BBEdit
-   alert screenshot (366x128 dialog), not estimated -- see
+   alert screenshot (target render: 366x128 dialog, buttons at
+   {93,78,112,159}/{93,219,112,275}/{93,292,112,348}) -- see
    src/ui/window.cpp's ShowConfirmCloseDialog comment for the measurement
    method. Icon rect matches Inside Macintosh's documented CautionAlert
-   position ([10,20,42,52]) almost exactly, which cross-validates the rest. */
+   position ([10,20,42,52]) almost exactly, which cross-validates it.
+
+   The DLOG size and every Button rect below are DECLARED smaller than
+   that target and DO NOT match the numbers above directly: a second
+   pixel-diff round (declared vs. actually rendered, both on this
+   toolchain) found the whole dialog rendering ~6px wider / ~5px taller
+   than declared, and each Button rendering ~4px narrower (eaten from the
+   left edge only) and ~3px lower than declared. These numbers back that
+   out so the RENDERED result lands on the target above -- confirmed
+   working already for the Icon/StaticText items below using the same
+   method (their declared rects are pixel-perfect against a live
+   screenshot). Don't "fix" these to match the target numbers directly. */
 resource 'DITL' (129) {
     {
         /* 1: Save -- default button */
-        { 93, 292, 112, 348 },
+        { 90, 287, 110, 347 },
         Button { enabled, "Save" };
 
         /* 2: UserItem -- draws the thick default-button ring around item 1,
            same ButtonFrameProc technique as Retro68's own Dialog sample. */
-        { 89, 288, 116, 352 },
+        { 86, 283, 114, 351 },
         UserItem { disabled };
 
         /* 3: Don't Save -- deliberately isolated from the Cancel/Save pair
            (60px gap) rather than evenly spaced; measured, not a mistake. */
-        { 93, 78, 112, 159 },
+        { 90, 73, 110, 158 },
         Button { enabled, "Don't Save" };
 
         /* 4: Cancel -- tight 17px gap to Save, paired as the "safe" choices */
-        { 93, 219, 112, 275 },
+        { 90, 214, 110, 274 },
         Button { enabled, "Cancel" };
 
         /* 5: real system caution icon (ID 2). Inside Macintosh's documented
