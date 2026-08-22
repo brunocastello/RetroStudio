@@ -468,23 +468,24 @@ static bool SameFSSpec(const FSSpec& a, const FSSpec& b) {
 }
 
 // Rebuilds the "Open Recent Files" hierarchical submenu's item list from
-// sRecentFiles. Uses AppendMenu with a blank placeholder + SetItem rather
-// than passing the filename straight to AppendMenu, since AppendMenu
+// sRecentFiles. Uses AppendMenu with a blank placeholder + SetMenuItemText
+// rather than passing the filename straight to AppendMenu, since AppendMenu
 // treats characters like ';', '!', '<', '/' in its string specially --
-// SetItem sets the literal text with no such parsing. Classic (pre-Carbon)
-// Menu Manager names throughout (CountMItems/DelMenuItem/SetItem): this
-// toolchain's headers only expose those for the Menu Manager family, per
-// the CountMenuItems compile error that suggested CountMItems instead.
+// SetMenuItemText sets the literal text with no such parsing. This
+// toolchain's Menu Manager naming is a mix, confirmed one function at a
+// time by compiler error: CountMItems (classic name -- CountMenuItems
+// isn't declared) but DeleteMenuItem/SetMenuItemText (Carbon names --
+// DelMenuItem/SetItem aren't declared). Don't assume one implies the other.
 static void RebuildRecentFilesMenu() {
     MenuRef m = GetMenuHandle(kRecentFilesMenuID);
     if (!m) return;
-    for (short i = CountMItems(m); i >= 1; --i) DelMenuItem(m, i);
+    for (short i = CountMItems(m); i >= 1; --i) DeleteMenuItem(m, i);
     for (size_t i = 0; i < sRecentFiles.size(); ++i) {
         AppendMenu(m, "\p ");
         Str255 name;
         name[0] = sRecentFiles[i].name[0];
         for (int j = 1; j <= sRecentFiles[i].name[0]; ++j) name[j] = sRecentFiles[i].name[j];
-        SetItem(m, static_cast<short>(i + 1), name);
+        SetMenuItemText(m, static_cast<short>(i + 1), name);
     }
 }
 
