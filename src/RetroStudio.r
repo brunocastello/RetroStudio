@@ -35,49 +35,43 @@ resource 'DLOG' (129) {
    position ([10,20,42,52]) almost exactly, which cross-validates the rest. */
 resource 'DITL' (129) {
     {
-        /* 1: UserItem -- fills the whole dialog with Platinum gray before
-           anything else draws (items draw in index order, so this must be
-           first); the OS's own dBoxProc content defaults to white here,
-           not the window-chrome gray real alerts use. MUST be disabled:
-           an enabled item's rect participates in click hit-testing, and
-           this one covers the entire dialog -- enabled, it silently
-           intercepted every click (including on the real buttons) before
-           they ever registered, hanging the dialog forever. */
-        { 0, 0, 128, 366 },
-        UserItem { disabled };
-
-        /* 2: Save -- default button */
+        /* 1: Save -- default button */
         { 93, 292, 112, 348 },
         Button { enabled, "Save" };
 
-        /* 3: UserItem -- draws the thick default-button ring around item 2,
-           same ButtonFrameProc technique as Retro68's own Dialog sample.
-           disabled for the same click-hit-testing reason as item 1. */
+        /* 2: UserItem -- draws the thick default-button ring around item 1,
+           same ButtonFrameProc technique as Retro68's own Dialog sample. */
         { 89, 288, 116, 352 },
         UserItem { disabled };
 
-        /* 4: Don't Save -- deliberately isolated from the Cancel/Save pair
+        /* 3: Don't Save -- deliberately isolated from the Cancel/Save pair
            (60px gap) rather than evenly spaced; measured, not a mistake. */
         { 93, 78, 112, 159 },
         Button { enabled, "Don't Save" };
 
-        /* 5: Cancel -- tight 17px gap to Save, paired as the "safe" choices */
+        /* 4: Cancel -- tight 17px gap to Save, paired as the "safe" choices */
         { 93, 219, 112, 275 },
         Button { enabled, "Cancel" };
 
-        /* 6: real system caution icon (ID 2), same position CautionAlert
-           itself draws it at ([10,20,42,52], per Inside Macintosh).
-           disabled: purely decorative, shouldn't intercept clicks either. */
+        /* 5: real system caution icon (ID 2), same position CautionAlert
+           itself draws it at ([10,20,42,52], per Inside Macintosh). */
         { 10, 20, 42, 52 },
         Icon { disabled, 2 };
 
-        /* 7: message, real StaticText (auto word-wraps); ^0 = document name via ParamText.
+        /* 6: message, real StaticText (auto word-wraps); ^0 = document name via ParamText.
            Nudged up slightly from the first measurement to center better
            against the icon's [10,42] vertical span. */
         { 10, 70, 50, 348 },
         StaticText { disabled, "Save changes to RetroStudio document \"^0\" before closing?" }
     }
 };
+
+/* No whole-dialog background-fill UserItem here anymore: adding one (to
+   turn the default white dBoxProc content gray) is what caused the alert
+   to hang completely on real hardware/emulation across two separate
+   attempts (once enabled, once disabled) -- root cause not confirmed, not
+   worth a third live-testing round-trip to find out. Content is plain
+   white until that's revisited with something verified safer. */
 
 /* ---- SIZE resource (from official Retro68 Dialog sample) ---- */
 resource 'SIZE' (-1) {
