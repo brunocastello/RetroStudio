@@ -521,8 +521,9 @@ bool LoadDocument(Document*& doc) {
 }
 
 bool LoadDocumentFromSpec(Document*& doc, const FSSpec& spec) {
+    FSSpec s = spec;  // FSpOpenDF wants FSSpecPtr (non-const) in this toolchain
     short refNum;
-    if (FSpOpenDF(&spec, fsRdPerm, &refNum) != noErr) return false;
+    if (FSpOpenDF(&s, fsRdPerm, &refNum) != noErr) return false;
     auto newDoc = ReadDocumentFromRef(refNum);
     FSClose(refNum);
     if (!newDoc) return false;
