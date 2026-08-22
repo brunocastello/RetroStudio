@@ -18,25 +18,18 @@
    for the document name, and centerMainScreen has the OS compute real
    screen centering. See ShowConfirmCloseDialog in window.cpp.
 
-   procID 1044 = kWindowAlertProc, Carbon's own "Proc IDs for theme-savvy
-   dialogs" enum (MacWindows.h: kWindowPlainDialogProc=1040,
-   kWindowShadowDialogProc=1041, kWindowModalDialogProc=1042,
-   kWindowMovableModalDialogProc=1043, kWindowAlertProc=1044,
-   kWindowMovableAlertProc=1045). This is the real, Apple-documented
-   mechanism for a Dialog-Manager alert that gets the Appearance Manager's
-   actual theme background (Platinum gray) and chrome for free -- no
-   custom drawing, which is what every earlier attempt at the gray
-   background here was (and which caused real damage: a whole-dialog
-   UserItem froze the alert solid twice, and an EraseRect/DrawDialog
-   attempt painted directly onto the canvas window because GetNewDialog
-   doesn't reliably leave the new dialog as the current port on this
-   toolchain). Retro68's Rez includes don't define the named constant, so
-   the plain number is used -- Rez only needs the integer, not the name.
-   kWindowAlertProc (non-movable, no drag strip) rather than
-   kWindowMovableAlertProc, matching the reference screenshots. */
+   procID: tried 1044 (kWindowAlertProc, Carbon's theme-savvy dialog WDEF)
+   to get the Appearance Manager's own background/chrome for free -- this
+   toolchain's Dialog Manager doesn't actually implement it: rendered a
+   plain white dialog with a stray red border, no theming at all. Back to
+   plain dBoxProc; the gray background is painted manually in
+   ShowConfirmCloseDialog (window.cpp) via SetPortDialogPort + EraseRect,
+   with the port now set explicitly first -- the earlier attempt at this
+   skipped that and painted onto whatever window happened to be the
+   current port instead (the live canvas, in that case). */
 resource 'DLOG' (129) {
     { 0, 0, 123, 360 },
-    1044,
+    dBoxProc,
     visible,
     noGoAway,
     0,
@@ -101,11 +94,12 @@ resource 'DITL' (129) {
    Same construction as 129 above, reusing its exact icon/text/button
    geometry (already pixel-tuned against a live screenshot), just with two
    buttons (Revert, Cancel) instead of three. See ShowConfirmRevertDialog
-   in window.cpp. procID 1044 = kWindowAlertProc -- see the long comment
-   on DLOG 129 above. */
+   in window.cpp. See the long procID comment on DLOG 129 above --
+   kWindowAlertProc didn't work on this toolchain, back to dBoxProc with
+   a manually-painted background. */
 resource 'DLOG' (130) {
     { 0, 0, 123, 360 },
-    1044,
+    dBoxProc,
     visible,
     noGoAway,
     0,
