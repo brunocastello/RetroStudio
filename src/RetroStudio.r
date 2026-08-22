@@ -23,7 +23,7 @@
    toolchain's Dialog Manager doesn't actually implement it: rendered a
    plain white dialog with a stray red border, no theming at all. Back to
    plain dBoxProc; the gray background is painted manually in
-   ShowConfirmCloseDialog (window.cpp) via SetPortDialogPort + EraseRect,
+   ShowConfirmCloseDialog (window.cpp) via SetPortWindowPort + EraseRect,
    with the port now set explicitly first -- the earlier attempt at this
    skipped that and painted onto whatever window happened to be the
    current port instead (the live canvas, in that case). */

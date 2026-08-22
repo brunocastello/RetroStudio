@@ -566,9 +566,9 @@ static int ShowConfirmCloseDialog(const std::string& docName) {
     // happened to be the current port -- the live canvas, that time --
     // because GetNewDialog doesn't reliably leave the new dialog as the
     // current port here) this explicitly sets the port to the dialog
-    // first via SetPortDialogPort, the standard Dialog Manager call for
+    // first via SetPortWindowPort, the standard Dialog Manager call for
     // exactly this, before any drawing happens.
-    SetPortDialogPort(dlg);
+    SetPortWindowPort(dlg);
     RGBColor platGray = { 0xCCCC, 0xCCCC, 0xCCCC };
     RGBBackColor(&platGray);
     Rect dlgPortR; GetWindowPortBounds(dlg, &dlgPortR);
@@ -630,7 +630,7 @@ static bool ShowConfirmRevertDialog(const std::string& docName) {
     if (!dlg) return false;
 
     // See the matching comment in ShowConfirmCloseDialog above.
-    SetPortDialogPort(dlg);
+    SetPortWindowPort(dlg);
     RGBColor platGray = { 0xCCCC, 0xCCCC, 0xCCCC };
     RGBBackColor(&platGray);
     Rect dlgPortR; GetWindowPortBounds(dlg, &dlgPortR);
