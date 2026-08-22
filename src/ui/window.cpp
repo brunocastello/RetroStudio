@@ -447,31 +447,6 @@ static pascal void DrawSaveDefaultRing(DialogRef dlg, short itemNo) {
     PenSize(1, 1);
 }
 
-// UserItem proc for DITL 129 item 5: yellow caution triangle + "!", drawn
-// in its reserved {20,20,52,52} rect (RetroStudio.r) -- Retro68 has no
-// bundled color caution ICON resource to reference instead.
-static pascal void DrawCautionIcon(DialogRef dlg, short itemNo) {
-    (void)dlg; (void)itemNo;
-    RGBColor black  = { 0, 0, 0 };
-    RGBColor yellow = { 0xFFFF, 0xCCCC, 0x0000 };
-    PolyHandle tri = OpenPoly();
-    MoveTo(36, 20);
-    LineTo(52, 50);
-    LineTo(20, 50);
-    LineTo(36, 20);
-    ClosePoly();
-    RGBForeColor(&yellow); PaintPoly(tri);
-    RGBForeColor(&black);  FramePoly(tri);
-    KillPoly(tri);
-    TextFont(0); TextSize(18); TextFace(bold);
-    char bang[1] = { '!' };
-    short w = TextWidth(bang, 0, 1);
-    MoveTo(static_cast<short>(36 - w / 2), 47);
-    DrawText(bang, 0, 1);
-    TextFace(normal); TextSize(12);
-    RGBForeColor(&black);
-}
-
 // Return/Enter -> item 1 (Save, the default); Escape -> item 4 (Cancel).
 // Standard ModalFilterProc keystroke-to-item-hit translation, same pattern
 // every classic dialog with keyboard shortcuts uses.
@@ -489,10 +464,12 @@ static pascal Boolean ConfirmCloseFilterProc(DialogPtr dlg, EventRecord* event, 
 // Manager DLOG/DITL 129 (RetroStudio.r), same family as Retro68's own
 // Samples/Dialog: Button items are drawn by the OS itself (real
 // Appearance-themed 3D buttons, no DrawThemeButton call needed from us),
-// and centerMainScreen has the OS compute genuine screen centering. Item
-// 1 = Save (default), 3 = Don't Save, 4 = Cancel; items 2/5 are UserItems
-// (default-ring, caution icon); item 6 is the StaticText message, which
-// takes the document name via ParamText's "^0" substitution.
+// the Icon item resolves to the System file's real caution icon (we don't
+// bundle our own ID-2 ICON/cicn), and centerMainScreen has the OS compute
+// genuine screen centering. Item 1 = Save (default), 3 = Don't Save,
+// 4 = Cancel; item 2 is a UserItem (default-ring); item 5 is the system
+// Icon; item 6 is the StaticText message, which takes the document name
+// via ParamText's "^0" substitution.
 // Returns: 0 = Save, 1 = Don't Save, 2 = Cancel.
 static int ShowConfirmCloseDialog(const std::string& docName) {
     Str255 nameP; ToPStr(docName, nameP);
@@ -505,8 +482,6 @@ static int ShowConfirmCloseDialog(const std::string& docName) {
     DialogItemType type; Handle itemH; Rect box;
     GetDialogItem(dlg, 2, &type, &itemH, &box);
     SetDialogItem(dlg, 2, type, reinterpret_cast<Handle>(NewUserItemUPP(DrawSaveDefaultRing)), &box);
-    GetDialogItem(dlg, 5, &type, &itemH, &box);
-    SetDialogItem(dlg, 5, type, reinterpret_cast<Handle>(NewUserItemUPP(DrawCautionIcon)), &box);
 
     ModalFilterUPP filterUPP = NewModalFilterUPP(ConfirmCloseFilterProc);
 

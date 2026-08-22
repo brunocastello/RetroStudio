@@ -7,12 +7,16 @@
 #include "Processes.r"
 
 /* ---- Save-before-close confirmation (DLOG 129 + DITL 129) ----
-   Real Dialog Manager Button/StaticText items, same family as Retro68's
-   own Samples/Dialog: the Button CDEF is drawn by the OS itself (real
-   Appearance-themed 3D buttons, no DrawThemeButton call needed from us),
-   StaticText auto-wraps and takes the "^0" ParamText substitution for the
-   document name, and centerMainScreen has the OS compute real screen
-   centering. See ShowConfirmCloseDialog in window.cpp. */
+   Real Dialog Manager Button/Icon/StaticText items, same family as
+   Retro68's own Samples/Dialog: the Button CDEF is drawn by the OS itself
+   (real Appearance-themed 3D buttons, no DrawThemeButton call needed from
+   us), the Icon item resolves to the System file's own caution icon
+   (ID 2 -- ICON 0/1/2 = stop/note/caution are standard System-file
+   resources; we don't bundle our own ID-2 ICON/cicn, so the Resource
+   Manager's search chain falls through to the System's real, colorized
+   one), StaticText auto-wraps and takes the "^0" ParamText substitution
+   for the document name, and centerMainScreen has the OS compute real
+   screen centering. See ShowConfirmCloseDialog in window.cpp. */
 resource 'DLOG' (129) {
     { 0, 0, 110, 360 },
     dBoxProc,
@@ -43,12 +47,13 @@ resource 'DITL' (129) {
         { 75, 132, 95, 204 },
         Button { enabled, "Cancel" };
 
-        /* 5: UserItem -- draws the yellow caution triangle */
-        { 20, 20, 52, 52 },
-        UserItem { enabled };
+        /* 5: real system caution icon (ID 2), same position CautionAlert
+           itself draws it at ([10,20,42,52], per Inside Macintosh) */
+        { 10, 20, 42, 52 },
+        Icon { enabled, 2 };
 
         /* 6: message, real StaticText (auto word-wraps); ^0 = document name via ParamText */
-        { 18, 64, 58, 344 },
+        { 16, 64, 56, 340 },
         StaticText { disabled, "Save changes to the RetroStudio document \"^0\" before closing?" }
     }
 };
