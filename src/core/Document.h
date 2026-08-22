@@ -9,4 +9,10 @@ public:
     // Unified z-order for root-level items: rootChildOrder[0] = top of layers panel.
     // isFrame=true → frames[idx], isFrame=false → rootShapes[idx].
     std::vector<ChildRef> rootChildOrder;
+
+    // Set once this document has been saved to or opened from a real file;
+    // Save writes straight back to fileSpec (no prompt) when true, otherwise
+    // Save behaves like Save As. Revert reloads directly from fileSpec.
+    FSSpec fileSpec = {};
+    bool   hasFile  = false;
 };

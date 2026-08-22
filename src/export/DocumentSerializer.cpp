@@ -352,7 +352,50 @@ static OSErr NavReplyToFSSpec(NavReplyRecord& reply, FSSpec& outSpec) {
                        &actualSize);
 }
 
-bool SaveDocument(Document* doc) {
+// Writes doc's content to an already-created, already-open data fork.
+static bool WriteDocumentToRef(Document* doc, short refNum, const std::string& filename) {
+    Writer w; w.ref = refNum;
+
+    w.write(&kMagic, 4);
+    w.w16(kVersion);
+    w.wStr(filename);
+
+    w.w16(static_cast<UInt16>(doc->rootShapes.size()));
+    for (const auto& s : doc->rootShapes) WriteShape(w, *s);
+
+    w.w16(static_cast<UInt16>(doc->frames.size()));
+    for (const auto& f : doc->frames) WriteFrame(w, *f);
+
+    w.w16(static_cast<UInt16>(doc->rootChildOrder.size()));
+    for (const auto& ref : doc->rootChildOrder) {
+        w.w8(ref.isFrame ? 1 : 0);
+        w.w16(static_cast<UInt16>(ref.idx));
+    }
+    return w.ok;
+}
+
+// (Re)creates the file at spec and writes doc's content into it.
+static bool WriteDocumentToSpec(Document* doc, const FSSpec& spec) {
+    FSSpec s = spec;
+    FSpDelete(&s);
+    if (FSpCreate(&s, kCreator, kDocType, smSystemScript) != noErr) return false;
+
+    short refNum;
+    if (FSpOpenDF(&s, fsRdWrPerm, &refNum) != noErr) return false;
+
+    std::string filename;
+    for (int i = 1; i <= s.name[0]; ++i)
+        filename += static_cast<char>(s.name[i]);
+
+    bool ok = WriteDocumentToRef(doc, refNum, filename);
+    FSClose(refNum);
+    return ok;
+}
+
+// Shared Nav Services "choose a file to save to" prompt used by both
+// Save As and Save a Copy -- they differ only in whether the chosen
+// location becomes doc's new fileSpec afterward.
+static bool PromptSaveAndWrite(Document* doc, bool updateDocIdentity) {
     if (!doc) return false;
 
     std::string suggested = EnsureRsdExtension(doc->name);
@@ -375,38 +418,85 @@ bool SaveDocument(Document* doc) {
     NavDisposeReply(&reply);
     if (err != noErr) return false;
 
-    FSpDelete(&spec);
-    if (FSpCreate(&spec, kCreator, kDocType, smSystemScript) != noErr) return false;
+    bool ok = WriteDocumentToSpec(doc, spec);
+    if (ok && updateDocIdentity) {
+        doc->fileSpec = spec;
+        doc->hasFile  = true;
+        std::string filename;
+        for (int i = 1; i <= spec.name[0]; ++i)
+            filename += static_cast<char>(spec.name[i]);
+        doc->name = filename;
+    }
+    return ok;
+}
 
-    short refNum;
-    if (FSpOpenDF(&spec, fsRdWrPerm, &refNum) != noErr) return false;
+bool SaveDocumentAs(Document* doc)   { return PromptSaveAndWrite(doc, true); }
+bool SaveDocumentCopy(Document* doc) { return PromptSaveAndWrite(doc, false); }
 
-    std::string filename;
-    for (int i = 1; i <= spec.name[0]; ++i)
-        filename += static_cast<char>(spec.name[i]);
+bool SaveDocument(Document* doc) {
+    if (!doc) return false;
+    if (doc->hasFile) return WriteDocumentToSpec(doc, doc->fileSpec);
+    return SaveDocumentAs(doc);
+}
 
-    Writer w; w.ref = refNum;
+// Parses a document from an already-open, already-positioned-at-start
+// data fork. Shared by LoadDocument, LoadDocumentFromSpec, and Revert.
+static std::unique_ptr<Document> ReadDocumentFromRef(short refNum) {
+    Reader r; r.ref = refNum;
 
-    w.write(&kMagic, 4);
-    w.w16(kVersion);
-    w.wStr(filename);
+    UInt32 magic = 0; r.read(&magic, 4);
+    UInt16 ver   = r.r16();
+    if (!r.ok || magic != kMagic || (ver != 12 && ver != 13 && ver != 14 && ver != 15 && ver != 16 && ver != 17))
+        return nullptr;
 
-    w.w16(static_cast<UInt16>(doc->rootShapes.size()));
-    for (const auto& s : doc->rootShapes) WriteShape(w, *s);
+    auto doc  = std::make_unique<Document>();
+    doc->name = r.rStr();
 
-    w.w16(static_cast<UInt16>(doc->frames.size()));
-    for (const auto& f : doc->frames) WriteFrame(w, *f);
-
-    w.w16(static_cast<UInt16>(doc->rootChildOrder.size()));
-    for (const auto& ref : doc->rootChildOrder) {
-        w.w8(ref.isFrame ? 1 : 0);
-        w.w16(static_cast<UInt16>(ref.idx));
+    UInt16 nRoots = r.r16();
+    for (UInt16 i = 0; i < nRoots && r.ok; ++i) {
+        auto s = ReadShape(r, ver);
+        if (s) doc->rootShapes.push_back(std::move(s));
     }
 
-    FSClose(refNum);
+    UInt16 nFrames = r.r16();
+    for (UInt16 i = 0; i < nFrames && r.ok; ++i) {
+        auto f = ReadFrame(r, nullptr, ver);
+        if (f) doc->frames.push_back(std::move(f));
+    }
 
-    if (w.ok) doc->name = filename;
-    return w.ok;
+    if (ver >= 13) {
+        UInt16 nOrder = r.r16();
+        for (UInt16 i = 0; i < nOrder && r.ok; ++i) {
+            UInt8  isf = r.r8();
+            UInt16 idx = r.r16();
+            doc->rootChildOrder.push_back({ isf != 0, static_cast<int>(idx) });
+        }
+    } else {
+        for (int i = 0; i < (int)doc->rootShapes.size(); ++i)
+            doc->rootChildOrder.push_back({ false, i });
+        for (int i = 0; i < (int)doc->frames.size(); ++i)
+            doc->rootChildOrder.push_back({ true, i });
+    }
+
+    return r.ok ? std::move(doc) : nullptr;
+}
+
+bool RevertDocument(Document* doc) {
+    if (!doc || !doc->hasFile) return false;
+
+    short refNum;
+    if (FSpOpenDF(&doc->fileSpec, fsRdPerm, &refNum) != noErr) return false;
+    auto newDoc = ReadDocumentFromRef(refNum);
+    FSClose(refNum);
+    if (!newDoc) return false;
+
+    // Replace contents in place -- keep the same Document* so callers
+    // holding gDocument (and its fileSpec/hasFile) don't need updating.
+    doc->frames         = std::move(newDoc->frames);
+    doc->rootShapes      = std::move(newDoc->rootShapes);
+    doc->rootChildOrder  = std::move(newDoc->rootChildOrder);
+    doc->name            = newDoc->name;
+    return true;
 }
 
 bool LoadDocument(Document*& doc) {
@@ -427,46 +517,18 @@ bool LoadDocument(Document*& doc) {
     NavDisposeReply(&reply);
     if (err != noErr) return false;
 
+    return LoadDocumentFromSpec(doc, spec);
+}
+
+bool LoadDocumentFromSpec(Document*& doc, const FSSpec& spec) {
     short refNum;
     if (FSpOpenDF(&spec, fsRdPerm, &refNum) != noErr) return false;
-
-    Reader r; r.ref = refNum;
-
-    UInt32 magic = 0; r.read(&magic, 4);
-    UInt16 ver   = r.r16();
-    if (!r.ok || magic != kMagic || (ver != 12 && ver != 13 && ver != 14 && ver != 15 && ver != 16 && ver != 17)) { FSClose(refNum); return false; }
-
-    auto newDoc  = std::make_unique<Document>();
-    newDoc->name = r.rStr();
-
-    UInt16 nRoots = r.r16();
-    for (UInt16 i = 0; i < nRoots && r.ok; ++i) {
-        auto s = ReadShape(r, ver);
-        if (s) newDoc->rootShapes.push_back(std::move(s));
-    }
-
-    UInt16 nFrames = r.r16();
-    for (UInt16 i = 0; i < nFrames && r.ok; ++i) {
-        auto f = ReadFrame(r, nullptr, ver);
-        if (f) newDoc->frames.push_back(std::move(f));
-    }
-
-    if (ver >= 13) {
-        UInt16 nOrder = r.r16();
-        for (UInt16 i = 0; i < nOrder && r.ok; ++i) {
-            UInt8  isf = r.r8();
-            UInt16 idx = r.r16();
-            newDoc->rootChildOrder.push_back({ isf != 0, static_cast<int>(idx) });
-        }
-    } else {
-        for (int i = 0; i < (int)newDoc->rootShapes.size(); ++i)
-            newDoc->rootChildOrder.push_back({ false, i });
-        for (int i = 0; i < (int)newDoc->frames.size(); ++i)
-            newDoc->rootChildOrder.push_back({ true, i });
-    }
-
+    auto newDoc = ReadDocumentFromRef(refNum);
     FSClose(refNum);
-    if (!r.ok) return false;
+    if (!newDoc) return false;
+
+    newDoc->fileSpec = spec;
+    newDoc->hasFile  = true;
 
     delete doc;
     doc = newDoc.release();

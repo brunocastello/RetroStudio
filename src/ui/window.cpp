@@ -165,6 +165,11 @@ static const int kMaxUndo = 50;
 static std::vector<std::unique_ptr<Document>> sUndoStack;
 static std::vector<std::unique_ptr<Document>> sRedoStack;
 
+// Open Recent Files — session-only (resets on quit): this app has no
+// preferences-file infrastructure yet to persist it across launches.
+// Revisit later per project memory (project_recent_files_persistence).
+static std::vector<FSSpec> sRecentFiles;
+
 // Per-window document context — stores state for inactive windows
 struct DocCtx {
     Document*    doc          = nullptr;
@@ -186,14 +191,25 @@ static std::vector<std::unique_ptr<DocCtx>> sDocWindows;
 
 static const short kZoomDocProc    = 8;
 static const short kNoGrowDocProc  = 4;  // title bar + close box, no grow/zoom
-static const short kFileMenuID  = 129;
-static const short kEditMenuID  = 130;
-static const short kViewMenuID  = 131;
-static const short kFileNew     = 1;
-static const short kFileOpen    = 2;
-static const short kFileClose   = 3;
-static const short kFileSave    = 5;
-static const short kFileQuit    = 7;
+static const short kFileMenuID        = 129;
+static const short kEditMenuID        = 130;
+static const short kViewMenuID        = 131;
+static const short kRecentFilesMenuID = 132;  // hierarchical submenu of kFileOpenRecent
+static const short kFileNew           = 1;
+static const short kFileOpen          = 2;
+static const short kFileOpenRecent    = 3;
+// item 4 = separator
+static const short kFileRevert        = 5;
+static const short kFileClose         = 6;
+// item 7 = separator
+static const short kFileSave          = 8;
+static const short kFileSaveAs        = 9;
+static const short kFileSaveCopy      = 10;
+// item 11 = separator
+static const short kFilePrint         = 12;
+// item 13 = separator
+static const short kFileQuit          = 14;
+static const int   kMaxRecentFiles    = 5;
 static const short kViewZoomIn  = 1;
 static const short kViewZoomOut = 2;
 // item 3 = separator
@@ -421,17 +437,67 @@ void DrawAboutWindow() {
 // Enable/disable menu items based on whether any document is open.
 // Call after any transition that changes gDocument.
 static void UpdateMenuState() {
-    bool has = (gDocument != nullptr);
+    bool has     = (gDocument != nullptr);
+    bool hasFile = has && gDocument->hasFile;  // saved to, or opened from, a real file
     MenuRef fm = GetMenuHandle(kFileMenuID);
     if (fm) {
-        if (has) { EnableMenuItem(fm, kFileClose); EnableMenuItem(fm, kFileSave); }
-        else     { DisableMenuItem(fm, kFileClose); DisableMenuItem(fm, kFileSave); }
+        if (has) { EnableMenuItem(fm, kFileClose); EnableMenuItem(fm, kFileSaveAs); EnableMenuItem(fm, kFileSaveCopy); }
+        else     { DisableMenuItem(fm, kFileClose); DisableMenuItem(fm, kFileSaveAs); DisableMenuItem(fm, kFileSaveCopy); }
+        // Save (writes straight back, no prompt) only makes sense once the
+        // document has a real file to write to; a never-saved document must
+        // go through Save As first. Revert only makes sense for the same reason.
+        if (hasFile) { EnableMenuItem(fm, kFileSave); EnableMenuItem(fm, kFileRevert); }
+        else         { DisableMenuItem(fm, kFileSave); DisableMenuItem(fm, kFileRevert); }
+        DisableMenuItem(fm, kFilePrint);  // placeholder: no Print Manager integration yet
+        if (!sRecentFiles.empty()) EnableMenuItem(fm, kFileOpenRecent);
+        else                       DisableMenuItem(fm, kFileOpenRecent);
     }
     MenuRef em = GetMenuHandle(kEditMenuID);
     if (em) { if (has) EnableMenuItem(em, 0); else DisableMenuItem(em, 0); }
     MenuRef vm = GetMenuHandle(kViewMenuID);
     if (vm) { if (has) EnableMenuItem(vm, 0); else DisableMenuItem(vm, 0); }
     DrawMenuBar();
+}
+
+static bool SameFSSpec(const FSSpec& a, const FSSpec& b) {
+    if (a.vRefNum != b.vRefNum || a.parID != b.parID) return false;
+    if (a.name[0] != b.name[0]) return false;
+    for (int i = 1; i <= a.name[0]; ++i)
+        if (a.name[i] != b.name[i]) return false;
+    return true;
+}
+
+// Rebuilds the "Open Recent Files" hierarchical submenu's item list from
+// sRecentFiles. Uses AppendMenu with a blank placeholder + SetMenuItemText
+// rather than passing the filename straight to AppendMenu, since AppendMenu
+// treats characters like ';', '!', '<', '/' in its string specially --
+// SetMenuItemText sets the literal text with no such parsing.
+static void RebuildRecentFilesMenu() {
+    MenuRef m = GetMenuHandle(kRecentFilesMenuID);
+    if (!m) return;
+    for (short i = CountMenuItems(m); i >= 1; --i) DeleteMenuItem(m, i);
+    for (size_t i = 0; i < sRecentFiles.size(); ++i) {
+        AppendMenu(m, "\p ");
+        Str255 name;
+        name[0] = sRecentFiles[i].name[0];
+        for (int j = 1; j <= sRecentFiles[i].name[0]; ++j) name[j] = sRecentFiles[i].name[j];
+        SetMenuItemText(m, static_cast<short>(i + 1), name);
+    }
+}
+
+// Adds/moves spec to the front of the session-only recent-files list
+// (see project_recent_files_persistence memory -- this resets on quit,
+// deliberately, until this app has real preferences-file infrastructure).
+static void AddRecentFile(const FSSpec& spec) {
+    for (auto it = sRecentFiles.begin(); it != sRecentFiles.end(); ) {
+        if (SameFSSpec(*it, spec)) it = sRecentFiles.erase(it);
+        else ++it;
+    }
+    sRecentFiles.insert(sRecentFiles.begin(), spec);
+    if (static_cast<int>(sRecentFiles.size()) > kMaxRecentFiles)
+        sRecentFiles.resize(kMaxRecentFiles);
+    RebuildRecentFilesMenu();
+    UpdateMenuState();
 }
 
 // UserItem proc for DITL 129 item 2: draws the thick default-button "ring"
@@ -499,6 +565,58 @@ static int ShowConfirmCloseDialog(const std::string& docName) {
     if (item == 1) return 0;  // Save
     if (item == 3) return 1;  // Don't Save
     return 2;                 // Cancel
+}
+
+// UserItem proc for DITL 130 item 2: same default-button ring as
+// DrawSaveDefaultRing above, just reading item 1's (Revert's) box instead.
+static pascal void DrawRevertDefaultRing(DialogRef dlg, short itemNo) {
+    (void)itemNo;
+    DialogItemType type; Handle itemH; Rect box;
+    GetDialogItem(dlg, 1, &type, &itemH, &box);
+    InsetRect(&box, -4, -4);
+    PenSize(3, 3);
+    FrameRoundRect(&box, 16, 16);
+    PenSize(1, 1);
+}
+
+// Return/Enter -> item 1 (Revert, the default); Escape -> item 3 (Cancel).
+static pascal Boolean ConfirmRevertFilterProc(DialogPtr dlg, EventRecord* event, short* itemHit) {
+    (void)dlg;
+    if (event->what == keyDown || event->what == autoKey) {
+        char c = static_cast<char>(event->message & charCodeMask);
+        if (c == 0x0D || c == 0x03) { *itemHit = 1; return true; }  // Return/Enter
+        if (c == 0x1B)              { *itemHit = 3; return true; }  // Escape
+    }
+    return false;
+}
+
+// "Revert to the last saved version?" alert -- DLOG/DITL 130 (RetroStudio.r),
+// same construction as ShowConfirmCloseDialog (129) just with two buttons
+// instead of three, reusing the exact same icon/text/button geometry those
+// were pixel-tuned against. Returns true if the user chose Revert.
+static bool ShowConfirmRevertDialog(const std::string& docName) {
+    Str255 nameP; ToPStr(docName, nameP);
+    Str255 emptyP = { 0 };
+    ParamText(nameP, emptyP, emptyP, emptyP);
+
+    DialogPtr dlg = GetNewDialog(130, nullptr, (WindowPtr)-1L);
+    if (!dlg) return false;
+
+    DialogItemType type; Handle itemH; Rect box;
+    GetDialogItem(dlg, 2, &type, &itemH, &box);
+    SetDialogItem(dlg, 2, type, reinterpret_cast<Handle>(NewUserItemUPP(DrawRevertDefaultRing)), &box);
+
+    ModalFilterUPP filterUPP = NewModalFilterUPP(ConfirmRevertFilterProc);
+
+    short item = 0;
+    do {
+        ModalDialog(filterUPP, &item);
+    } while (item != 1 && item != 3);
+
+    DisposeModalFilterUPP(filterUPP);
+    DisposeDialog(dlg);
+
+    return item == 1;  // Revert
 }
 
 void SwitchActiveDocument(WindowRef win) {
@@ -613,15 +731,34 @@ void SetupMenus() {
     SetItemCmd(fileMenu, kFileNew, 'N');
     AppendMenu(fileMenu, "\pOpen...");
     SetItemCmd(fileMenu, kFileOpen, 'O');
+    AppendMenu(fileMenu, "\pOpen Recent Files");
+    AppendMenu(fileMenu, "\p-");
+    AppendMenu(fileMenu, "\pRevert");
     AppendMenu(fileMenu, "\pClose");
     SetItemCmd(fileMenu, kFileClose, 'W');
     AppendMenu(fileMenu, "\p-");
-    AppendMenu(fileMenu, "\pSave...");
+    AppendMenu(fileMenu, "\pSave");
     SetItemCmd(fileMenu, kFileSave, 'S');
+    // Save As/Save a Copy have no cmd-key shortcut: classic SetItemCmd can
+    // only bind a bare Cmd+letter, and Cmd+S is already plain Save -- true
+    // Cmd+Shift+S would need checking shiftKey in the raw keyDown handler
+    // before MenuKey() runs, which isn't wired up here.
+    AppendMenu(fileMenu, "\pSave As\311");        // \311 = ellipsis (…)
+    AppendMenu(fileMenu, "\pSave a Copy\311");
+    AppendMenu(fileMenu, "\p-");
+    AppendMenu(fileMenu, "\pPrint\311");
+    SetItemCmd(fileMenu, kFilePrint, 'P');
     AppendMenu(fileMenu, "\p-");
     AppendMenu(fileMenu, "\pQuit");
     SetItemCmd(fileMenu, kFileQuit, 'Q');
     InsertMenu(fileMenu, 0);
+
+    // "Open Recent Files" hierarchical submenu -- starts empty, populated by
+    // RebuildRecentFilesMenu() as files are opened/saved this session.
+    MenuRef recentMenu = NewMenu(kRecentFilesMenuID, "\pOpen Recent Files");
+    InsertMenu(recentMenu, -1);       // -1 = hierMenu: submenu, not a menu-bar menu
+    SetItemCmd(fileMenu, kFileOpenRecent, 0x1B);  // 0x1B = hMenuCmd: marks item 3 as this submenu's trigger
+    SetItemMark(fileMenu, kFileOpenRecent, kRecentFilesMenuID);
 
     MenuRef editMenu = NewMenu(kEditMenuID, "\pEdit");
     AppendMenu(editMenu, "\pUndo");
@@ -2662,6 +2799,26 @@ static void InitRootChildOrder(Document* doc) {
         doc->rootChildOrder.push_back({ false, i });
     for (int i = 0; i < (int)doc->frames.size(); ++i)
         doc->rootChildOrder.push_back({ true, i });
+}
+
+// Shared tail of "open a document into a new window" -- used by both
+// File > Open... and Open Recent Files, once newDoc has already been
+// loaded (via LoadDocument or LoadDocumentFromSpec respectively).
+static void FinishOpeningDocument(Document* newDoc) {
+    if (newDoc->rootChildOrder.empty()) InitRootChildOrder(newDoc);
+    WindowRef win = CreateDocumentWindow(newDoc);
+    auto ctx = std::make_unique<DocCtx>();
+    ctx->doc = newDoc;
+    ctx->win = win;
+    ctx->nextFrameNum = static_cast<int>(newDoc->frames.size()) + 2;
+    sDocWindows.push_back(std::move(ctx));
+    LoadGlobalsFromCtx(*sDocWindows.back());
+    sPasteParent = nullptr;
+    UpdateWindowTitle();
+    Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
+    RefreshLayersPanel();
+    RefreshInspector();
+    if (newDoc->hasFile) AddRecentFile(newDoc->fileSpec);
 }
 
 // --------------------------------------------------------------------------
@@ -5316,19 +5473,7 @@ void HandleMenuCommand(long menuResult) {
                     if (ctx->win == gMainWindow) { SaveGlobalsToCtx(*ctx); break; }
                 Document* newDoc = nullptr;
                 if (LoadDocument(newDoc)) {
-                    if (newDoc->rootChildOrder.empty()) InitRootChildOrder(newDoc);
-                    WindowRef win = CreateDocumentWindow(newDoc);
-                    auto ctx = std::make_unique<DocCtx>();
-                    ctx->doc = newDoc;
-                    ctx->win = win;
-                    ctx->nextFrameNum = static_cast<int>(newDoc->frames.size()) + 2;
-                    sDocWindows.push_back(std::move(ctx));
-                    LoadGlobalsFromCtx(*sDocWindows.back());
-                    sPasteParent = nullptr;
-                    UpdateWindowTitle();
-                    Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
-                    RefreshLayersPanel();
-                    RefreshInspector();
+                    FinishOpeningDocument(newDoc);
                 } else {
                     // User cancelled — restore previous context
                     for (auto& c : sDocWindows)
@@ -5336,15 +5481,54 @@ void HandleMenuCommand(long menuResult) {
                 }
                 break;
             }
+            case kFileRevert:
+                if (gDocument && gDocument->hasFile && ShowConfirmRevertDialog(gDocument->name)) {
+                    gSelectedFrame = nullptr; gSelectedShape = nullptr;
+                    gSelectedShapes.clear(); gSelectedFrames.clear();
+                    sUndoStack.clear(); sRedoStack.clear();
+                    RevertDocument(gDocument);
+                    if (gDocument->rootChildOrder.empty()) InitRootChildOrder(gDocument);
+                    UpdateWindowTitle();
+                    Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
+                    RefreshLayersPanel();
+                    RefreshInspector();
+                }
+                break;
             case kFileClose:
                 CloseDocumentWindow(gMainWindow);
                 break;
             case kFileSave:
-                SaveDocument(gDocument);
+                if (SaveDocument(gDocument)) AddRecentFile(gDocument->fileSpec);
+                UpdateWindowTitle();
                 break;
+            case kFileSaveAs:
+                if (SaveDocumentAs(gDocument)) AddRecentFile(gDocument->fileSpec);
+                UpdateWindowTitle();
+                break;
+            case kFileSaveCopy:
+                SaveDocumentCopy(gDocument);
+                break;
+            case kFilePrint:
+                break;  // disabled placeholder -- no Print Manager integration yet
             case kFileQuit:
                 if (CloseAllDocumentWindows()) gQuitFlag = true;
                 break;
+        }
+    } else if (menuID == kRecentFilesMenuID) {
+        if (menuItem >= 1 && menuItem <= static_cast<short>(sRecentFiles.size())) {
+            FSSpec spec = sRecentFiles[menuItem - 1];
+            for (auto& ctx : sDocWindows)
+                if (ctx->win == gMainWindow) { SaveGlobalsToCtx(*ctx); break; }
+            Document* newDoc = nullptr;
+            if (LoadDocumentFromSpec(newDoc, spec)) {
+                FinishOpeningDocument(newDoc);
+            } else {
+                // File moved/deleted since it was added to the list.
+                for (auto& c : sDocWindows)
+                    if (c->win == gMainWindow) { LoadGlobalsFromCtx(*c); break; }
+                sRecentFiles.erase(sRecentFiles.begin() + (menuItem - 1));
+                RebuildRecentFilesMenu();
+            }
         }
     } else if (menuID == kEditMenuID) {
         switch (menuItem) {

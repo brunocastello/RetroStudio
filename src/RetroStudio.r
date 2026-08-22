@@ -87,6 +87,46 @@ resource 'DITL' (129) {
    worth a third live-testing round-trip to find out. Content is plain
    white until that's revisited with something verified safer. */
 
+/* ---- Revert confirmation (DLOG 130 + DITL 130) ----
+   Same construction as 129 above, reusing its exact icon/text/button
+   geometry (already pixel-tuned against a live screenshot), just with two
+   buttons (Revert, Cancel) instead of three. See ShowConfirmRevertDialog
+   in window.cpp. */
+resource 'DLOG' (130) {
+    { 0, 0, 123, 360 },
+    dBoxProc,
+    visible,
+    noGoAway,
+    0,
+    130,
+    "",
+    centerMainScreen
+};
+
+resource 'DITL' (130) {
+    {
+        /* 1: Revert -- default button, same rect Save used in DITL 129 */
+        { 90, 287, 110, 347 },
+        Button { enabled, "Revert" };
+
+        /* 2: UserItem -- default-button ring around item 1 */
+        { 86, 283, 114, 351 },
+        UserItem { disabled };
+
+        /* 3: Cancel -- same rect Cancel used in DITL 129 */
+        { 90, 214, 110, 274 },
+        Button { enabled, "Cancel" };
+
+        /* 4: real system caution icon (ID 2) */
+        { 13, 24, 45, 56 },
+        Icon { disabled, 2 };
+
+        /* 5: message; ^0 = document name via ParamText */
+        { 13, 74, 53, 352 },
+        StaticText { disabled, "Revert to the last saved version of \"^0\"? All changes will be lost." }
+    }
+};
+
 /* ---- SIZE resource (from official Retro68 Dialog sample) ---- */
 resource 'SIZE' (-1) {
     reserved,
