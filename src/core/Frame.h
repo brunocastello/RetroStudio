@@ -52,6 +52,19 @@ public:
     SizingMode   widthSizing   = SizingMode::Fixed;
     SizingMode   heightSizing  = SizingMode::Fixed;
 
+    // Position & Constraints (same meaning as Shape's — see Shape.h)
+    bool           isAbsolutePosition = false;
+    ConstraintMode constraintH        = ConstraintMode::Start;
+    ConstraintMode constraintV        = ConstraintMode::Start;
+
+    // Runtime-only: this frame's own bounds.w/h as of the last layout pass, used by
+    // AutoLayout.cpp to compute a resize delta for constraint-based repositioning of
+    // children. Intentionally NOT serialized and NOT copied in CloneFrame (window.cpp) —
+    // -1 means "unprimed," so every freshly loaded/cloned/undone frame re-primes on its
+    // next layout pass instead of applying a spurious delta from stale state.
+    SInt32 lastLayoutW = -1;
+    SInt32 lastLayoutH = -1;
+
     Frame* parent = nullptr;  // null = owned by Document::frames
 
     std::vector<std::unique_ptr<Shape>> children;

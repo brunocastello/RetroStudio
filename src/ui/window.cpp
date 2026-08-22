@@ -5255,6 +5255,17 @@ static std::unique_ptr<Frame> CloneFrame(const Frame* src, Frame* newParent) {
     f->crossAlign      = src->crossAlign;
     f->widthSizing     = src->widthSizing;
     f->heightSizing    = src->heightSizing;
+    f->cornerRadius      = src->cornerRadius;
+    f->cornerIndividual  = src->cornerIndividual;
+    f->cornerTL = src->cornerTL; f->cornerTR = src->cornerTR;
+    f->cornerBR = src->cornerBR; f->cornerBL = src->cornerBL;
+    f->opacity         = src->opacity;
+    f->rotation        = src->rotation;
+    f->isAbsolutePosition = src->isAbsolutePosition;
+    f->constraintH        = src->constraintH;
+    f->constraintV        = src->constraintV;
+    // lastLayoutW/H deliberately NOT copied — see Frame.h; leaving them at the
+    // fresh-object default (-1) makes the clone re-prime on its first layout pass.
     f->parent          = newParent;
     for (const auto& s : src->children)
         f->children.push_back(s->Clone());

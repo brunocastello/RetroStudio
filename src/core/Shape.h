@@ -20,6 +20,11 @@ inline Rect ToMacRect(const Bounds2& b) {
     return r;
 }
 
+// How a child repositions/resizes along one axis when its parent frame is resized.
+// Start = Left/Top, End = Right/Bottom, StartEnd = stretch (both edge offsets fixed),
+// Center = centered offset fixed, Scale = position and size scale proportionally.
+enum class ConstraintMode : UInt8 { Start = 0, End = 1, StartEnd = 2, Center = 3, Scale = 4 };
+
 class Shape {
 public:
     enum Type { kRectangle, kEllipse, kText, kLine };
@@ -43,6 +48,10 @@ public:
     UInt8       hSizing     = 0;
     UInt8       opacity     = 100;  // 0–100 percent
     SInt16      rotation    = 0;    // degrees, 0–359 clockwise
+    // Position & Constraints
+    bool           isAbsolutePosition = false;  // true = opt out of the parent's Auto Layout flow, position freely (parent must have layoutMode != None)
+    ConstraintMode constraintH        = ConstraintMode::Start;
+    ConstraintMode constraintV        = ConstraintMode::Start;
 };
 
 class RectShape : public Shape {

@@ -27,9 +27,61 @@ struct LayoutItem {
     SInt32  yOff     = 0;   // y correction after layout: (aabbH - h) / 2 for rotated
 };
 
+// Repositions/resizes f's direct children per their constraintH/constraintV when f's
+// own bounds.w/h have changed since the last layout pass (delta applied once, then
+// f->lastLayoutW/H are updated to consume it — see Frame.h for why this is safe
+// across undo/redo and document loads).
+//
+// Runs for every frame, not just non-layout ones: a plain frame (layoutMode==None)
+// applies constraints to ALL of its children, while an Auto Layout frame applies them
+// only to children flagged isAbsolutePosition (flow-managed children are repositioned
+// by RunFrameLayout itself below and are skipped here to avoid wasted/contradictory work).
+static void ApplyConstraints(Frame* f) {
+    bool   primed = (f->lastLayoutW >= 0);
+    SInt32 oldW = f->lastLayoutW, oldH = f->lastLayoutH;
+    SInt32 newW = f->bounds.w,    newH = f->bounds.h;
+    f->lastLayoutW = newW; f->lastLayoutH = newH;
+    if (!primed) return;
+
+    SInt32 dW = newW - oldW, dH = newH - oldH;
+    if (dW == 0 && dH == 0) return;
+
+    auto applyOne = [&](Bounds2& b, ConstraintMode ch, ConstraintMode cv) {
+        switch (ch) {
+            case ConstraintMode::End:      b.x += dW; break;
+            case ConstraintMode::StartEnd: { SInt32 nw = b.w + dW; b.w = (nw < 1) ? 1 : nw; } break;
+            case ConstraintMode::Center:   b.x += dW / 2; break;
+            case ConstraintMode::Scale:
+                if (oldW > 0) { b.x = b.x * newW / oldW; SInt32 nw = b.w * newW / oldW; b.w = (nw < 1) ? 1 : nw; }
+                break;
+            default: break;  // Start: fixed distance from the left/top edge, nothing to do
+        }
+        switch (cv) {
+            case ConstraintMode::End:      b.y += dH; break;
+            case ConstraintMode::StartEnd: { SInt32 nh = b.h + dH; b.h = (nh < 1) ? 1 : nh; } break;
+            case ConstraintMode::Center:   b.y += dH / 2; break;
+            case ConstraintMode::Scale:
+                if (oldH > 0) { b.y = b.y * newH / oldH; SInt32 nh = b.h * newH / oldH; b.h = (nh < 1) ? 1 : nh; }
+                break;
+            default: break;
+        }
+    };
+
+    bool freeForm = (f->layoutMode == LayoutMode::None);
+    for (auto& s : f->children) {
+        if (!freeForm && !s->isAbsolutePosition) continue;
+        applyOne(s->bounds, s->constraintH, s->constraintV);
+    }
+    for (auto& cf : f->childFrames) {
+        if (!freeForm && !cf->isAbsolutePosition) continue;
+        applyOne(cf->bounds, cf->constraintH, cf->constraintV);
+    }
+}
+
 static void RunFrameLayout(Frame* f) {
     for (auto& cf : f->childFrames) RunFrameLayout(cf.get());
 
+    ApplyConstraints(f);
     if (f->layoutMode == LayoutMode::None) return;
 
     // While a shape/frame is being drag-sorted anywhere in the document, freeze
@@ -59,6 +111,7 @@ static void RunFrameLayout(Frame* f) {
             if (cr.isFrame) {
                 const auto& cf = f->childFrames[cr.idx];
                 if (!cf->visible || cf.get() == gLayoutDragFrame) continue;
+                if (cf->isAbsolutePosition) continue;
                 LayoutItem it;
                 it.x = &cf->bounds.x; it.y = &cf->bounds.y;
                 it.w = &cf->bounds.w; it.h = &cf->bounds.h;
@@ -71,6 +124,7 @@ static void RunFrameLayout(Frame* f) {
                 const auto& s = f->children[cr.idx];
                 if (!s->visible) continue;
                 if (s.get() == gLayoutDragShape) continue;
+                if (s->isAbsolutePosition) continue;
                 if (gIsLayoutMultiDrag &&
                     std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s.get()) != gSelectedShapes.end())
                     continue;
@@ -103,6 +157,7 @@ static void RunFrameLayout(Frame* f) {
         for (auto& s : f->children) {
             if (!s->visible) continue;
             if (s.get() == gLayoutDragShape) continue;
+            if (s->isAbsolutePosition) continue;
             if (gIsLayoutMultiDrag &&
                 std::find(gSelectedShapes.begin(), gSelectedShapes.end(), s.get()) != gSelectedShapes.end())
                 continue;
@@ -132,6 +187,7 @@ static void RunFrameLayout(Frame* f) {
         for (auto& cf : f->childFrames) {
             if (!cf->visible) continue;
             if (cf.get() == gLayoutDragFrame) continue;
+            if (cf->isAbsolutePosition) continue;
             LayoutItem it;
             it.x = &cf->bounds.x; it.y = &cf->bounds.y;
             it.w = &cf->bounds.w; it.h = &cf->bounds.h;

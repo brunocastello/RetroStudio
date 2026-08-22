@@ -81,6 +81,14 @@ static Rect sOpacityRect              = {0,0,0,0};
 static Rect sRotationRect             = {0,0,0,0};
 // Align row: Left, Center-H, Right, Top, Middle-V, Bottom
 static Rect sAlignBtnRect[6]          = {};
+// Absolute position toggle + Constraints rows (H then V; each: Start/Center/End/StartEnd/Scale)
+static Rect sAbsolutePositionRect     = {0,0,0,0};
+static Rect sConstraintHBtnRect[5]    = {};
+static Rect sConstraintVBtnRect[5]    = {};
+static const ConstraintMode kConstraintModes[5] = {
+    ConstraintMode::Start, ConstraintMode::Center, ConstraintMode::End,
+    ConstraintMode::StartEnd, ConstraintMode::Scale
+};
 
 // Auto Layout controls (frame selected)
 static Rect sLayoutModeRect[3]       = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
@@ -635,6 +643,35 @@ static void ApplyAlign(int kind) {
     }
 }
 
+// Draws one axis's 5-button constraint row (Start/Center/End/StartEnd/Scale) and
+// populates outRects[]. `labels` order matches kConstraintModes.
+static short DrawConstraintRow(short y, const char* axisLabel, const char* labels[5],
+                                ConstraintMode current, Rect outRects[5]) {
+    RGBColor labelClr = {0x6666,0x6666,0x6666};
+    RGBForeColor(&labelClr); TextSize(9);
+    Str255 ps; PStrC(axisLabel, ps); MoveTo(6, static_cast<short>(y+11)); DrawString(ps);
+
+    const short btnW = 24, btnH = 16, gap = 2;
+    short x = 20;
+    for (int i = 0; i < 5; ++i) {
+        Rect btn = { y, x, static_cast<short>(y + btnH), static_cast<short>(x + btnW) };
+        bool active = (kConstraintModes[i] == current);
+        RGBColor bg; if (active) { bg = {0x3333,0x6666,0xCCCC}; } else { bg = {0xDDDD,0xDDDD,0xDDDD}; }
+        RGBForeColor(&bg); PaintRect(&btn);
+        RGBColor bd = {0x7777,0x7777,0x7777}; RGBForeColor(&bd); FrameRect(&btn);
+        RGBColor fg; if (active) { fg = {0xFFFF,0xFFFF,0xFFFF}; } else { fg = {0x2222,0x2222,0x2222}; }
+        RGBForeColor(&fg); TextSize(9);
+        Str255 lps; PStrC(labels[i], lps);
+        short tw = StringWidth(lps);
+        MoveTo(static_cast<short>(x + (btnW - tw) / 2), static_cast<short>(y + 11)); DrawString(lps);
+        outRects[i] = btn;
+        x = static_cast<short>(x + btnW + gap);
+    }
+    TextSize(11);
+    RGBColor black = {0,0,0}; RGBForeColor(&black);
+    return static_cast<short>(y + btnH + 4);
+}
+
 void DrawInspectorPanel() {
     if (!gInspectorWindow) return;
     if (!gDocument) {
@@ -699,6 +736,8 @@ void DrawInspectorPanel() {
     sCornerRadiusRect = sCornerTLRect = sCornerTRRect = sCornerBRRect = sCornerBLRect = {0,0,0,0};
     sCornerIndividualBtnRect = sOpacityRect = sRotationRect = {0,0,0,0};
     for (int i=0;i<6;++i) sAlignBtnRect[i]={0,0,0,0};
+    sAbsolutePositionRect = {0,0,0,0};
+    for (int i=0;i<5;++i) { sConstraintHBtnRect[i]={0,0,0,0}; sConstraintVBtnRect[i]={0,0,0,0}; }
 
     if (!gSelectedFrame && !gSelectedShape && gSelectedFrames.empty()) {
         SetOrigin(0, 0);
@@ -1782,6 +1821,52 @@ void DrawInspectorPanel() {
         }
     }
 
+    // ------------------------------------- ABSOLUTE POSITION / CONSTRAINTS --
+    // Single-item only (matches the Fixed/Fill sizing buttons above). Absolute
+    // position opts a child out of its Auto Layout parent's flow; constraints
+    // govern how a free child (or an absolute-positioned layout child) responds
+    // when its parent frame is resized — see AutoLayout.cpp's ApplyConstraints.
+    if (!isMulti) {
+        Frame* posParent = gSelectedShape ? gSelectedFrame
+                          : (gSelectedFrame ? gSelectedFrame->parent : nullptr);
+        bool inLayoutParent = posParent && posParent->layoutMode != LayoutMode::None;
+        bool isAbsPos = gSelectedShape ? gSelectedShape->isAbsolutePosition
+                      : (gSelectedFrame ? gSelectedFrame->isAbsolutePosition : false);
+
+        if (inLayoutParent) {
+            sAbsolutePositionRect = { y, 6, static_cast<short>(y+14), 20 };
+            RGBColor wbg = {0xFFFF,0xFFFF,0xFFFF}; RGBForeColor(&wbg); PaintRect(&sAbsolutePositionRect);
+            RGBColor bd  = {0x7777,0x7777,0x7777}; RGBForeColor(&bd);  FrameRect(&sAbsolutePositionRect);
+            if (isAbsPos) {
+                RGBColor chk = {0x3333,0x6666,0xCCCC}; RGBForeColor(&chk);
+                Rect inner = { static_cast<short>(y+3), 9, static_cast<short>(y+11), 17 };
+                PaintRect(&inner);
+            }
+            RGBForeColor(&labelClr); TextSize(10);
+            PStrC("Absolute position", ps); MoveTo(26, static_cast<short>(y+11)); DrawString(ps);
+            TextSize(11);
+            y = static_cast<short>(y + 20);
+        } else {
+            sAbsolutePositionRect = {0,0,0,0};
+        }
+
+        bool showConstraints = posParent && (!inLayoutParent || isAbsPos);
+        if (showConstraints) {
+            ConstraintMode ch = gSelectedShape ? gSelectedShape->constraintH
+                              : (gSelectedFrame ? gSelectedFrame->constraintH : ConstraintMode::Start);
+            ConstraintMode cv = gSelectedShape ? gSelectedShape->constraintV
+                              : (gSelectedFrame ? gSelectedFrame->constraintV : ConstraintMode::Start);
+            static const char* kHLabels[5] = { "L", "C", "R", "LR", "Scl" };
+            static const char* kVLabels[5] = { "T", "C", "B", "TB", "Scl" };
+
+            y = DrawSectionHeader(y, "CONSTRAINTS", portRect);
+            y = static_cast<short>(y + 5);
+            y = DrawConstraintRow(y, "H", kHLabels, ch, sConstraintHBtnRect);
+            y = DrawConstraintRow(y, "V", kVLabels, cv, sConstraintVBtnRect);
+            y = static_cast<short>(y + 2);
+        }
+    }
+
     gInspectorTotalH = static_cast<short>(y + 8);  // record content height
 
     // Restore origin before drawing controls
@@ -2369,6 +2454,36 @@ void HandleInspectorClick(Point localPt) {
     for (int i = 0; i < 6; ++i) {
         if (PtInRect(localPt, &sAlignBtnRect[i])) {
             ApplyAlign(i);
+            return;
+        }
+    }
+
+    // Absolute position toggle
+    if (PtInRect(localPt, &sAbsolutePositionRect)) {
+        PushUndo();
+        if (gSelectedShape)      gSelectedShape->isAbsolutePosition = !gSelectedShape->isAbsolutePosition;
+        else if (gSelectedFrame) gSelectedFrame->isAbsolutePosition = !gSelectedFrame->isAbsolutePosition;
+        InvalidateInspector();
+        if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
+        return;
+    }
+
+    // Constraint buttons (H then V)
+    for (int i = 0; i < 5; ++i) {
+        if (PtInRect(localPt, &sConstraintHBtnRect[i])) {
+            PushUndo();
+            if (gSelectedShape)      gSelectedShape->constraintH = kConstraintModes[i];
+            else if (gSelectedFrame) gSelectedFrame->constraintH = kConstraintModes[i];
+            InvalidateInspector();
+            if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
+            return;
+        }
+        if (PtInRect(localPt, &sConstraintVBtnRect[i])) {
+            PushUndo();
+            if (gSelectedShape)      gSelectedShape->constraintV = kConstraintModes[i];
+            else if (gSelectedFrame) gSelectedFrame->constraintV = kConstraintModes[i];
+            InvalidateInspector();
+            if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
             return;
         }
     }
