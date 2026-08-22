@@ -27,7 +27,7 @@ static pascal void NavOpenEventProc(NavEventCallbackMessage, NavCBRecPtr, void*)
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
 static const UInt32 kMagic   = 0x52535444;  // 'RSTD'
-static const UInt16 kVersion = 18;
+static const UInt16 kVersion = 19;
 
 // Folder Manager constants — defined here because Retro68 Carbon headers
 // don't always expose <Folders.h> constants via <Carbon.h>.
@@ -226,8 +226,8 @@ static void WriteFrame(Writer& w, const Frame& f) {
                              (f.alignTextBaseline    ? 4 : 0) |
                              (f.layoutCounterGapAuto ? 8 : 0)));
     w.w16(f.layoutGap);
-    w.w8(f.paddingTop); w.w8(f.paddingRight);
-    w.w8(f.paddingBottom); w.w8(f.paddingLeft);
+    w.w16(f.paddingTop); w.w16(f.paddingRight);
+    w.w16(f.paddingBottom); w.w16(f.paddingLeft);
     w.w8(static_cast<UInt8>(f.primaryAlign));
     w.w8(static_cast<UInt8>(f.crossAlign));
     w.w8(static_cast<UInt8>(f.widthSizing));
@@ -284,8 +284,14 @@ static std::unique_ptr<Frame> ReadFrame(Reader& r, Frame* parent, UInt16 ver) {
       f->alignTextBaseline    = (fl & 4) != 0;
       f->layoutCounterGapAuto = (fl & 8) != 0; }
     f->layoutGap          = r.r16();
-    f->paddingTop    = r.r8(); f->paddingRight  = r.r8();
-    f->paddingBottom = r.r8(); f->paddingLeft   = r.r8();
+    if (ver >= 19) {
+        f->paddingTop    = r.r16(); f->paddingRight  = r.r16();
+        f->paddingBottom = r.r16(); f->paddingLeft   = r.r16();
+    } else {
+        // Pre-v19 files stored padding as a single byte per side.
+        f->paddingTop    = r.r8(); f->paddingRight  = r.r8();
+        f->paddingBottom = r.r8(); f->paddingLeft   = r.r8();
+    }
     f->primaryAlign  = static_cast<PrimaryAlign>(r.r8());
     f->crossAlign    = static_cast<CrossAlign>(r.r8());
     f->widthSizing   = static_cast<SizingMode>(r.r8());

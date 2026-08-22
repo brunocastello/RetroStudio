@@ -509,3 +509,50 @@ void RunDocumentLayout(Document* doc) {
     if (!doc) return;
     for (auto& f : doc->frames) RunFrameLayout(f.get());
 }
+
+static const UInt16 kDefaultAutoLayoutSpacing = 10;
+
+void InferAutoLayoutSpacing(Frame* f, LayoutMode newMode) {
+    struct Box { SInt32 x, y, w, h; };
+    std::vector<Box> items;
+    for (auto& s : f->children)     if (s->visible)  items.push_back({ s->bounds.x, s->bounds.y, s->bounds.w, s->bounds.h });
+    for (auto& cf : f->childFrames) if (cf->visible) items.push_back({ cf->bounds.x, cf->bounds.y, cf->bounds.w, cf->bounds.h });
+
+    if (items.empty()) {
+        f->paddingLeft = f->paddingRight = f->paddingTop = f->paddingBottom = kDefaultAutoLayoutSpacing;
+        f->layoutGap   = kDefaultAutoLayoutSpacing;
+        return;
+    }
+
+    SInt32 minX = items[0].x, minY = items[0].y;
+    SInt32 maxX = items[0].x + items[0].w, maxY = items[0].y + items[0].h;
+    for (size_t i = 1; i < items.size(); ++i) {
+        minX = std::min(minX, items[i].x);           minY = std::min(minY, items[i].y);
+        maxX = std::max(maxX, items[i].x + items[i].w); maxY = std::max(maxY, items[i].y + items[i].h);
+    }
+
+    auto clampPad = [](SInt32 v) -> UInt16 {
+        if (v < 0) return 0;
+        return static_cast<UInt16>(v > 0xFFFF ? 0xFFFF : v);
+    };
+    f->paddingLeft   = clampPad(minX - f->bounds.x);
+    f->paddingRight  = clampPad((f->bounds.x + f->bounds.w) - maxX);
+    f->paddingTop    = clampPad(minY - f->bounds.y);
+    f->paddingBottom = clampPad((f->bounds.y + f->bounds.h) - maxY);
+
+    // Gap only makes sense along the axis being enabled, and only when the
+    // first two items (sorted along that axis) don't already overlap there —
+    // e.g. switching a vertically-stacked pair straight to Horizontal gives no
+    // sensible horizontal gap to infer, so fall back to Figma's own default.
+    if (items.size() >= 2) {
+        bool isHoriz = (newMode == LayoutMode::Horizontal);
+        std::sort(items.begin(), items.end(), [&](const Box& a, const Box& b) {
+            return isHoriz ? (a.x < b.x) : (a.y < b.y);
+        });
+        SInt32 gap = isHoriz ? (items[1].x - (items[0].x + items[0].w))
+                              : (items[1].y - (items[0].y + items[0].h));
+        f->layoutGap = (gap >= 0) ? static_cast<UInt16>(gap) : kDefaultAutoLayoutSpacing;
+    } else {
+        f->layoutGap = kDefaultAutoLayoutSpacing;
+    }
+}

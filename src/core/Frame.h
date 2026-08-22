@@ -41,10 +41,12 @@ public:
     UInt16       layoutGap            = 0;
     UInt16       layoutCounterGap     = 0;    // cross-axis gap between Wrap rows
     bool         layoutCounterGapAuto = false; // true = SpaceBetween distribution for rows
-    UInt8        paddingTop    = 0;
-    UInt8        paddingRight  = 0;
-    UInt8        paddingBottom = 0;
-    UInt8        paddingLeft   = 0;
+    // UInt16, not UInt8: inferred padding (see AutoLayout.cpp's InferAutoLayoutSpacing)
+    // routinely exceeds 255 on real designs.
+    UInt16       paddingTop    = 0;
+    UInt16       paddingRight  = 0;
+    UInt16       paddingBottom = 0;
+    UInt16       paddingLeft   = 0;
     PrimaryAlign primaryAlign  = PrimaryAlign::Start;
     CrossAlign   crossAlign    = CrossAlign::Start;
 

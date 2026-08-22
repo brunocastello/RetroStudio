@@ -186,7 +186,7 @@ static void StartEditStr(EditField field, const char* str) {
 }
 
 // Returns "a" when a==b, or "a, b" when they differ (for compact padding display)
-static std::string padCompactStr(UInt8 a, UInt8 b) {
+static std::string padCompactStr(UInt16 a, UInt16 b) {
     if (a == b) return numStr(static_cast<SInt32>(a));
     return numStr(static_cast<SInt32>(a)) + ", " + numStr(static_cast<SInt32>(b));
 }
@@ -2415,18 +2415,18 @@ void ApplyInspectorEdit() {
                     for (int j = s2; j < sEditLen; ++j)
                         if (sEditBuf[j] >= '0' && sEditBuf[j] <= '9') b2 = b2*10 + (sEditBuf[j]-'0');
                 } else { b2 = a; }
-                if (a < 0) a = 0; if (a > 255) a = 255;
-                if (b2 < 0) b2 = 0; if (b2 > 255) b2 = 255;
+                if (a < 0) a = 0; if (a > 9999) a = 9999;
+                if (b2 < 0) b2 = 0; if (b2 > 9999) b2 = 9999;
                 if (sActiveField == kFieldPadH) {
-                    f->paddingLeft  = static_cast<UInt8>(a);
-                    f->paddingRight = static_cast<UInt8>(b2);
+                    f->paddingLeft  = static_cast<UInt16>(a);
+                    f->paddingRight = static_cast<UInt16>(b2);
                 } else {
-                    f->paddingTop    = static_cast<UInt8>(a);
-                    f->paddingBottom = static_cast<UInt8>(b2);
+                    f->paddingTop    = static_cast<UInt16>(a);
+                    f->paddingBottom = static_cast<UInt16>(b2);
                 }
             } else {
-                if (val < 0) val = 0; if (val > 255) val = 255;
-                UInt8 nv2 = static_cast<UInt8>(val);
+                if (val < 0) val = 0; if (val > 9999) val = 9999;
+                UInt16 nv2 = static_cast<UInt16>(val);
                 switch (sActiveField) {
                     case kFieldPadTop:    f->paddingTop    = nv2; break;
                     case kFieldPadRight:  f->paddingRight  = nv2; break;
@@ -2744,19 +2744,22 @@ void HandleInspectorClick(Point localPt) {
             if (PtInRect(localPt, &sLayoutModeRect[i])) {
                 PushUndo();
                 LayoutMode nm = static_cast<LayoutMode>(i);
+                // Enabling Auto Layout must be non-destructive (matches Figma): infer
+                // padding/gap from whatever's already in the frame so nothing jumps.
+                // An empty frame keeps Fixed sizing too — Hug on an empty frame collapses
+                // it to just its padding, which would resize it the instant it's toggled on.
+                auto enable = [&](Frame* f) {
+                    if (nm == LayoutMode::None || f->layoutMode != LayoutMode::None) return;
+                    InferAutoLayoutSpacing(f, nm);
+                    if (!f->children.empty() || !f->childFrames.empty()) {
+                        f->widthSizing  = SizingMode::Hug;
+                        f->heightSizing = SizingMode::Hug;
+                    }
+                };
                 if (isMultiFrame) {
-                    for (Frame* f : gSelectedFrames) {
-                        if (nm != LayoutMode::None && f->layoutMode == LayoutMode::None) {
-                            f->widthSizing  = SizingMode::Hug;
-                            f->heightSizing = SizingMode::Hug;
-                        }
-                        f->layoutMode = nm;
-                    }
+                    for (Frame* f : gSelectedFrames) { enable(f); f->layoutMode = nm; }
                 } else {
-                    if (nm != LayoutMode::None && lf->layoutMode == LayoutMode::None) {
-                        lf->widthSizing  = SizingMode::Hug;
-                        lf->heightSizing = SizingMode::Hug;
-                    }
+                    enable(lf);
                     lf->layoutMode = nm;
                 }
                 InvalidateInspector();
