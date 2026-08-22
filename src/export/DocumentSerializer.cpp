@@ -11,20 +11,18 @@ extern "C" OSErr NavGetDefaultDialogOptions(NavDialogOptions* outOptions);
 // NewNavEventUPP() calls NewRoutineDescriptor() internally, creating a proper
 // CFM RoutineDescriptor — required because CarbonLib dispatches via
 // CallUniversalProc which expects a RoutineDescriptor, not a bare code address.
-// We use FrontWindow() instead of params->window to avoid NavCBRec struct
-// alignment differences between GCC-PPC and mac68k padding.
-static pascal void NavSaveEventProc(NavEventCallbackMessage msg, NavCBRecPtr, void*) {
-    if (msg == kNavCBStart) {
-        WindowRef w = FrontWindow();
-        if (w) SetWTitle(w, "\pSave");
-    }
-}
-static pascal void NavOpenEventProc(NavEventCallbackMessage msg, NavCBRecPtr, void*) {
-    if (msg == kNavCBStart) {
-        WindowRef w = FrontWindow();
-        if (w) SetWTitle(w, "\pOpen");
-    }
-}
+//
+// These used to SetWTitle(FrontWindow(), "\pSave"/"\pOpen") at kNavCBStart,
+// intending to label the Nav dialog's own thin title strip (FrontWindow()
+// was used instead of params->window to dodge NavCBRec struct alignment
+// differences between GCC-PPC and mac68k padding). That never actually
+// labeled the Nav dialog's strip -- FrontWindow() at kNavCBStart is the
+// *document* window underneath, not the Nav dialog, so it was silently
+// renaming the open document's own title bar to "Save"/"Open" for the
+// duration of the dialog instead. Removed; both procs are now no-ops kept
+// only because NavPutFile/NavGetFile still want an eventUPP argument.
+static pascal void NavSaveEventProc(NavEventCallbackMessage, NavCBRecPtr, void*) {}
+static pascal void NavOpenEventProc(NavEventCallbackMessage, NavCBRecPtr, void*) {}
 
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
