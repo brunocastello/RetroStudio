@@ -467,19 +467,23 @@ static bool SameFSSpec(const FSSpec& a, const FSSpec& b) {
     return true;
 }
 
+// Tracks how many items are currently in the recent-files submenu, so
+// RebuildRecentFilesMenu doesn't need CountMItems: that's declared in this
+// toolchain's headers but the symbol isn't actually in the linked library
+// (undefined reference to '.CountMItems' at link time, despite compiling
+// clean) -- sidestepped entirely since this is the only code that ever
+// touches this particular submenu's item list.
+static short sRecentMenuItemCount = 0;
+
 // Rebuilds the "Open Recent Files" hierarchical submenu's item list from
 // sRecentFiles. Uses AppendMenu with a blank placeholder + SetMenuItemText
 // rather than passing the filename straight to AppendMenu, since AppendMenu
 // treats characters like ';', '!', '<', '/' in its string specially --
-// SetMenuItemText sets the literal text with no such parsing. This
-// toolchain's Menu Manager naming is a mix, confirmed one function at a
-// time by compiler error: CountMItems (classic name -- CountMenuItems
-// isn't declared) but DeleteMenuItem/SetMenuItemText (Carbon names --
-// DelMenuItem/SetItem aren't declared). Don't assume one implies the other.
+// SetMenuItemText sets the literal text with no such parsing.
 static void RebuildRecentFilesMenu() {
     MenuRef m = GetMenuHandle(kRecentFilesMenuID);
     if (!m) return;
-    for (short i = CountMItems(m); i >= 1; --i) DeleteMenuItem(m, i);
+    for (short i = sRecentMenuItemCount; i >= 1; --i) DeleteMenuItem(m, i);
     for (size_t i = 0; i < sRecentFiles.size(); ++i) {
         AppendMenu(m, "\p ");
         Str255 name;
@@ -487,6 +491,7 @@ static void RebuildRecentFilesMenu() {
         for (int j = 1; j <= sRecentFiles[i].name[0]; ++j) name[j] = sRecentFiles[i].name[j];
         SetMenuItemText(m, static_cast<short>(i + 1), name);
     }
+    sRecentMenuItemCount = static_cast<short>(sRecentFiles.size());
 }
 
 // Adds/moves spec to the front of the session-only recent-files list
