@@ -560,16 +560,22 @@ static int ShowConfirmCloseDialog(const std::string& docName) {
     // Platinum gray background, matching every other dialog in this app.
     // A prior attempt at this used a whole-dialog UserItem to PaintRect the
     // background and froze the alert solid (see RetroStudio.r's DITL 129
-    // comment) -- this is a different, much narrower mechanism: it only
-    // sets the port's back color, which the Dialog Manager's own erase-
-    // before-draw step then picks up on its own. No competing dialog item
-    // is created, so there's nothing that could intercept a click.
+    // comment) -- this is a different, much narrower mechanism: no
+    // competing dialog item is created at all, so there's nothing that
+    // could intercept a click. RGBBackColor alone only affects *future*
+    // erases though, and GetNewDialog already drew everything white before
+    // we get control back -- so explicitly erase once now, then redraw the
+    // items on top with DrawDialog rather than leaving a blank gray box
+    // until whatever next update event happens to come along.
     RGBColor platGray = { 0xCCCC, 0xCCCC, 0xCCCC };
     RGBBackColor(&platGray);
+    Rect dlgPortR; GetWindowPortBounds(dlg, &dlgPortR);
+    EraseRect(&dlgPortR);
 
     DialogItemType type; Handle itemH; Rect box;
     GetDialogItem(dlg, 2, &type, &itemH, &box);
     SetDialogItem(dlg, 2, type, reinterpret_cast<Handle>(NewUserItemUPP(DrawSaveDefaultRing)), &box);
+    DrawDialog(dlg);
 
     ModalFilterUPP filterUPP = NewModalFilterUPP(ConfirmCloseFilterProc);
 
@@ -624,10 +630,13 @@ static bool ShowConfirmRevertDialog(const std::string& docName) {
     // See the matching comment in ShowConfirmCloseDialog above.
     RGBColor platGray = { 0xCCCC, 0xCCCC, 0xCCCC };
     RGBBackColor(&platGray);
+    Rect dlgPortR; GetWindowPortBounds(dlg, &dlgPortR);
+    EraseRect(&dlgPortR);
 
     DialogItemType type; Handle itemH; Rect box;
     GetDialogItem(dlg, 2, &type, &itemH, &box);
     SetDialogItem(dlg, 2, type, reinterpret_cast<Handle>(NewUserItemUPP(DrawRevertDefaultRing)), &box);
+    DrawDialog(dlg);
 
     ModalFilterUPP filterUPP = NewModalFilterUPP(ConfirmRevertFilterProc);
 
