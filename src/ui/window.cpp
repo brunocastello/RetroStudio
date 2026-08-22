@@ -434,28 +434,43 @@ static void UpdateMenuState() {
     DrawMenuBar();
 }
 
-// UserItem proc for DITL 129 item 2: draws the thick default-button "ring"
-// around item 1 (Save) -- the exact ButtonFrameProc technique Retro68's own
+// UserItem proc for DITL 129 item 1: fills the whole dialog with Platinum
+// gray. Must run before any other item draws (items draw in ascending
+// index order, hence item 1) -- the OS's own dBoxProc content defaults to
+// plain white here, not the gray real System alerts use for both their
+// background and their buttons.
+static pascal void DrawDialogBackground(DialogRef dlg, short itemNo) {
+    DialogItemType type; Handle itemH; Rect box;
+    GetDialogItem(dlg, itemNo, &type, &itemH, &box);
+    RGBColor platGray = { 0xCCCC, 0xCCCC, 0xCCCC };
+    RGBForeColor(&platGray);
+    PaintRect(&box);
+    RGBColor black = { 0, 0, 0 };
+    RGBForeColor(&black);
+}
+
+// UserItem proc for DITL 129 item 3: draws the thick default-button "ring"
+// around item 2 (Save) -- the exact ButtonFrameProc technique Retro68's own
 // Samples/Dialog uses for its default button.
 static pascal void DrawSaveDefaultRing(DialogRef dlg, short itemNo) {
     (void)itemNo;
     DialogItemType type; Handle itemH; Rect box;
-    GetDialogItem(dlg, 1, &type, &itemH, &box);
+    GetDialogItem(dlg, 2, &type, &itemH, &box);
     InsetRect(&box, -4, -4);
     PenSize(3, 3);
     FrameRoundRect(&box, 16, 16);
     PenSize(1, 1);
 }
 
-// Return/Enter -> item 1 (Save, the default); Escape -> item 4 (Cancel).
+// Return/Enter -> item 2 (Save, the default); Escape -> item 5 (Cancel).
 // Standard ModalFilterProc keystroke-to-item-hit translation, same pattern
 // every classic dialog with keyboard shortcuts uses.
 static pascal Boolean ConfirmCloseFilterProc(DialogPtr dlg, EventRecord* event, short* itemHit) {
     (void)dlg;
     if (event->what == keyDown || event->what == autoKey) {
         char c = static_cast<char>(event->message & charCodeMask);
-        if (c == 0x0D || c == 0x03) { *itemHit = 1; return true; }  // Return/Enter
-        if (c == 0x1B)              { *itemHit = 4; return true; }  // Escape
+        if (c == 0x0D || c == 0x03) { *itemHit = 2; return true; }  // Return/Enter
+        if (c == 0x1B)              { *itemHit = 5; return true; }  // Escape
     }
     return false;
 }
@@ -466,10 +481,11 @@ static pascal Boolean ConfirmCloseFilterProc(DialogPtr dlg, EventRecord* event, 
 // Appearance-themed 3D buttons, no DrawThemeButton call needed from us),
 // the Icon item resolves to the System file's real caution icon (we don't
 // bundle our own ID-2 ICON/cicn), and centerMainScreen has the OS compute
-// genuine screen centering. Item 1 = Save (default), 3 = Don't Save,
-// 4 = Cancel; item 2 is a UserItem (default-ring); item 5 is the system
-// Icon; item 6 is the StaticText message, which takes the document name
-// via ParamText's "^0" substitution.
+// genuine screen centering. Item 1 is a UserItem (gray background fill);
+// item 2 = Save (default), 4 = Don't Save, 5 = Cancel; item 3 is a
+// UserItem (default-ring); item 6 is the system Icon; item 7 is the
+// StaticText message, which takes the document name via ParamText's
+// "^0" substitution.
 // Returns: 0 = Save, 1 = Don't Save, 2 = Cancel.
 static int ShowConfirmCloseDialog(const std::string& docName) {
     Str255 nameP; ToPStr(docName, nameP);
@@ -480,21 +496,23 @@ static int ShowConfirmCloseDialog(const std::string& docName) {
     if (!dlg) return 2;
 
     DialogItemType type; Handle itemH; Rect box;
-    GetDialogItem(dlg, 2, &type, &itemH, &box);
-    SetDialogItem(dlg, 2, type, reinterpret_cast<Handle>(NewUserItemUPP(DrawSaveDefaultRing)), &box);
+    GetDialogItem(dlg, 1, &type, &itemH, &box);
+    SetDialogItem(dlg, 1, type, reinterpret_cast<Handle>(NewUserItemUPP(DrawDialogBackground)), &box);
+    GetDialogItem(dlg, 3, &type, &itemH, &box);
+    SetDialogItem(dlg, 3, type, reinterpret_cast<Handle>(NewUserItemUPP(DrawSaveDefaultRing)), &box);
 
     ModalFilterUPP filterUPP = NewModalFilterUPP(ConfirmCloseFilterProc);
 
     short item = 0;
     do {
         ModalDialog(filterUPP, &item);
-    } while (item != 1 && item != 3 && item != 4);
+    } while (item != 2 && item != 4 && item != 5);
 
     DisposeModalFilterUPP(filterUPP);
     DisposeDialog(dlg);
 
-    if (item == 1) return 0;  // Save
-    if (item == 3) return 1;  // Don't Save
+    if (item == 2) return 0;  // Save
+    if (item == 4) return 1;  // Don't Save
     return 2;                 // Cancel
 }
 

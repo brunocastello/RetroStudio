@@ -18,7 +18,7 @@
    for the document name, and centerMainScreen has the OS compute real
    screen centering. See ShowConfirmCloseDialog in window.cpp. */
 resource 'DLOG' (129) {
-    { 0, 0, 110, 360 },
+    { 0, 0, 110, 330 },
     dBoxProc,
     visible,
     noGoAway,
@@ -30,31 +30,38 @@ resource 'DLOG' (129) {
 
 resource 'DITL' (129) {
     {
-        /* 1: Save -- default button */
-        { 75, 216, 95, 294 },
-        Button { enabled, "Save" };
-
-        /* 2: UserItem -- draws the thick default-button ring around item 1,
-           same ButtonFrameProc technique as Retro68's own Dialog sample */
-        { 71, 212, 99, 298 },
+        /* 1: UserItem -- fills the whole dialog with Platinum gray before
+           anything else draws (items draw in index order, so this must be
+           first); the OS's own dBoxProc content defaults to white here,
+           not the window-chrome gray real alerts use. */
+        { 0, 0, 110, 330 },
         UserItem { enabled };
 
-        /* 3: Don't Save */
-        { 75, 20, 95, 120 },
+        /* 2: Save -- default button */
+        { 75, 248, 95, 316 },
+        Button { enabled, "Save" };
+
+        /* 3: UserItem -- draws the thick default-button ring around item 2,
+           same ButtonFrameProc technique as Retro68's own Dialog sample */
+        { 71, 244, 99, 320 },
+        UserItem { enabled };
+
+        /* 4: Don't Save */
+        { 75, 82, 95, 172 },
         Button { enabled, "Don't Save" };
 
-        /* 4: Cancel */
-        { 75, 132, 95, 204 },
+        /* 5: Cancel */
+        { 75, 180, 95, 240 },
         Button { enabled, "Cancel" };
 
-        /* 5: real system caution icon (ID 2), same position CautionAlert
+        /* 6: real system caution icon (ID 2), same position CautionAlert
            itself draws it at ([10,20,42,52], per Inside Macintosh) */
         { 10, 20, 42, 52 },
         Icon { enabled, 2 };
 
-        /* 6: message, real StaticText (auto word-wraps); ^0 = document name via ParamText */
-        { 16, 64, 56, 340 },
-        StaticText { disabled, "Save changes to the RetroStudio document \"^0\" before closing?" }
+        /* 7: message, real StaticText (auto word-wraps); ^0 = document name via ParamText */
+        { 16, 64, 56, 316 },
+        StaticText { disabled, "Save changes to RetroStudio document \"^0\" before closing?" }
     }
 };
 
