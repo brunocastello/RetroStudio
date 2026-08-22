@@ -5434,6 +5434,8 @@ static Frame* LocateShapeParent(Shape* s) {
     return nullptr;
 }
 
+Frame* FindShapeParent(Shape* s) { return LocateShapeParent(s); }
+
 void DeleteSelected() {
     if (!gDocument) return;
     if (!gSelectedShape && !gSelectedFrame && gSelectedShapes.empty() && gSelectedFrames.empty()) return;

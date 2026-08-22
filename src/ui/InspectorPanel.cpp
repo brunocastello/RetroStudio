@@ -79,6 +79,8 @@ static Rect sCornerBLRect             = {0,0,0,0};
 static Rect sCornerIndividualBtnRect  = {0,0,0,0};
 static Rect sOpacityRect              = {0,0,0,0};
 static Rect sRotationRect             = {0,0,0,0};
+// Align row: Left, Center-H, Right, Top, Middle-V, Bottom
+static Rect sAlignBtnRect[6]          = {};
 
 // Auto Layout controls (frame selected)
 static Rect sLayoutModeRect[3]       = {{0,0,0,0},{0,0,0,0},{0,0,0,0}};
@@ -458,6 +460,181 @@ void SetupInspectorPanel() {
 // Drawing
 // --------------------------------------------------------------------------
 
+// --------------------------------------------------------------------------
+// Align row (single-item align-to-parent / multi-select align-to-bbox)
+// --------------------------------------------------------------------------
+
+// kind: 0=Left 1=CenterH 2=Right 3=Top 4=MiddleV 5=Bottom
+static void DrawAlignIcon(const Rect& btn, int kind, bool enabled) {
+    RGBColor fg;
+    if (enabled) { fg.red = 0x3333; fg.green = 0x3333; fg.blue = 0x3333; }
+    else         { fg.red = 0xBBBB; fg.green = 0xBBBB; fg.blue = 0xBBBB; }
+    RGBForeColor(&fg);
+
+    short cx = static_cast<short>((btn.left + btn.right) / 2);
+    short cy = static_cast<short>((btn.top + btn.bottom) / 2);
+    short l  = static_cast<short>(btn.left + 3),  r = static_cast<short>(btn.right - 3);
+    short t  = static_cast<short>(btn.top + 3),   b = static_cast<short>(btn.bottom - 3);
+
+    switch (kind) {
+        case 0: { // Align Left
+            MoveTo(l, t); LineTo(l, b);
+            Rect r1 = { static_cast<short>(t+1), l, static_cast<short>(t+4), static_cast<short>(l+5) };
+            Rect r2 = { static_cast<short>(b-4), l, static_cast<short>(b-1), static_cast<short>(l+9) };
+            PaintRect(&r1); PaintRect(&r2);
+        } break;
+        case 1: { // Align Center Horizontal
+            MoveTo(cx, t); LineTo(cx, b);
+            Rect r1 = { static_cast<short>(t+1), static_cast<short>(cx-2), static_cast<short>(t+4), static_cast<short>(cx+3) };
+            Rect r2 = { static_cast<short>(b-4), static_cast<short>(cx-4), static_cast<short>(b-1), static_cast<short>(cx+5) };
+            PaintRect(&r1); PaintRect(&r2);
+        } break;
+        case 2: { // Align Right
+            MoveTo(r, t); LineTo(r, b);
+            Rect r1 = { static_cast<short>(t+1), static_cast<short>(r-5), static_cast<short>(t+4), r };
+            Rect r2 = { static_cast<short>(b-4), static_cast<short>(r-9), static_cast<short>(b-1), r };
+            PaintRect(&r1); PaintRect(&r2);
+        } break;
+        case 3: { // Align Top
+            MoveTo(l, t); LineTo(r, t);
+            Rect r1 = { t, static_cast<short>(l+1), static_cast<short>(t+5), static_cast<short>(l+4) };
+            Rect r2 = { t, static_cast<short>(r-9), static_cast<short>(t+9), static_cast<short>(r-6) };
+            PaintRect(&r1); PaintRect(&r2);
+        } break;
+        case 4: { // Align Middle Vertical
+            MoveTo(l, cy); LineTo(r, cy);
+            Rect r1 = { static_cast<short>(cy-2), static_cast<short>(l+1), static_cast<short>(cy+3), static_cast<short>(l+4) };
+            Rect r2 = { static_cast<short>(cy-4), static_cast<short>(r-9), static_cast<short>(cy+5), static_cast<short>(r-6) };
+            PaintRect(&r1); PaintRect(&r2);
+        } break;
+        case 5: { // Align Bottom
+            MoveTo(l, b); LineTo(r, b);
+            Rect r1 = { static_cast<short>(b-5), static_cast<short>(l+1), b, static_cast<short>(l+4) };
+            Rect r2 = { static_cast<short>(b-9), static_cast<short>(r-9), b, static_cast<short>(r-6) };
+            PaintRect(&r1); PaintRect(&r2);
+        } break;
+    }
+}
+
+// Draws the 6-button align row and populates sAlignBtnRect[]. When `enabled`
+// is false the buttons are drawn dimmed and left unclickable (rects zeroed).
+static short DrawAlignRow(short y, bool enabled) {
+    const short btnW = 22, btnH = 18, gap = 2;
+    short x = 6;
+    for (int i = 0; i < 6; ++i) {
+        Rect btn = { y, x, static_cast<short>(y + btnH), static_cast<short>(x + btnW) };
+        RGBColor bg; RGBColor bd;
+        if (enabled) { bg = {0xDDDD,0xDDDD,0xDDDD}; bd = {0x7777,0x7777,0x7777}; }
+        else         { bg = {0xF2F2,0xF2F2,0xF2F2}; bd = {0xCCCC,0xCCCC,0xCCCC}; }
+        RGBForeColor(&bg); PaintRect(&btn);
+        RGBForeColor(&bd); FrameRect(&btn);
+        DrawAlignIcon(btn, i, enabled);
+        sAlignBtnRect[i] = enabled ? btn : Rect{0,0,0,0};
+        x = static_cast<short>(x + btnW + gap + (i == 2 ? 4 : 0));
+    }
+    RGBColor black = {0,0,0}; RGBForeColor(&black);
+    return static_cast<short>(y + btnH + 6);
+}
+
+// True when at least one item in the current selection is free to be moved
+// by an align command — i.e. not positioned by an Auto Layout parent.
+// Multi-select aligns to the selection's own bounding box (no parent needed);
+// a single item aligns to its parent frame, so it needs one that isn't
+// itself layout-managing this item's position.
+static bool AnyAlignableSelected() {
+    if (gSelectedFrames.size() > 1) {
+        for (Frame* f : gSelectedFrames)
+            if (!f->parent || f->parent->layoutMode == LayoutMode::None) return true;
+        return false;
+    }
+    if (gSelectedShapes.size() > 1) {
+        for (Shape* s : gSelectedShapes) {
+            Frame* p = FindShapeParent(s);
+            if (!p || p->layoutMode == LayoutMode::None) return true;
+        }
+        return false;
+    }
+    if (gSelectedShape) {
+        Frame* p = FindShapeParent(gSelectedShape);
+        return p && p->layoutMode == LayoutMode::None;
+    }
+    if (gSelectedFrame) {
+        return gSelectedFrame->parent && gSelectedFrame->parent->layoutMode == LayoutMode::None;
+    }
+    return false;
+}
+
+// kind: 0=Left 1=CenterH 2=Right 3=Top 4=MiddleV 5=Bottom
+static void ApplyAlign(int kind) {
+    if (!gDocument) return;
+    const bool isMultiFrame = (gSelectedFrames.size() > 1);
+    const bool isMulti      = (gSelectedShapes.size() > 1);
+
+    std::vector<Bounds2*> items;
+    SInt32 refX0 = 0, refY0 = 0, refX1 = 0, refY1 = 0;
+    bool haveRef = false;
+
+    auto extendRef = [&](const Bounds2& b) {
+        if (!haveRef) { refX0 = b.x; refY0 = b.y; refX1 = b.x + b.w; refY1 = b.y + b.h; haveRef = true; return; }
+        if (b.x < refX0) refX0 = b.x;
+        if (b.y < refY0) refY0 = b.y;
+        if (b.x + b.w > refX1) refX1 = b.x + b.w;
+        if (b.y + b.h > refY1) refY1 = b.y + b.h;
+    };
+
+    if (isMultiFrame) {
+        for (Frame* f : gSelectedFrames) {
+            if (f->parent && f->parent->layoutMode != LayoutMode::None) continue;
+            items.push_back(&f->bounds);
+            extendRef(f->bounds);
+        }
+    } else if (isMulti) {
+        for (Shape* s : gSelectedShapes) {
+            Frame* p = FindShapeParent(s);
+            if (p && p->layoutMode != LayoutMode::None) continue;
+            items.push_back(&s->bounds);
+            extendRef(s->bounds);
+        }
+    } else {
+        Bounds2* b = nullptr; Frame* parent = nullptr;
+        if (gSelectedShape)      { b = &gSelectedShape->bounds; parent = FindShapeParent(gSelectedShape); }
+        else if (gSelectedFrame) { b = &gSelectedFrame->bounds; parent = gSelectedFrame->parent; }
+        if (b && parent && parent->layoutMode == LayoutMode::None) {
+            items.push_back(b);
+            refX0 = parent->bounds.x; refY0 = parent->bounds.y;
+            refX1 = parent->bounds.x + parent->bounds.w;
+            refY1 = parent->bounds.y + parent->bounds.h;
+            haveRef = true;
+        }
+    }
+
+    if (items.empty() || !haveRef) return;
+
+    bool changed = false;
+    for (Bounds2* b : items) {
+        SInt32 nx = b->x, ny = b->y;
+        switch (kind) {
+            case 0: nx = refX0; break;
+            case 1: nx = refX0 + (refX1 - refX0) / 2 - b->w / 2; break;
+            case 2: nx = refX1 - b->w; break;
+            case 3: ny = refY0; break;
+            case 4: ny = refY0 + (refY1 - refY0) / 2 - b->h / 2; break;
+            case 5: ny = refY1 - b->h; break;
+            default: break;
+        }
+        if (nx != b->x || ny != b->y) {
+            if (!changed) PushUndo();
+            b->x = nx; b->y = ny;
+            changed = true;
+        }
+    }
+
+    if (changed) {
+        InvalidateInspector();
+        if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
+    }
+}
+
 void DrawInspectorPanel() {
     if (!gInspectorWindow) return;
     if (!gDocument) {
@@ -521,6 +698,7 @@ void DrawInspectorPanel() {
     sLayoutCounterGapRect = sLayoutCounterGapModeRect = {0,0,0,0};
     sCornerRadiusRect = sCornerTLRect = sCornerTRRect = sCornerBRRect = sCornerBLRect = {0,0,0,0};
     sCornerIndividualBtnRect = sOpacityRect = sRotationRect = {0,0,0,0};
+    for (int i=0;i<6;++i) sAlignBtnRect[i]={0,0,0,0};
 
     if (!gSelectedFrame && !gSelectedShape && gSelectedFrames.empty()) {
         SetOrigin(0, 0);
@@ -620,6 +798,7 @@ void DrawInspectorPanel() {
         // POSITION — X/Y show gSelectedFrame; editing applies delta to all
         y2 = DrawSectionHeader(y2, "POSITION", portRect);
         y2 = static_cast<short>(y2 + 5);
+        y2 = DrawAlignRow(y2, AnyAlignableSelected());
         RGBForeColor(&labelClr2); TextSize(9);
         PStrC("X", ps2); MoveTo(6,  static_cast<short>(y2+12)); DrawString(ps2);
         DrawNumField(20, static_cast<short>(y2+12), 64, kFieldX,
@@ -1488,6 +1667,7 @@ void DrawInspectorPanel() {
     // ---------------------------------------------------------- POSITION --
     y = DrawSectionHeader(y, "POSITION", portRect);
     y = static_cast<short>(y + 6);
+    y = DrawAlignRow(y, AnyAlignableSelected());
 
     RGBForeColor(&labelClr); PStrC("X", ps); MoveTo(6,  static_cast<short>(y+12)); DrawString(ps);
     DrawNumField(20, static_cast<short>(y+12), 64, kFieldX, bounds.x, sFieldXRect);
@@ -2184,6 +2364,14 @@ void HandleInspectorClick(Point localPt) {
 
     // Apply any active edit when clicking elsewhere in the inspector (no Enter needed)
     ApplyInspectorEdit();
+
+    // Align buttons
+    for (int i = 0; i < 6; ++i) {
+        if (PtInRect(localPt, &sAlignBtnRect[i])) {
+            ApplyAlign(i);
+            return;
+        }
+    }
 
     // Fill color swatch
     if (PtInRect(localPt, &sFillSwatchRect)) {

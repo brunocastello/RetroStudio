@@ -58,3 +58,4 @@ void PasteClipboard();          // Cmd+V — pastes clipboard at +10,+10 offset
 void PushUndo();                // snapshot current document onto the undo stack
 void PerformUndo();             // Cmd+Z
 void PerformRedo();             // Cmd+Shift+Z
+Frame* FindShapeParent(Shape* s);  // walks the frame tree to find s's owning frame (nullptr = root-level)
