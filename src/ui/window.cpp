@@ -557,6 +557,16 @@ static int ShowConfirmCloseDialog(const std::string& docName) {
     DialogPtr dlg = GetNewDialog(129, nullptr, (WindowPtr)-1L);
     if (!dlg) return 2;
 
+    // Platinum gray background, matching every other dialog in this app.
+    // A prior attempt at this used a whole-dialog UserItem to PaintRect the
+    // background and froze the alert solid (see RetroStudio.r's DITL 129
+    // comment) -- this is a different, much narrower mechanism: it only
+    // sets the port's back color, which the Dialog Manager's own erase-
+    // before-draw step then picks up on its own. No competing dialog item
+    // is created, so there's nothing that could intercept a click.
+    RGBColor platGray = { 0xCCCC, 0xCCCC, 0xCCCC };
+    RGBBackColor(&platGray);
+
     DialogItemType type; Handle itemH; Rect box;
     GetDialogItem(dlg, 2, &type, &itemH, &box);
     SetDialogItem(dlg, 2, type, reinterpret_cast<Handle>(NewUserItemUPP(DrawSaveDefaultRing)), &box);
@@ -610,6 +620,10 @@ static bool ShowConfirmRevertDialog(const std::string& docName) {
 
     DialogPtr dlg = GetNewDialog(130, nullptr, (WindowPtr)-1L);
     if (!dlg) return false;
+
+    // See the matching comment in ShowConfirmCloseDialog above.
+    RGBColor platGray = { 0xCCCC, 0xCCCC, 0xCCCC };
+    RGBBackColor(&platGray);
 
     DialogItemType type; Handle itemH; Rect box;
     GetDialogItem(dlg, 2, &type, &itemH, &box);
