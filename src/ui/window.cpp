@@ -569,7 +569,7 @@ static int ShowConfirmCloseDialog(const std::string& docName) {
     // first via SetPortWindowPort, the standard Dialog Manager call for
     // exactly this, before any drawing happens.
     SetPortWindowPort(dlg);
-    RGBColor platGray = { 0xD3D3, 0xD3D3, 0xD3D3 };  // RGB(211,211,211), sampled from a live Illustrator screenshot
+    RGBColor platGray = { 0xD8D8, 0xD8D8, 0xD8D8 };  // RGB(216,216,216) per user correction
     RGBBackColor(&platGray);
     Rect dlgPortR; GetWindowPortBounds(dlg, &dlgPortR);
     EraseRect(&dlgPortR);
@@ -631,7 +631,7 @@ static bool ShowConfirmRevertDialog(const std::string& docName) {
 
     // See the matching comment in ShowConfirmCloseDialog above.
     SetPortWindowPort(dlg);
-    RGBColor platGray = { 0xD3D3, 0xD3D3, 0xD3D3 };  // RGB(211,211,211), sampled from a live Illustrator screenshot
+    RGBColor platGray = { 0xD8D8, 0xD8D8, 0xD8D8 };  // RGB(216,216,216) per user correction
     RGBBackColor(&platGray);
     Rect dlgPortR; GetWindowPortBounds(dlg, &dlgPortR);
     EraseRect(&dlgPortR);
