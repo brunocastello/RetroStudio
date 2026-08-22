@@ -53,15 +53,17 @@ resource 'DITL' (129) {
         { 93, 219, 112, 275 },
         Button { enabled, "Cancel" };
 
-        /* 5: real system caution icon (ID 2), same position CautionAlert
-           itself draws it at ([10,20,42,52], per Inside Macintosh). */
-        { 10, 20, 42, 52 },
+        /* 5: real system caution icon (ID 2). Inside Macintosh's documented
+           CautionAlert position is [10,20,42,52], but a direct pixel-diff
+           against a live screenshot (icon+text render ~3-4px up/left of
+           the Illustrator reference here) showed this toolchain's Dialog
+           Manager needs a few px of compensation to land in the same spot. */
+        { 13, 24, 45, 56 },
         Icon { disabled, 2 };
 
         /* 6: message, real StaticText (auto word-wraps); ^0 = document name via ParamText.
-           Nudged up slightly from the first measurement to center better
-           against the icon's [10,42] vertical span. */
-        { 10, 70, 50, 348 },
+           Same +3/+4 compensation as the icon above, for the same reason. */
+        { 13, 74, 53, 352 },
         StaticText { disabled, "Save changes to RetroStudio document \"^0\" before closing?" }
     }
 };
