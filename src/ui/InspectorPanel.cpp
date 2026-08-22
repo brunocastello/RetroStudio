@@ -81,10 +81,11 @@ static Rect sOpacityRect              = {0,0,0,0};
 static Rect sRotationRect             = {0,0,0,0};
 // Align row: Left, Center-H, Right, Top, Middle-V, Bottom
 static Rect sAlignBtnRect[6]          = {};
-// Absolute position toggle + Constraints rows (H then V; each: Start/Center/End/StartEnd/Scale)
+// Absolute position toggle + Constraints dropdowns (H then V)
 static Rect sAbsolutePositionRect     = {0,0,0,0};
-static Rect sConstraintHBtnRect[5]    = {};
-static Rect sConstraintVBtnRect[5]    = {};
+static Rect sConstraintHRect          = {0,0,0,0};
+static Rect sConstraintVRect          = {0,0,0,0};
+// Popup menu item order for both constraint dropdowns
 static const ConstraintMode kConstraintModes[5] = {
     ConstraintMode::Start, ConstraintMode::Center, ConstraintMode::End,
     ConstraintMode::StartEnd, ConstraintMode::Scale
@@ -643,33 +644,76 @@ static void ApplyAlign(int kind) {
     }
 }
 
-// Draws one axis's 5-button constraint row (Start/Center/End/StartEnd/Scale) and
-// populates outRects[]. `labels` order matches kConstraintModes.
-static short DrawConstraintRow(short y, const char* axisLabel, const char* labels[5],
-                                ConstraintMode current, Rect outRects[5]) {
-    RGBColor labelClr = {0x6666,0x6666,0x6666};
-    RGBForeColor(&labelClr); TextSize(9);
-    Str255 ps; PStrC(axisLabel, ps); MoveTo(6, static_cast<short>(y+11)); DrawString(ps);
-
-    const short btnW = 24, btnH = 16, gap = 2;
-    short x = 20;
-    for (int i = 0; i < 5; ++i) {
-        Rect btn = { y, x, static_cast<short>(y + btnH), static_cast<short>(x + btnW) };
-        bool active = (kConstraintModes[i] == current);
-        RGBColor bg; if (active) { bg = {0x3333,0x6666,0xCCCC}; } else { bg = {0xDDDD,0xDDDD,0xDDDD}; }
-        RGBForeColor(&bg); PaintRect(&btn);
-        RGBColor bd = {0x7777,0x7777,0x7777}; RGBForeColor(&bd); FrameRect(&btn);
-        RGBColor fg; if (active) { fg = {0xFFFF,0xFFFF,0xFFFF}; } else { fg = {0x2222,0x2222,0x2222}; }
-        RGBForeColor(&fg); TextSize(9);
-        Str255 lps; PStrC(labels[i], lps);
-        short tw = StringWidth(lps);
-        MoveTo(static_cast<short>(x + (btnW - tw) / 2), static_cast<short>(y + 11)); DrawString(lps);
-        outRects[i] = btn;
-        x = static_cast<short>(x + btnW + gap);
-    }
+// Small gray caption used to group controls within one section (Figma's
+// "Alignment" / "Position" / "Constraints" / "Rotation" sub-labels inside
+// its single Position panel) — no divider bar, unlike DrawSectionHeader.
+static short DrawSubLabel(short y, const char* text) {
+    RGBColor c = {0x8888,0x8888,0x8888};
+    RGBForeColor(&c); TextSize(9);
+    Str255 ps; PStrC(text, ps); MoveTo(6, static_cast<short>(y+8)); DrawString(ps);
     TextSize(11);
     RGBColor black = {0,0,0}; RGBForeColor(&black);
-    return static_cast<short>(y + btnH + 4);
+    return static_cast<short>(y + 12);
+}
+
+static const char* ConstraintModeLabel(ConstraintMode m, bool horizontal) {
+    switch (m) {
+        case ConstraintMode::Start:    return horizontal ? "Left"   : "Top";
+        case ConstraintMode::End:      return horizontal ? "Right"  : "Bottom";
+        case ConstraintMode::StartEnd: return horizontal ? "L & R"  : "T & B";
+        case ConstraintMode::Center:   return "Center";
+        case ConstraintMode::Scale:    return "Scale";
+    }
+    return "Left";
+}
+
+// Small "map" diagram (Figma's crosshair widget): an outer box standing in for
+// the parent frame, an inner box positioned per ch/cv, and dashed pin lines to
+// whichever edges are anchored (Start/End/StartEnd) — Center/Scale draw no pins.
+static void DrawConstraintMap(short x, short y, short size, ConstraintMode ch, ConstraintMode cv) {
+    Rect outer = { y, x, static_cast<short>(y+size), static_cast<short>(x+size) };
+    RGBColor obg = {0xF2F2,0xF2F2,0xF2F2}; RGBForeColor(&obg); PaintRect(&outer);
+    RGBColor obd = {0x9999,0x9999,0x9999}; RGBForeColor(&obd); FrameRect(&outer);
+
+    const short pad = 6, dot = 10;
+    short ix, iw, iy, ih;
+    switch (ch) {
+        case ConstraintMode::End:      ix = static_cast<short>(x+size-pad-dot); iw = dot; break;
+        case ConstraintMode::StartEnd: ix = static_cast<short>(x+pad); iw = static_cast<short>(size-2*pad); break;
+        default:                       ix = (ch == ConstraintMode::Start) ? static_cast<short>(x+pad)
+                                                                            : static_cast<short>(x+(size-dot)/2);
+                                        iw = dot; break;
+    }
+    switch (cv) {
+        case ConstraintMode::End:      iy = static_cast<short>(y+size-pad-dot); ih = dot; break;
+        case ConstraintMode::StartEnd: iy = static_cast<short>(y+pad); ih = static_cast<short>(size-2*pad); break;
+        default:                       iy = (cv == ConstraintMode::Start) ? static_cast<short>(y+pad)
+                                                                            : static_cast<short>(y+(size-dot)/2);
+                                        ih = dot; break;
+    }
+    Rect inner = { iy, ix, static_cast<short>(iy+ih), static_cast<short>(ix+iw) };
+    RGBColor ic  = {0x3333,0x6666,0xCCCC}; RGBForeColor(&ic); PaintRect(&inner);
+    RGBColor icb = {0x1111,0x3333,0x7777}; RGBForeColor(&icb); FrameRect(&inner);
+
+    // Dashed "pin" lines only on edges the current mode actually anchors to —
+    // Center/Scale get no pins, which is itself the visual cue ("floats free").
+    RGBColor lc = {0x7777,0x7777,0x7777}; RGBForeColor(&lc);
+    short midY = static_cast<short>(iy + ih/2);
+    short midX = static_cast<short>(ix + iw/2);
+    bool pinL = (ch == ConstraintMode::Start || ch == ConstraintMode::StartEnd);
+    bool pinR = (ch == ConstraintMode::End   || ch == ConstraintMode::StartEnd);
+    bool pinT = (cv == ConstraintMode::Start || cv == ConstraintMode::StartEnd);
+    bool pinB = (cv == ConstraintMode::End   || cv == ConstraintMode::StartEnd);
+    if (pinL) for (short xx = x; xx < ix; xx += 3)
+        { MoveTo(xx, midY); LineTo(static_cast<short>(xx+1), midY); }
+    if (pinR) for (short xx = static_cast<short>(ix+iw); xx < x+size; xx += 3)
+        { MoveTo(xx, midY); LineTo(static_cast<short>(xx+1), midY); }
+    if (pinT) for (short yy = y; yy < iy; yy += 3)
+        { MoveTo(midX, yy); LineTo(midX, static_cast<short>(yy+1)); }
+    if (pinB) for (short yy = static_cast<short>(iy+ih); yy < y+size; yy += 3)
+        { MoveTo(midX, yy); LineTo(midX, static_cast<short>(yy+1)); }
+
+    RGBColor black = {0,0,0}; RGBForeColor(&black);
 }
 
 void DrawInspectorPanel() {
@@ -737,7 +781,7 @@ void DrawInspectorPanel() {
     sCornerIndividualBtnRect = sOpacityRect = sRotationRect = {0,0,0,0};
     for (int i=0;i<6;++i) sAlignBtnRect[i]={0,0,0,0};
     sAbsolutePositionRect = {0,0,0,0};
-    for (int i=0;i<5;++i) { sConstraintHBtnRect[i]={0,0,0,0}; sConstraintVBtnRect[i]={0,0,0,0}; }
+    sConstraintHRect = sConstraintVRect = {0,0,0,0};
 
     if (!gSelectedFrame && !gSelectedShape && gSelectedFrames.empty()) {
         SetOrigin(0, 0);
@@ -1704,19 +1748,69 @@ void DrawInspectorPanel() {
     }
 
     // ---------------------------------------------------------- POSITION --
-    y = DrawSectionHeader(y, "POSITION", portRect);
-    y = static_cast<short>(y + 6);
-    y = DrawAlignRow(y, AnyAlignableSelected());
+    // One section (matching Figma's single "Position" panel), broken into
+    // sub-labeled groups: Alignment, Position (+ Absolute position toggle for
+    // an Auto Layout child), Constraints (shown only for a free child, or an
+    // absolute-positioned layout child), Rotation.
+    Frame* posParent = gSelectedShape ? gSelectedFrame
+                      : (gSelectedFrame ? gSelectedFrame->parent : nullptr);
+    bool inLayoutParent = posParent && posParent->layoutMode != LayoutMode::None;
+    bool isAbsPos = gSelectedShape ? gSelectedShape->isAbsolutePosition
+                  : (gSelectedFrame ? gSelectedFrame->isAbsolutePosition : false);
+    bool showConstraints = !isMulti && posParent && (!inLayoutParent || isAbsPos);
 
+    y = DrawSectionHeader(y, "POSITION", portRect);
+    y = static_cast<short>(y + 4);
+
+    y = DrawSubLabel(y, "Alignment");
+    y = DrawAlignRow(y, AnyAlignableSelected());
+    y = static_cast<short>(y + 4);
+
+    y = DrawSubLabel(y, "Position");
     RGBForeColor(&labelClr); PStrC("X", ps); MoveTo(6,  static_cast<short>(y+12)); DrawString(ps);
     DrawNumField(20, static_cast<short>(y+12), 64, kFieldX, bounds.x, sFieldXRect);
-
     RGBForeColor(&labelClr); PStrC("Y", ps); MoveTo(94, static_cast<short>(y+12)); DrawString(ps);
     DrawNumField(106, static_cast<short>(y+12), 62, kFieldY, bounds.y, sFieldYRect);
-
     y = static_cast<short>(y + 22);
 
-    // Rotation (°) in POSITION section, matching Figma layout
+    if (!isMulti && inLayoutParent) {
+        sAbsolutePositionRect = { y, 6, static_cast<short>(y+14), 20 };
+        RGBColor wbg = {0xFFFF,0xFFFF,0xFFFF}; RGBForeColor(&wbg); PaintRect(&sAbsolutePositionRect);
+        RGBColor bd  = {0x7777,0x7777,0x7777}; RGBForeColor(&bd);  FrameRect(&sAbsolutePositionRect);
+        if (isAbsPos) {
+            RGBColor chk = {0x3333,0x6666,0xCCCC}; RGBForeColor(&chk);
+            Rect inner = { static_cast<short>(y+3), 9, static_cast<short>(y+11), 17 };
+            PaintRect(&inner);
+        }
+        RGBForeColor(&labelClr); TextSize(10);
+        PStrC("Absolute position", ps); MoveTo(26, static_cast<short>(y+11)); DrawString(ps);
+        TextSize(11);
+        y = static_cast<short>(y + 20);
+    } else {
+        sAbsolutePositionRect = {0,0,0,0};
+    }
+
+    if (showConstraints) {
+        ConstraintMode ch = gSelectedShape ? gSelectedShape->constraintH
+                          : (gSelectedFrame ? gSelectedFrame->constraintH : ConstraintMode::Start);
+        ConstraintMode cv = gSelectedShape ? gSelectedShape->constraintV
+                          : (gSelectedFrame ? gSelectedFrame->constraintV : ConstraintMode::Start);
+
+        y = DrawSubLabel(y, "Constraints");
+        short rowTop = y;
+        DrawPlatinumBtn(6, y, 84, 18, ConstraintModeLabel(ch, true),  sConstraintHRect);
+        y = static_cast<short>(y + 22);
+        DrawPlatinumBtn(6, y, 84, 18, ConstraintModeLabel(cv, false), sConstraintVRect);
+        y = static_cast<short>(y + 22);
+
+        DrawConstraintMap(100, rowTop, 44, ch, cv);
+        short mapEnd = static_cast<short>(rowTop + 44 + 4);
+        if (mapEnd > y) y = mapEnd;
+    } else {
+        sConstraintHRect = sConstraintVRect = {0,0,0,0};
+    }
+
+    y = DrawSubLabel(y, "Rotation");
     {
         SInt16 rotV = gSelectedShape ? gSelectedShape->rotation
                     : (gSelectedFrame ? gSelectedFrame->rotation : 0);
@@ -1818,52 +1912,6 @@ void DrawInspectorPanel() {
             y = static_cast<short>(y + 18);
         } else {
             sShapeWFxRect = sShapeWFlRect = sShapeHFxRect = sShapeHFlRect = {0,0,0,0};
-        }
-    }
-
-    // ------------------------------------- ABSOLUTE POSITION / CONSTRAINTS --
-    // Single-item only (matches the Fixed/Fill sizing buttons above). Absolute
-    // position opts a child out of its Auto Layout parent's flow; constraints
-    // govern how a free child (or an absolute-positioned layout child) responds
-    // when its parent frame is resized — see AutoLayout.cpp's ApplyConstraints.
-    if (!isMulti) {
-        Frame* posParent = gSelectedShape ? gSelectedFrame
-                          : (gSelectedFrame ? gSelectedFrame->parent : nullptr);
-        bool inLayoutParent = posParent && posParent->layoutMode != LayoutMode::None;
-        bool isAbsPos = gSelectedShape ? gSelectedShape->isAbsolutePosition
-                      : (gSelectedFrame ? gSelectedFrame->isAbsolutePosition : false);
-
-        if (inLayoutParent) {
-            sAbsolutePositionRect = { y, 6, static_cast<short>(y+14), 20 };
-            RGBColor wbg = {0xFFFF,0xFFFF,0xFFFF}; RGBForeColor(&wbg); PaintRect(&sAbsolutePositionRect);
-            RGBColor bd  = {0x7777,0x7777,0x7777}; RGBForeColor(&bd);  FrameRect(&sAbsolutePositionRect);
-            if (isAbsPos) {
-                RGBColor chk = {0x3333,0x6666,0xCCCC}; RGBForeColor(&chk);
-                Rect inner = { static_cast<short>(y+3), 9, static_cast<short>(y+11), 17 };
-                PaintRect(&inner);
-            }
-            RGBForeColor(&labelClr); TextSize(10);
-            PStrC("Absolute position", ps); MoveTo(26, static_cast<short>(y+11)); DrawString(ps);
-            TextSize(11);
-            y = static_cast<short>(y + 20);
-        } else {
-            sAbsolutePositionRect = {0,0,0,0};
-        }
-
-        bool showConstraints = posParent && (!inLayoutParent || isAbsPos);
-        if (showConstraints) {
-            ConstraintMode ch = gSelectedShape ? gSelectedShape->constraintH
-                              : (gSelectedFrame ? gSelectedFrame->constraintH : ConstraintMode::Start);
-            ConstraintMode cv = gSelectedShape ? gSelectedShape->constraintV
-                              : (gSelectedFrame ? gSelectedFrame->constraintV : ConstraintMode::Start);
-            static const char* kHLabels[5] = { "L", "C", "R", "LR", "Scl" };
-            static const char* kVLabels[5] = { "T", "C", "B", "TB", "Scl" };
-
-            y = DrawSectionHeader(y, "CONSTRAINTS", portRect);
-            y = static_cast<short>(y + 5);
-            y = DrawConstraintRow(y, "H", kHLabels, ch, sConstraintHBtnRect);
-            y = DrawConstraintRow(y, "V", kVLabels, cv, sConstraintVBtnRect);
-            y = static_cast<short>(y + 2);
         }
     }
 
@@ -2468,24 +2516,56 @@ void HandleInspectorClick(Point localPt) {
         return;
     }
 
-    // Constraint buttons (H then V)
-    for (int i = 0; i < 5; ++i) {
-        if (PtInRect(localPt, &sConstraintHBtnRect[i])) {
+    // Constraint dropdowns (H then V) — same PopUpMenuSelect pattern as Stroke alignment
+    if (PtInRect(localPt, &sConstraintHRect) || PtInRect(localPt, &sConstraintVRect)) {
+        bool isH = PtInRect(localPt, &sConstraintHRect);
+        Rect& trigger = isH ? sConstraintHRect : sConstraintVRect;
+
+        MenuRef popMenu = NewMenu(5004, "\p");
+        if (isH) {
+            AppendMenu(popMenu, "\pLeft");
+            AppendMenu(popMenu, "\pCenter");
+            AppendMenu(popMenu, "\pRight");
+            AppendMenu(popMenu, "\pLeft & Right");
+            AppendMenu(popMenu, "\pScale");
+        } else {
+            AppendMenu(popMenu, "\pTop");
+            AppendMenu(popMenu, "\pCenter");
+            AppendMenu(popMenu, "\pBottom");
+            AppendMenu(popMenu, "\pTop & Bottom");
+            AppendMenu(popMenu, "\pScale");
+        }
+        InsertMenu(popMenu, -1);
+
+        ConstraintMode cur = isH
+            ? (gSelectedShape ? gSelectedShape->constraintH : (gSelectedFrame ? gSelectedFrame->constraintH : ConstraintMode::Start))
+            : (gSelectedShape ? gSelectedShape->constraintV : (gSelectedFrame ? gSelectedFrame->constraintV : ConstraintMode::Start));
+        short curItem = 1;
+        for (int i = 0; i < 5; ++i) if (kConstraintModes[i] == cur) { curItem = static_cast<short>(i+1); break; }
+
+        Point popPt = { static_cast<short>(trigger.top - gInspectorScrollY), trigger.left };
+        SetPortWindowPort(gInspectorWindow);
+        LocalToGlobal(&popPt);
+
+        long result = PopUpMenuSelect(popMenu, popPt.v, popPt.h, curItem);
+        DeleteMenu(5004);
+        DisposeMenu(popMenu);
+
+        short item = static_cast<short>(result & 0xFFFF);
+        if (item > 0) {
+            ConstraintMode nv = kConstraintModes[item-1];
             PushUndo();
-            if (gSelectedShape)      gSelectedShape->constraintH = kConstraintModes[i];
-            else if (gSelectedFrame) gSelectedFrame->constraintH = kConstraintModes[i];
+            if (isH) {
+                if (gSelectedShape)      gSelectedShape->constraintH = nv;
+                else if (gSelectedFrame) gSelectedFrame->constraintH = nv;
+            } else {
+                if (gSelectedShape)      gSelectedShape->constraintV = nv;
+                else if (gSelectedFrame) gSelectedFrame->constraintV = nv;
+            }
             InvalidateInspector();
             if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
-            return;
         }
-        if (PtInRect(localPt, &sConstraintVBtnRect[i])) {
-            PushUndo();
-            if (gSelectedShape)      gSelectedShape->constraintV = kConstraintModes[i];
-            else if (gSelectedFrame) gSelectedFrame->constraintV = kConstraintModes[i];
-            InvalidateInspector();
-            if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
-            return;
-        }
+        return;
     }
 
     // Fill color swatch
