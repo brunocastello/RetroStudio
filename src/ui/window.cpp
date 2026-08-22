@@ -495,6 +495,16 @@ static int ShowConfirmCloseDialog(const std::string& docName) {
     DialogPtr dlg = GetNewDialog(129, nullptr, (WindowPtr)-1L);
     if (!dlg) return 2;
 
+    // GetNewDialog leaves dlg as the current port. The one-time PaintRect in
+    // DrawDialogBackground covers the initial gray fill, but the Dialog
+    // Manager's own per-item redraw re-erases each item's rect using the
+    // port's CURRENT back color first -- which defaults to white regardless
+    // of that fill, punching white holes back into every button/text rect
+    // on every subsequent redraw. Setting it here once makes those re-erases
+    // land on gray instead.
+    RGBColor platGray = { 0xCCCC, 0xCCCC, 0xCCCC };
+    RGBBackColor(&platGray);
+
     DialogItemType type; Handle itemH; Rect box;
     GetDialogItem(dlg, 1, &type, &itemH, &box);
     SetDialogItem(dlg, 1, type, reinterpret_cast<Handle>(NewUserItemUPP(DrawDialogBackground)), &box);
