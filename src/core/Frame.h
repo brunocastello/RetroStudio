@@ -59,11 +59,15 @@ public:
     ConstraintMode constraintH        = ConstraintMode::Start;
     ConstraintMode constraintV        = ConstraintMode::Start;
 
-    // Runtime-only: this frame's own bounds.w/h as of the last layout pass, used by
-    // AutoLayout.cpp to compute a resize delta for constraint-based repositioning of
-    // children. Intentionally NOT serialized and NOT copied in CloneFrame (window.cpp) —
-    // -1 means "unprimed," so every freshly loaded/cloned/undone frame re-primes on its
-    // next layout pass instead of applying a spurious delta from stale state.
+    // Runtime-only: this frame's own bounds as of the last layout pass, used by
+    // AutoLayout.cpp to compute a resize/move delta for constraint-based repositioning
+    // of children — a resize handle other than bottom-right also moves x/y, not just
+    // w/h, and constraint math needs both. Intentionally NOT serialized and NOT copied
+    // in CloneFrame (window.cpp) — lastLayoutW's -1 sentinel means "unprimed," so every
+    // freshly loaded/cloned/undone frame re-primes on its next layout pass instead of
+    // applying a spurious delta from stale state.
+    SInt32 lastLayoutX = 0;
+    SInt32 lastLayoutY = 0;
     SInt32 lastLayoutW = -1;
     SInt32 lastLayoutH = -1;
 

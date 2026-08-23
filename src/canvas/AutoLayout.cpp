@@ -53,45 +53,61 @@ static SInt32 ScaleRounded(SInt32 value, SInt32 num, SInt32 den) {
 // by RunFrameLayout itself below and are skipped here to avoid wasted/contradictory work).
 static void ApplyConstraints(Frame* f) {
     bool   primed = (f->lastLayoutW >= 0);
+    SInt32 oldX = f->lastLayoutX, oldY = f->lastLayoutY;
     SInt32 oldW = f->lastLayoutW, oldH = f->lastLayoutH;
+    SInt32 newX = f->bounds.x,    newY = f->bounds.y;
     SInt32 newW = f->bounds.w,    newH = f->bounds.h;
+    f->lastLayoutX = newX; f->lastLayoutY = newY;
     f->lastLayoutW = newW; f->lastLayoutH = newH;
     if (!primed) return;
 
+    // A resize handle other than bottom-right moves the frame's own x/y in the
+    // same step as w/h (e.g. dragging the left edge shrinks w AND increases x
+    // to keep the right edge fixed) — every mode below has to account for BOTH,
+    // not just the size change, or a child drifts any time a resize also moves
+    // the frame's origin.
+    SInt32 dX = newX - oldX, dY = newY - oldY;
     SInt32 dW = newW - oldW, dH = newH - oldH;
-    if (dW == 0 && dH == 0) return;
+    if (dX == 0 && dY == 0 && dW == 0 && dH == 0) return;
 
     auto applyOne = [&](Bounds2& b, ConstraintMode ch, ConstraintMode cv) {
         switch (ch) {
-            case ConstraintMode::End:      b.x += dW; break;
-            case ConstraintMode::StartEnd: { SInt32 nw = b.w + dW; b.w = (nw < 1) ? 1 : nw; } break;
-            case ConstraintMode::Center:   b.x += dW / 2; break;
+            case ConstraintMode::Start:    b.x += dX; break;                  // left edge offset fixed
+            case ConstraintMode::End:      b.x += dX + dW; break;             // right edge offset fixed
+            case ConstraintMode::Center:   b.x += dX + dW / 2; break;         // center offset fixed
+            case ConstraintMode::StartEnd: {                                  // both edge offsets fixed (stretch)
+                b.x += dX;
+                SInt32 nw = b.w + dW; b.w = (nw < 1) ? 1 : nw;
+            } break;
             case ConstraintMode::Scale:
                 // b.x is an ABSOLUTE canvas coordinate, not relative to the parent frame —
-                // scale the offset from the frame's own left edge, not the raw absolute x,
-                // or the item drifts by the frame's own canvas position on every resize.
+                // scale the offset from the frame's OLD left edge (before this step moved
+                // it), then re-anchor to the new one, or the item drifts by however much
+                // the frame itself moved on top of the actual scale.
                 if (oldW > 0) {
-                    SInt32 relX = b.x - f->bounds.x;
-                    b.x = f->bounds.x + ScaleRounded(relX, newW, oldW);
+                    SInt32 relX = b.x - oldX;
+                    b.x = newX + ScaleRounded(relX, newW, oldW);
                     SInt32 nw = ScaleRounded(b.w, newW, oldW);
                     b.w = (nw < 1) ? 1 : nw;
                 }
                 break;
-            default: break;  // Start: fixed distance from the left/top edge, nothing to do
         }
         switch (cv) {
-            case ConstraintMode::End:      b.y += dH; break;
-            case ConstraintMode::StartEnd: { SInt32 nh = b.h + dH; b.h = (nh < 1) ? 1 : nh; } break;
-            case ConstraintMode::Center:   b.y += dH / 2; break;
+            case ConstraintMode::Start:    b.y += dY; break;
+            case ConstraintMode::End:      b.y += dY + dH; break;
+            case ConstraintMode::Center:   b.y += dY + dH / 2; break;
+            case ConstraintMode::StartEnd: {
+                b.y += dY;
+                SInt32 nh = b.h + dH; b.h = (nh < 1) ? 1 : nh;
+            } break;
             case ConstraintMode::Scale:
                 if (oldH > 0) {
-                    SInt32 relY = b.y - f->bounds.y;
-                    b.y = f->bounds.y + ScaleRounded(relY, newH, oldH);
+                    SInt32 relY = b.y - oldY;
+                    b.y = newY + ScaleRounded(relY, newH, oldH);
                     SInt32 nh = ScaleRounded(b.h, newH, oldH);
                     b.h = (nh < 1) ? 1 : nh;
                 }
                 break;
-            default: break;
         }
     };
 
