@@ -248,6 +248,13 @@ static const short kAppleAbout  = 1;   // "About RetroStudio" item
 static inline short sMin(short a, short b) { return a < b ? a : b; }
 static inline short sMax(short a, short b) { return a > b ? a : b; }
 
+// CheckItem compiles but isn't linkable in this toolchain (same class of gap as
+// CountMItems elsewhere in this file) -- SetItemMark with the classic checkmark
+// glyph (0x12) / no-mark (0) achieves the same thing and does link.
+static void SetMenuCheck(MenuRef menu, short item, bool checked) {
+    SetItemMark(menu, item, checked ? 0x12 : 0);
+}
+
 static std::string istr(int n) {
     if (n == 0) return std::string("0");
     char buf[12]; int i = 11; buf[i] = '\0';
@@ -836,7 +843,7 @@ void SetupMenus() {
     SetItemCmd(viewMenu, kViewZoom100, '1');
     AppendMenu(viewMenu, "\p-");
     AppendMenu(viewMenu, "\pSmart Guides");
-    CheckItem(viewMenu, kViewSmartGuides, gSmartGuidesEnabled);
+    SetMenuCheck(viewMenu, kViewSmartGuides, gSmartGuidesEnabled);
     InsertMenu(viewMenu, 0);
 
     DrawMenuBar();
@@ -5772,7 +5779,7 @@ void HandleMenuCommand(long menuResult) {
             case kViewZoom100: ZoomTo(100);  break;
             case kViewSmartGuides:
                 gSmartGuidesEnabled = !gSmartGuidesEnabled;
-                CheckItem(GetMenuHandle(kViewMenuID), kViewSmartGuides, gSmartGuidesEnabled);
+                SetMenuCheck(GetMenuHandle(kViewMenuID), kViewSmartGuides, gSmartGuidesEnabled);
                 break;
         }
     }
