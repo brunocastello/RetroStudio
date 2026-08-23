@@ -27,6 +27,19 @@ struct LayoutItem {
     SInt32  yOff     = 0;   // y correction after layout: (aabbH - h) / 2 for rotated
 };
 
+// value*num/den, rounded to nearest instead of truncated toward zero. Plain
+// integer division here would bias every application toward shrinking (it only
+// ever loses the fractional remainder, never gains it back), which is silently
+// destructive across the many small resize steps a live drag produces — a
+// Scale-constrained item would visibly end up smaller after shrink-then-grow
+// even though the net resize was zero. SInt64 avoids overflow on the product.
+static SInt32 ScaleRounded(SInt32 value, SInt32 num, SInt32 den) {
+    if (den == 0) return value;
+    SInt64 prod = static_cast<SInt64>(value) * static_cast<SInt64>(num);
+    SInt64 half = den / 2;
+    return static_cast<SInt32>(prod >= 0 ? (prod + half) / den : (prod - half) / den);
+}
+
 // Repositions/resizes f's direct children per their constraintH/constraintV when f's
 // own bounds.w/h have changed since the last layout pass (delta applied once, then
 // f->lastLayoutW/H are updated to consume it — see Frame.h for why this is safe
@@ -57,8 +70,8 @@ static void ApplyConstraints(Frame* f) {
                 // or the item drifts by the frame's own canvas position on every resize.
                 if (oldW > 0) {
                     SInt32 relX = b.x - f->bounds.x;
-                    b.x = f->bounds.x + relX * newW / oldW;
-                    SInt32 nw = b.w * newW / oldW;
+                    b.x = f->bounds.x + ScaleRounded(relX, newW, oldW);
+                    SInt32 nw = ScaleRounded(b.w, newW, oldW);
                     b.w = (nw < 1) ? 1 : nw;
                 }
                 break;
@@ -71,8 +84,8 @@ static void ApplyConstraints(Frame* f) {
             case ConstraintMode::Scale:
                 if (oldH > 0) {
                     SInt32 relY = b.y - f->bounds.y;
-                    b.y = f->bounds.y + relY * newH / oldH;
-                    SInt32 nh = b.h * newH / oldH;
+                    b.y = f->bounds.y + ScaleRounded(relY, newH, oldH);
+                    SInt32 nh = ScaleRounded(b.h, newH, oldH);
                     b.h = (nh < 1) ? 1 : nh;
                 }
                 break;
@@ -213,7 +226,13 @@ static void RunFrameLayout(Frame* f) {
     }
 
     if (items.empty()) {
-        if (!dragActive) {
+        // Only collapse to padding-only size when the frame is genuinely
+        // childless. A frame that still has children — just none of them
+        // flow-managed, e.g. every child is Absolute Position — keeps
+        // whatever size it already had; there's nothing here to Hug around,
+        // but that's not the same as being empty.
+        bool trulyEmpty = f->children.empty() && f->childFrames.empty();
+        if (!dragActive && trulyEmpty) {
             if (f->widthSizing  == SizingMode::Hug) f->bounds.w = f->paddingLeft  + f->paddingRight;
             if (f->heightSizing == SizingMode::Hug) f->bounds.h = f->paddingTop   + f->paddingBottom;
         }
