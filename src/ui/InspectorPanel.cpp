@@ -546,29 +546,32 @@ static short DrawAlignRow(short y, bool enabled) {
 }
 
 // True when at least one item in the current selection is free to be moved
-// by an align command — i.e. not positioned by an Auto Layout parent.
-// Multi-select aligns to the selection's own bounding box (no parent needed);
-// a single item aligns to its parent frame, so it needs one that isn't
-// itself layout-managing this item's position.
+// by an align command — i.e. not positioned by an Auto Layout parent. A child
+// that has opted out of its Auto Layout parent's flow via Absolute Position is
+// free either way, same as a plain child. Multi-select aligns to the
+// selection's own bounding box (no parent needed); a single item aligns to
+// its parent frame, so it needs one that isn't itself layout-managing this
+// item's position (again unless the item is absolute-positioned).
 static bool AnyAlignableSelected() {
     if (gSelectedFrames.size() > 1) {
         for (Frame* f : gSelectedFrames)
-            if (!f->parent || f->parent->layoutMode == LayoutMode::None) return true;
+            if (!f->parent || f->parent->layoutMode == LayoutMode::None || f->isAbsolutePosition) return true;
         return false;
     }
     if (gSelectedShapes.size() > 1) {
         for (Shape* s : gSelectedShapes) {
             Frame* p = FindShapeParent(s);
-            if (!p || p->layoutMode == LayoutMode::None) return true;
+            if (!p || p->layoutMode == LayoutMode::None || s->isAbsolutePosition) return true;
         }
         return false;
     }
     if (gSelectedShape) {
         Frame* p = FindShapeParent(gSelectedShape);
-        return p && p->layoutMode == LayoutMode::None;
+        return p && (p->layoutMode == LayoutMode::None || gSelectedShape->isAbsolutePosition);
     }
     if (gSelectedFrame) {
-        return gSelectedFrame->parent && gSelectedFrame->parent->layoutMode == LayoutMode::None;
+        Frame* p = gSelectedFrame->parent;
+        return p && (p->layoutMode == LayoutMode::None || gSelectedFrame->isAbsolutePosition);
     }
     return false;
 }
@@ -578,6 +581,7 @@ static void ApplyAlign(int kind) {
     if (!gDocument) return;
     const bool isMultiFrame = (gSelectedFrames.size() > 1);
     const bool isMulti      = (gSelectedShapes.size() > 1);
+    bool isSingleAlign = false;  // single item only: align also updates the matching constraint
 
     std::vector<Bounds2*> items;
     SInt32 refX0 = 0, refY0 = 0, refX1 = 0, refY1 = 0;
@@ -593,27 +597,28 @@ static void ApplyAlign(int kind) {
 
     if (isMultiFrame) {
         for (Frame* f : gSelectedFrames) {
-            if (f->parent && f->parent->layoutMode != LayoutMode::None) continue;
+            if (f->parent && f->parent->layoutMode != LayoutMode::None && !f->isAbsolutePosition) continue;
             items.push_back(&f->bounds);
             extendRef(f->bounds);
         }
     } else if (isMulti) {
         for (Shape* s : gSelectedShapes) {
             Frame* p = FindShapeParent(s);
-            if (p && p->layoutMode != LayoutMode::None) continue;
+            if (p && p->layoutMode != LayoutMode::None && !s->isAbsolutePosition) continue;
             items.push_back(&s->bounds);
             extendRef(s->bounds);
         }
     } else {
-        Bounds2* b = nullptr; Frame* parent = nullptr;
-        if (gSelectedShape)      { b = &gSelectedShape->bounds; parent = FindShapeParent(gSelectedShape); }
-        else if (gSelectedFrame) { b = &gSelectedFrame->bounds; parent = gSelectedFrame->parent; }
-        if (b && parent && parent->layoutMode == LayoutMode::None) {
+        Bounds2* b = nullptr; Frame* parent = nullptr; bool isAbs = false;
+        if (gSelectedShape)      { b = &gSelectedShape->bounds; parent = FindShapeParent(gSelectedShape); isAbs = gSelectedShape->isAbsolutePosition; }
+        else if (gSelectedFrame) { b = &gSelectedFrame->bounds; parent = gSelectedFrame->parent;           isAbs = gSelectedFrame->isAbsolutePosition; }
+        if (b && parent && (parent->layoutMode == LayoutMode::None || isAbs)) {
             items.push_back(b);
             refX0 = parent->bounds.x; refY0 = parent->bounds.y;
             refX1 = parent->bounds.x + parent->bounds.w;
             refY1 = parent->bounds.y + parent->bounds.h;
             haveRef = true;
+            isSingleAlign = true;
         }
     }
 
@@ -634,6 +639,28 @@ static void ApplyAlign(int kind) {
         if (nx != b->x || ny != b->y) {
             if (!changed) PushUndo();
             b->x = nx; b->y = ny;
+            changed = true;
+        }
+    }
+
+    // Aligning a single free/absolute item to an edge is also a statement of
+    // intent about its constraint on that axis — matches Figma, and means a
+    // later parent resize keeps it pinned the way the align just placed it.
+    if (isSingleAlign) {
+        ConstraintMode* target = nullptr;
+        ConstraintMode  newMode = ConstraintMode::Start;
+        switch (kind) {
+            case 0: target = gSelectedShape ? &gSelectedShape->constraintH : &gSelectedFrame->constraintH; newMode = ConstraintMode::Start;    break;
+            case 1: target = gSelectedShape ? &gSelectedShape->constraintH : &gSelectedFrame->constraintH; newMode = ConstraintMode::Center;   break;
+            case 2: target = gSelectedShape ? &gSelectedShape->constraintH : &gSelectedFrame->constraintH; newMode = ConstraintMode::End;      break;
+            case 3: target = gSelectedShape ? &gSelectedShape->constraintV : &gSelectedFrame->constraintV; newMode = ConstraintMode::Start;    break;
+            case 4: target = gSelectedShape ? &gSelectedShape->constraintV : &gSelectedFrame->constraintV; newMode = ConstraintMode::Center;   break;
+            case 5: target = gSelectedShape ? &gSelectedShape->constraintV : &gSelectedFrame->constraintV; newMode = ConstraintMode::End;      break;
+            default: break;
+        }
+        if (target && *target != newMode) {
+            if (!changed) PushUndo();
+            *target = newMode;
             changed = true;
         }
     }
