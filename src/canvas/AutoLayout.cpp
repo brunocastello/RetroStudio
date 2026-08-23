@@ -1,6 +1,7 @@
 #include "AutoLayout.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 // Shape being drag-sorted (single-select) — excluded from layout.
 extern Shape* gLayoutDragShape;
@@ -32,11 +33,12 @@ struct LayoutItem {
 // ever loses the fractional remainder, never gains it back), which is silently
 // destructive across the many small resize steps a live drag produces — a
 // Scale-constrained item would visibly end up smaller after shrink-then-grow
-// even though the net resize was zero. SInt64 avoids overflow on the product.
+// even though the net resize was zero. int64_t avoids overflow on the product
+// (SInt64 isn't declared in this toolchain's headers).
 static SInt32 ScaleRounded(SInt32 value, SInt32 num, SInt32 den) {
     if (den == 0) return value;
-    SInt64 prod = static_cast<SInt64>(value) * static_cast<SInt64>(num);
-    SInt64 half = den / 2;
+    int64_t prod = static_cast<int64_t>(value) * static_cast<int64_t>(num);
+    int64_t half = den / 2;
     return static_cast<SInt32>(prod >= 0 ? (prod + half) / den : (prod - half) / den);
 }
 
