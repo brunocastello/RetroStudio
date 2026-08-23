@@ -3545,10 +3545,14 @@ static void ComputeSmartGuides(Bounds2& b, SInt16 selfRotation, Frame* parent,
         if (absOf(d) <= tolerance && (!haveDY || absOf(d) < absOf(bestDY))) { bestDY = d; haveDY = true; }
     };
 
+    // Parent-center guide: compare against the dragged object's left/right/center
+    // (not just its own center), same as siblings below — an object's edge landing
+    // exactly on the parent's centerline should snap/guide just as much as its
+    // own center would.
     SInt32 pCenterX = parent->bounds.x + parent->bounds.w / 2;
     SInt32 pCenterY = parent->bounds.y + parent->bounds.h / 2;
-    considerX(pCenterX, centerX);
-    considerY(pCenterY, centerY);
+    considerX(pCenterX, left); considerX(pCenterX, right); considerX(pCenterX, centerX);
+    considerY(pCenterY, top);  considerY(pCenterY, bottom); considerY(pCenterY, centerY);
 
     auto scanSibling = [&](const Bounds2& sb) {
         SInt32 sL = sb.x, sR = sb.x + sb.w, sCX = sb.x + sb.w / 2;
@@ -3570,10 +3574,13 @@ static void ComputeSmartGuides(Bounds2& b, SInt16 selfRotation, Frame* parent,
     left = b.x; right = b.x + b.w; centerX = b.x + b.w / 2;
     top  = b.y; bottom = b.y + b.h; centerY = b.y + b.h / 2;
 
-    bool centerXGuide = (centerX == pCenterX);
-    bool centerYGuide = (centerY == pCenterY);
-    if (centerXGuide) gActiveGuides.push_back({ true,  centerX, parent->bounds.y, parent->bounds.y + parent->bounds.h });
-    if (centerYGuide) gActiveGuides.push_back({ false, centerY, parent->bounds.x, parent->bounds.x + parent->bounds.w });
+    // Note: the guide's own position is pCenterX/pCenterY, not centerX/centerY —
+    // when it's the object's LEFT or RIGHT edge (not its center) that matched,
+    // centerX has a different value than pCenterX even though the match is exact.
+    bool centerXGuide = (left == pCenterX || right == pCenterX || centerX == pCenterX);
+    bool centerYGuide = (top == pCenterY || bottom == pCenterY || centerY == pCenterY);
+    if (centerXGuide) gActiveGuides.push_back({ true,  pCenterX, parent->bounds.y, parent->bounds.y + parent->bounds.h });
+    if (centerYGuide) gActiveGuides.push_back({ false, pCenterY, parent->bounds.x, parent->bounds.x + parent->bounds.w });
 
     auto matchSibling = [&](const Bounds2& sb) {
         SInt32 sL = sb.x, sR = sb.x + sb.w, sCX = sb.x + sb.w / 2;
@@ -3582,13 +3589,16 @@ static void ComputeSmartGuides(Bounds2& b, SInt16 selfRotation, Frame* parent,
             gActiveGuides.push_back({ true, left, std::min(top, sT), std::max(bottom, sB) });
         if (right == sL || right == sR || right == sCX)
             gActiveGuides.push_back({ true, right, std::min(top, sT), std::max(bottom, sB) });
-        if (!centerXGuide && centerX == sCX)
+        // Skip only if this would duplicate the parent-center line already added
+        // above (same position) — not just because SOME parent-center guide fired,
+        // which may be at a different x (e.g. triggered by the left/right edge).
+        if (centerX != pCenterX && centerX == sCX)
             gActiveGuides.push_back({ true, centerX, std::min(top, sT), std::max(bottom, sB) });
         if (top == sT || top == sB || top == sCY)
             gActiveGuides.push_back({ false, top, std::min(left, sL), std::max(right, sR) });
         if (bottom == sT || bottom == sB || bottom == sCY)
             gActiveGuides.push_back({ false, bottom, std::min(left, sL), std::max(right, sR) });
-        if (!centerYGuide && centerY == sCY)
+        if (centerY != pCenterY && centerY == sCY)
             gActiveGuides.push_back({ false, centerY, std::min(left, sL), std::max(right, sR) });
     };
     for (auto& s : parent->children)     if (s.get()  != excludeShape) matchSibling(s->bounds);
