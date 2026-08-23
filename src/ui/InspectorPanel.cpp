@@ -918,6 +918,45 @@ void DrawInspectorPanel() {
                      gSelectedFrame->bounds.y, sFieldYRect);
         y2 = static_cast<short>(y2 + 22);
 
+        // Absolute position toggle + Constraints — gSelectedFrame is the reference
+        // (its own parent decides visibility); editing applies to all selected frames.
+        {
+            Frame* posParent2 = gSelectedFrame->parent;
+            bool inLayoutParent2 = posParent2 && posParent2->layoutMode != LayoutMode::None;
+            bool isAbsPos2 = gSelectedFrame->isAbsolutePosition;
+
+            if (inLayoutParent2) {
+                sAbsolutePositionRect = { y2, 6, static_cast<short>(y2+14), 20 };
+                RGBColor wbg2 = {0xFFFF,0xFFFF,0xFFFF}; RGBForeColor(&wbg2); PaintRect(&sAbsolutePositionRect);
+                RGBColor bd2 = {0x7777,0x7777,0x7777}; RGBForeColor(&bd2);  FrameRect(&sAbsolutePositionRect);
+                if (isAbsPos2) {
+                    RGBColor chk2 = {0x3333,0x6666,0xCCCC}; RGBForeColor(&chk2);
+                    Rect inner2 = { static_cast<short>(y2+3), 9, static_cast<short>(y2+11), 17 };
+                    PaintRect(&inner2);
+                }
+                RGBForeColor(&labelClr2); TextSize(10);
+                PStrC("Absolute position", ps2); MoveTo(26, static_cast<short>(y2+11)); DrawString(ps2);
+                TextSize(11);
+                y2 = static_cast<short>(y2 + 20);
+            } else {
+                sAbsolutePositionRect = {0,0,0,0};
+            }
+
+            if (posParent2 && (!inLayoutParent2 || isAbsPos2)) {
+                y2 = DrawSubLabel(y2, "Constraints");
+                short rowTop2 = y2;
+                DrawPlatinumBtn(6, y2, 84, 18, ConstraintModeLabel(gSelectedFrame->constraintH, true),  sConstraintHRect);
+                y2 = static_cast<short>(y2 + 22);
+                DrawPlatinumBtn(6, y2, 84, 18, ConstraintModeLabel(gSelectedFrame->constraintV, false), sConstraintVRect);
+                y2 = static_cast<short>(y2 + 22);
+                DrawConstraintMap(100, rowTop2, 44, gSelectedFrame->constraintH, gSelectedFrame->constraintV);
+                short mapEnd2 = static_cast<short>(rowTop2 + 44 + 4);
+                if (mapEnd2 > y2) y2 = mapEnd2;
+            } else {
+                sConstraintHRect = sConstraintVRect = {0,0,0,0};
+            }
+        }
+
         // Rotation (°) in POSITION section
         {
             SInt16 rotV2 = gSelectedFrame->rotation;
@@ -1784,7 +1823,7 @@ void DrawInspectorPanel() {
     bool inLayoutParent = posParent && posParent->layoutMode != LayoutMode::None;
     bool isAbsPos = gSelectedShape ? gSelectedShape->isAbsolutePosition
                   : (gSelectedFrame ? gSelectedFrame->isAbsolutePosition : false);
-    bool showConstraints = !isMulti && posParent && (!inLayoutParent || isAbsPos);
+    bool showConstraints = posParent && (!inLayoutParent || isAbsPos);
 
     y = DrawSectionHeader(y, "POSITION", portRect);
     y = static_cast<short>(y + 4);
@@ -1800,7 +1839,7 @@ void DrawInspectorPanel() {
     DrawNumField(106, static_cast<short>(y+12), 62, kFieldY, bounds.y, sFieldYRect);
     y = static_cast<short>(y + 22);
 
-    if (!isMulti && inLayoutParent) {
+    if (inLayoutParent) {
         sAbsolutePositionRect = { y, 6, static_cast<short>(y+14), 20 };
         RGBColor wbg = {0xFFFF,0xFFFF,0xFFFF}; RGBForeColor(&wbg); PaintRect(&sAbsolutePositionRect);
         RGBColor bd  = {0x7777,0x7777,0x7777}; RGBForeColor(&bd);  FrameRect(&sAbsolutePositionRect);
@@ -2536,8 +2575,14 @@ void HandleInspectorClick(Point localPt) {
     // Absolute position toggle
     if (PtInRect(localPt, &sAbsolutePositionRect)) {
         PushUndo();
-        if (gSelectedShape)      gSelectedShape->isAbsolutePosition = !gSelectedShape->isAbsolutePosition;
-        else if (gSelectedFrame) gSelectedFrame->isAbsolutePosition = !gSelectedFrame->isAbsolutePosition;
+        if (isMultiFrame) {
+            bool nv = !gSelectedFrame->isAbsolutePosition;
+            for (Frame* f : gSelectedFrames) f->isAbsolutePosition = nv;
+        } else if (isMulti) {
+            bool nv = !gSelectedShapes[0]->isAbsolutePosition;
+            for (Shape* s : gSelectedShapes) s->isAbsolutePosition = nv;
+        } else if (gSelectedShape) gSelectedShape->isAbsolutePosition = !gSelectedShape->isAbsolutePosition;
+        else if (gSelectedFrame)   gSelectedFrame->isAbsolutePosition = !gSelectedFrame->isAbsolutePosition;
         InvalidateInspector();
         if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
         return;
@@ -2582,7 +2627,11 @@ void HandleInspectorClick(Point localPt) {
         if (item > 0) {
             ConstraintMode nv = kConstraintModes[item-1];
             PushUndo();
-            if (isH) {
+            if (isMultiFrame) {
+                for (Frame* f : gSelectedFrames) { if (isH) f->constraintH = nv; else f->constraintV = nv; }
+            } else if (isMulti) {
+                for (Shape* s : gSelectedShapes) { if (isH) s->constraintH = nv; else s->constraintV = nv; }
+            } else if (isH) {
                 if (gSelectedShape)      gSelectedShape->constraintH = nv;
                 else if (gSelectedFrame) gSelectedFrame->constraintH = nv;
             } else {
