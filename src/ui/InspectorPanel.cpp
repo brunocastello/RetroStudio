@@ -191,6 +191,14 @@ static std::string padCompactStr(UInt16 a, UInt16 b) {
     return numStr(static_cast<SInt32>(a)) + ", " + numStr(static_cast<SInt32>(b));
 }
 
+// True when a multi-selection's W or H differs across items — the field should
+// show "Mixed" (Figma's convention) rather than one item's value standing in for
+// all of them, since that reads as "they all match" when they may not.
+static bool MixedW(const std::vector<Frame*>& v) { for (size_t i=1;i<v.size();++i) if (v[i]->bounds.w != v[0]->bounds.w) return true; return false; }
+static bool MixedH(const std::vector<Frame*>& v) { for (size_t i=1;i<v.size();++i) if (v[i]->bounds.h != v[0]->bounds.h) return true; return false; }
+static bool MixedW(const std::vector<Shape*>& v) { for (size_t i=1;i<v.size();++i) if (v[i]->bounds.w != v[0]->bounds.w) return true; return false; }
+static bool MixedH(const std::vector<Shape*>& v) { for (size_t i=1;i<v.size();++i) if (v[i]->bounds.h != v[0]->bounds.h) return true; return false; }
+
 // Like DrawNumField but displays a custom string when not in edit mode
 static short DrawStrField(short x, short y, short boxW, EditField field,
                           const char* display, Rect& outRect) {
@@ -968,16 +976,23 @@ void DrawInspectorPanel() {
             y2 = static_cast<short>(y2 + 22);
         }
 
-        // SIZE — W/H set the same value on all frames
+        // SIZE — shows "Mixed" when selected frames differ; typing a value sets it on all
         y2 = DrawSectionHeader(y2, "SIZE", portRect);
         y2 = static_cast<short>(y2 + 5);
         RGBForeColor(&labelClr2); TextSize(9);
         PStrC("W", ps2); MoveTo(6,  static_cast<short>(y2+12)); DrawString(ps2);
-        DrawNumField(20, static_cast<short>(y2+12), 56, kFieldW,
-                     gSelectedFrame->bounds.w, sFieldWRect);
+        if (MixedW(gSelectedFrames))
+            DrawStrField(20, static_cast<short>(y2+12), 56, kFieldW, "Mixed", sFieldWRect);
+        else
+            DrawNumField(20, static_cast<short>(y2+12), 56, kFieldW,
+                         gSelectedFrame->bounds.w, sFieldWRect);
         PStrC("H", ps2); MoveTo(86, static_cast<short>(y2+12)); DrawString(ps2);
-        DrawNumField(100, static_cast<short>(y2+12), static_cast<short>(cRight - 104), kFieldH,
-                     gSelectedFrame->bounds.h, sFieldHRect);
+        if (MixedH(gSelectedFrames))
+            DrawStrField(100, static_cast<short>(y2+12), static_cast<short>(cRight - 104), kFieldH,
+                         "Mixed", sFieldHRect);
+        else
+            DrawNumField(100, static_cast<short>(y2+12), static_cast<short>(cRight - 104), kFieldH,
+                         gSelectedFrame->bounds.h, sFieldHRect);
         y2 = static_cast<short>(y2 + 22);
 
         // LAYOUT — uses gSelectedFrame as reference; edits apply to all selected frames
@@ -1930,8 +1945,13 @@ void DrawInspectorPanel() {
         }
     } else {
         // Shapes: W and H on same row with lock button between them.
+        // Multi-select shows "Mixed" when selected shapes differ (typing a value
+        // sets it on all — see ApplyInspectorEdit's applyMulti branch).
         RGBForeColor(&labelClr); PStrC("W", ps); MoveTo(6, static_cast<short>(y+12)); DrawString(ps);
-        DrawNumField(20, static_cast<short>(y+12), 56, kFieldW, bounds.w, sFieldWRect);
+        if (isMulti && MixedW(gSelectedShapes))
+            DrawStrField(20, static_cast<short>(y+12), 56, kFieldW, "Mixed", sFieldWRect);
+        else
+            DrawNumField(20, static_cast<short>(y+12), 56, kFieldW, bounds.w, sFieldWRect);
         // Lock button
         sAspectLockRect = { static_cast<short>(y+1), 80, static_cast<short>(y+15), 94 };
         if (sAspectLocked) { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); PaintRect(&sAspectLockRect); }
@@ -1939,7 +1959,10 @@ void DrawInspectorPanel() {
         RGBColor bd2={0x7777,0x7777,0x7777}; RGBForeColor(&bd2); FrameRect(&sAspectLockRect);
         DrawLockIcon(81, static_cast<short>(y+2), sAspectLocked);
         RGBForeColor(&labelClr); PStrC("H", ps); MoveTo(98, static_cast<short>(y+12)); DrawString(ps);
-        DrawNumField(112, static_cast<short>(y+12), static_cast<short>(cRight-116), kFieldH, bounds.h, sFieldHRect);
+        if (isMulti && MixedH(gSelectedShapes))
+            DrawStrField(112, static_cast<short>(y+12), static_cast<short>(cRight-116), kFieldH, "Mixed", sFieldHRect);
+        else
+            DrawNumField(112, static_cast<short>(y+12), static_cast<short>(cRight-116), kFieldH, bounds.h, sFieldHRect);
         y = static_cast<short>(y + 22);
 
         // Fill sizing buttons — only shown when shape lives inside an active layout frame
@@ -2227,6 +2250,11 @@ bool InspectorInEditMode() { return sActiveField != kNoField; }
 
 void ApplyInspectorEdit() {
     if (sActiveField == kNoField) return;
+    // An empty buffer (e.g. clicking into a "Mixed" field, which starts blank, and
+    // clicking away without typing) must cancel rather than commit — otherwise it
+    // parses as 0, and every numeric field's clamp floor would silently apply that
+    // as 1 to every selected item instead of leaving them alone.
+    if (sEditLen == 0) { CancelInspectorEdit(); return; }
     sEditBuf[sEditLen] = '\0';
 
     SInt32 val = 0; int i = 0; bool neg = false;
@@ -2261,14 +2289,21 @@ void ApplyInspectorEdit() {
                 SInt32 dy = val - b->y;
                 if (dy != 0) { PushUndo(); for (Frame* f : gSelectedFrames) f->bounds.y += dy; changed = true; }
             } break;
-            case kFieldW:
+            case kFieldW: {
                 if (val < 1) val = 1;
-                if (val != b->w) { PushUndo(); for (Frame* f : gSelectedFrames) f->bounds.w = val; changed = true; }
-                break;
-            case kFieldH:
+                // Compare against every selected frame, not just b (the last-selected
+                // representative) — a mixed selection can coincidentally match b's
+                // current value while still needing to change on the others.
+                bool any = false;
+                for (Frame* f : gSelectedFrames) if (f->bounds.w != val) { any = true; break; }
+                if (any) { PushUndo(); for (Frame* f : gSelectedFrames) f->bounds.w = val; changed = true; }
+            } break;
+            case kFieldH: {
                 if (val < 1) val = 1;
-                if (val != b->h) { PushUndo(); for (Frame* f : gSelectedFrames) f->bounds.h = val; changed = true; }
-                break;
+                bool any = false;
+                for (Frame* f : gSelectedFrames) if (f->bounds.h != val) { any = true; break; }
+                if (any) { PushUndo(); for (Frame* f : gSelectedFrames) f->bounds.h = val; changed = true; }
+            } break;
             default: break;
         }
         if (sActiveField == kFieldStrokeWidth) {
@@ -2309,10 +2344,16 @@ void ApplyInspectorEdit() {
                     gSelectedShape->wSizing = 0;
                     b->w = val;
                     changed = true;
+                } else if (applyMulti) {
+                    // Compare against every selected shape, not just b — a mixed
+                    // selection can coincidentally match b's current value while
+                    // still needing to change on the others.
+                    bool any = false;
+                    for (Shape* s : gSelectedShapes) if (s->bounds.w != val) { any = true; break; }
+                    if (any) { PushUndo(); for (Shape* s : gSelectedShapes) s->bounds.w = val; changed = true; }
                 } else if (val != b->w) {
                     PushUndo();
-                    if (applyMulti) { for (Shape* s : gSelectedShapes) s->bounds.w = val; }
-                    else { b->w = val; }
+                    b->w = val;
                     changed = true;
                 } break;
             case kFieldH:
@@ -2328,10 +2369,13 @@ void ApplyInspectorEdit() {
                     gSelectedShape->hSizing = 0;
                     b->h = val;
                     changed = true;
+                } else if (applyMulti) {
+                    bool any = false;
+                    for (Shape* s : gSelectedShapes) if (s->bounds.h != val) { any = true; break; }
+                    if (any) { PushUndo(); for (Shape* s : gSelectedShapes) s->bounds.h = val; changed = true; }
                 } else if (val != b->h) {
                     PushUndo();
-                    if (applyMulti) { for (Shape* s : gSelectedShapes) s->bounds.h = val; }
-                    else { b->h = val; }
+                    b->h = val;
                     changed = true;
                 } break;
             default: break;
@@ -3025,10 +3069,12 @@ void HandleInspectorClick(Point localPt) {
 
     // Editable numeric fields
     Bounds2 bounds = gSelectedShape ? gSelectedShape->bounds : gSelectedFrame->bounds;
+    bool wMixed = isMultiFrame ? MixedW(gSelectedFrames) : (isMulti ? MixedW(gSelectedShapes) : false);
+    bool hMixed = isMultiFrame ? MixedH(gSelectedFrames) : (isMulti ? MixedH(gSelectedShapes) : false);
     if (PtInRect(localPt, &sFieldXRect))  { StartEdit(kFieldX, bounds.x);  return; }
     if (PtInRect(localPt, &sFieldYRect))  { StartEdit(kFieldY, bounds.y);  return; }
-    if (PtInRect(localPt, &sFieldWRect))  { StartEdit(kFieldW, bounds.w);  return; }
-    if (PtInRect(localPt, &sFieldHRect))  { StartEdit(kFieldH, bounds.h);  return; }
+    if (PtInRect(localPt, &sFieldWRect))  { if (wMixed) StartEditStr(kFieldW, ""); else StartEdit(kFieldW, bounds.w); return; }
+    if (PtInRect(localPt, &sFieldHRect))  { if (hMixed) StartEditStr(kFieldH, ""); else StartEdit(kFieldH, bounds.h); return; }
     if (PtInRect(localPt, &sFieldSwRect)) {
         UInt16 sw = gSelectedShape ? gSelectedShape->strokeWidth : gSelectedFrame->strokeWidth;
         StartEdit(kFieldStrokeWidth, static_cast<SInt32>(sw));
