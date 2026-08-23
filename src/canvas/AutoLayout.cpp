@@ -52,7 +52,15 @@ static void ApplyConstraints(Frame* f) {
             case ConstraintMode::StartEnd: { SInt32 nw = b.w + dW; b.w = (nw < 1) ? 1 : nw; } break;
             case ConstraintMode::Center:   b.x += dW / 2; break;
             case ConstraintMode::Scale:
-                if (oldW > 0) { b.x = b.x * newW / oldW; SInt32 nw = b.w * newW / oldW; b.w = (nw < 1) ? 1 : nw; }
+                // b.x is an ABSOLUTE canvas coordinate, not relative to the parent frame —
+                // scale the offset from the frame's own left edge, not the raw absolute x,
+                // or the item drifts by the frame's own canvas position on every resize.
+                if (oldW > 0) {
+                    SInt32 relX = b.x - f->bounds.x;
+                    b.x = f->bounds.x + relX * newW / oldW;
+                    SInt32 nw = b.w * newW / oldW;
+                    b.w = (nw < 1) ? 1 : nw;
+                }
                 break;
             default: break;  // Start: fixed distance from the left/top edge, nothing to do
         }
@@ -61,7 +69,12 @@ static void ApplyConstraints(Frame* f) {
             case ConstraintMode::StartEnd: { SInt32 nh = b.h + dH; b.h = (nh < 1) ? 1 : nh; } break;
             case ConstraintMode::Center:   b.y += dH / 2; break;
             case ConstraintMode::Scale:
-                if (oldH > 0) { b.y = b.y * newH / oldH; SInt32 nh = b.h * newH / oldH; b.h = (nh < 1) ? 1 : nh; }
+                if (oldH > 0) {
+                    SInt32 relY = b.y - f->bounds.y;
+                    b.y = f->bounds.y + relY * newH / oldH;
+                    SInt32 nh = b.h * newH / oldH;
+                    b.h = (nh < 1) ? 1 : nh;
+                }
                 break;
             default: break;
         }
