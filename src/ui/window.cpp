@@ -27,6 +27,15 @@ bool                gIsLayoutMultiDrag = false;
 // true instead of re-basing on every mouse-move tick — see AutoLayout.cpp for why
 // re-basing every tick silently destroyed Scale-constrained children's proportions.
 bool                gIsResizeDragging  = false;
+
+// View > Smart Guides toggle (default on, matches Figma).
+bool gSmartGuidesEnabled = true;
+
+// One alignment guide line, in canvas coordinates, active for the current
+// live move-drag frame only — populated by ComputeSmartGuides (in
+// HandleCanvasSelect's move loop) and drawn by DrawWindowContent.
+struct GuideLine { bool vertical; SInt32 pos; SInt32 start, end; };
+static std::vector<GuideLine> gActiveGuides;
 int        gNextFrameNum  = 2;
 bool       gIsDoubleClick = false;
 SInt32     gCanvasOffsetX = 0;
@@ -220,6 +229,8 @@ static const short kViewZoomOut = 2;
 // item 3 = separator
 static const short kViewZoomFit = 4;
 static const short kViewZoom100 = 5;
+// item 6 = separator
+static const short kViewSmartGuides = 7;
 // Edit menu items
 static const short kEditUndo    = 1;
 static const short kEditRedo    = 2;
@@ -823,6 +834,9 @@ void SetupMenus() {
     SetItemCmd(viewMenu, kViewZoomFit, '0');
     AppendMenu(viewMenu, "\pActual Size");
     SetItemCmd(viewMenu, kViewZoom100, '1');
+    AppendMenu(viewMenu, "\p-");
+    AppendMenu(viewMenu, "\pSmart Guides");
+    CheckItem(viewMenu, kViewSmartGuides, gSmartGuidesEnabled);
     InsertMenu(viewMenu, 0);
 
     DrawMenuBar();
@@ -2670,6 +2684,31 @@ void DrawWindowContent(WindowRef win, const Rect* clipTo) {
     // here is safe even if a caller further up also does it.
     HideCursor();
     DrawCanvasInto(portRect);
+    // Smart guide lines (live move-drag only, see HandleCanvasSelect) — drawn
+    // here, still inside whatever clip was set above, so they participate in
+    // the same erase/redraw pass as the rest of the canvas instead of being a
+    // separate overlay that could go stale against this project's documented
+    // CopyBits/redraw fragility (see the comment at the top of this function).
+    if (!gActiveGuides.empty()) {
+        RGBColor red = {0xFFFF, 0, 0};
+        RGBForeColor(&red);
+        PenSize(1, 1);
+        for (const GuideLine& g : gActiveGuides) {
+            if (g.vertical) {
+                short x  = static_cast<short>(SInt32(g.pos)   * gCanvasZoom / 100 + gCanvasOffsetX);
+                short y1 = static_cast<short>(SInt32(g.start) * gCanvasZoom / 100 + gCanvasOffsetY);
+                short y2 = static_cast<short>(SInt32(g.end)   * gCanvasZoom / 100 + gCanvasOffsetY);
+                MoveTo(x, y1); LineTo(x, y2);
+            } else {
+                short y  = static_cast<short>(SInt32(g.pos)   * gCanvasZoom / 100 + gCanvasOffsetY);
+                short x1 = static_cast<short>(SInt32(g.start) * gCanvasZoom / 100 + gCanvasOffsetX);
+                short x2 = static_cast<short>(SInt32(g.end)   * gCanvasZoom / 100 + gCanvasOffsetX);
+                MoveTo(x1, y); LineTo(x2, y);
+            }
+        }
+        RGBColor black = {0, 0, 0};
+        RGBForeColor(&black);
+    }
     ShowCursor();
     if (clipTo) ClipRect(&portRect);
 }
@@ -3457,6 +3496,110 @@ static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
 static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit = true);
 
 // --------------------------------------------------------------------------
+// Smart alignment guides (Figma-style) — single-item move-drag only
+// --------------------------------------------------------------------------
+
+// Snaps b into alignment with its parent's center or a sibling's edges/center
+// when within a few screen pixels, and populates gActiveGuides with every
+// guide line to draw at the final (possibly snapped) position — not just the
+// one that triggered the snap, so several siblings sharing the same aligned
+// edge all light up at once, same as Figma.
+//
+// Scope: only when both the dragged item and its parent are unrotated (rotated
+// alignment needs the same rotation-chain math HandleResizeDrag/HandleRotateDrag
+// use elsewhere in this file — not attempted here) and only when there's an
+// actual parent frame to align within (no canvas-viewport-relative guides for
+// root-level items). excludeShape/excludeFrame is whichever of the two the
+// dragged item itself is, so it doesn't trivially "align" with itself.
+static void ComputeSmartGuides(Bounds2& b, SInt16 selfRotation, Frame* parent,
+                                Shape* excludeShape, Frame* excludeFrame) {
+    gActiveGuides.clear();
+    if (!gSmartGuidesEnabled) return;
+    if (selfRotation != 0 || !parent) return;
+    double ambientRotDeg = 0.0;
+    for (const auto& step : AncestorChainFor(parent)) ambientRotDeg += step.angleDeg;
+    if (ambientRotDeg != 0.0) return;
+
+    const SInt32 tolerance = std::max<SInt32>(1, SInt32(4) * 100 / gCanvasZoom);
+
+    SInt32 left = b.x, right = b.x + b.w, centerX = b.x + b.w / 2;
+    SInt32 top  = b.y, bottom = b.y + b.h, centerY = b.y + b.h / 2;
+
+    // ---- pass 1: find the single best X and Y snap ----
+    SInt32 bestDX = 0, bestDY = 0;
+    bool haveDX = false, haveDY = false;
+    auto absOf = [](SInt32 v) { return v < 0 ? -v : v; };
+    auto considerX = [&](SInt32 target, SInt32 from) {
+        SInt32 d = target - from;
+        if (absOf(d) <= tolerance && (!haveDX || absOf(d) < absOf(bestDX))) { bestDX = d; haveDX = true; }
+    };
+    auto considerY = [&](SInt32 target, SInt32 from) {
+        SInt32 d = target - from;
+        if (absOf(d) <= tolerance && (!haveDY || absOf(d) < absOf(bestDY))) { bestDY = d; haveDY = true; }
+    };
+
+    SInt32 pCenterX = parent->bounds.x + parent->bounds.w / 2;
+    SInt32 pCenterY = parent->bounds.y + parent->bounds.h / 2;
+    considerX(pCenterX, centerX);
+    considerY(pCenterY, centerY);
+
+    auto scanSibling = [&](const Bounds2& sb) {
+        SInt32 sL = sb.x, sR = sb.x + sb.w, sCX = sb.x + sb.w / 2;
+        SInt32 sT = sb.y, sB = sb.y + sb.h, sCY = sb.y + sb.h / 2;
+        considerX(sL, left);  considerX(sL, right);  considerX(sL, centerX);
+        considerX(sR, left);  considerX(sR, right);  considerX(sR, centerX);
+        considerX(sCX, centerX);
+        considerY(sT, top);   considerY(sT, bottom); considerY(sT, centerY);
+        considerY(sB, top);   considerY(sB, bottom); considerY(sB, centerY);
+        considerY(sCY, centerY);
+    };
+    for (auto& s : parent->children)    if (s.get()  != excludeShape) scanSibling(s->bounds);
+    for (auto& cf : parent->childFrames) if (cf.get() != excludeFrame) scanSibling(cf->bounds);
+
+    if (haveDX) b.x += bestDX;
+    if (haveDY) b.y += bestDY;
+
+    // ---- pass 2: at the final position, collect EVERY exact match to draw ----
+    left = b.x; right = b.x + b.w; centerX = b.x + b.w / 2;
+    top  = b.y; bottom = b.y + b.h; centerY = b.y + b.h / 2;
+
+    bool centerXGuide = (centerX == pCenterX);
+    bool centerYGuide = (centerY == pCenterY);
+    if (centerXGuide) gActiveGuides.push_back({ true,  centerX, parent->bounds.y, parent->bounds.y + parent->bounds.h });
+    if (centerYGuide) gActiveGuides.push_back({ false, centerY, parent->bounds.x, parent->bounds.x + parent->bounds.w });
+
+    auto matchSibling = [&](const Bounds2& sb) {
+        SInt32 sL = sb.x, sR = sb.x + sb.w, sCX = sb.x + sb.w / 2;
+        SInt32 sT = sb.y, sB = sb.y + sb.h, sCY = sb.y + sb.h / 2;
+        if (left == sL || left == sR || left == sCX)
+            gActiveGuides.push_back({ true, left, std::min(top, sT), std::max(bottom, sB) });
+        if (right == sL || right == sR || right == sCX)
+            gActiveGuides.push_back({ true, right, std::min(top, sT), std::max(bottom, sB) });
+        if (!centerXGuide && centerX == sCX)
+            gActiveGuides.push_back({ true, centerX, std::min(top, sT), std::max(bottom, sB) });
+        if (top == sT || top == sB || top == sCY)
+            gActiveGuides.push_back({ false, top, std::min(left, sL), std::max(right, sR) });
+        if (bottom == sT || bottom == sB || bottom == sCY)
+            gActiveGuides.push_back({ false, bottom, std::min(left, sL), std::max(right, sR) });
+        if (!centerYGuide && centerY == sCY)
+            gActiveGuides.push_back({ false, centerY, std::min(left, sL), std::max(right, sR) });
+    };
+    for (auto& s : parent->children)     if (s.get()  != excludeShape) matchSibling(s->bounds);
+    for (auto& cf : parent->childFrames) if (cf.get() != excludeFrame) matchSibling(cf->bounds);
+}
+
+// A guide line's own footprint converted to a SCREEN rect (same zoom/offset
+// transform CanvasRect uses), padded 1px either side of its axis, so widening
+// a live-drag dirty rect with this reliably covers the drawn line.
+static Rect GuideLineScreenRect(const GuideLine& g) {
+    short pos = static_cast<short>(SInt32(g.pos)   * gCanvasZoom / 100 + (g.vertical ? gCanvasOffsetX : gCanvasOffsetY));
+    short lo  = static_cast<short>(SInt32(g.start) * gCanvasZoom / 100 + (g.vertical ? gCanvasOffsetY : gCanvasOffsetX));
+    short hi  = static_cast<short>(SInt32(g.end)   * gCanvasZoom / 100 + (g.vertical ? gCanvasOffsetY : gCanvasOffsetX));
+    if (g.vertical) return Rect{ lo, static_cast<short>(pos-1), hi, static_cast<short>(pos+1) };
+    return Rect{ static_cast<short>(pos-1), lo, static_cast<short>(pos+1), hi };
+}
+
+// --------------------------------------------------------------------------
 // Select tool: resize handles → name labels → body hit-test → move + reparent
 // --------------------------------------------------------------------------
 
@@ -3869,6 +4012,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                          static_cast<short>(maxY+pad), static_cast<short>(maxX+pad) };
         };
         Rect prevReach = singleShapeMove ? reachFor(hitShape) : Rect{0,0,0,0};
+        std::vector<GuideLine> prevGuides;  // last tick's guides, so a line that moves or disappears this tick still gets erased
 
         while (Button()) {
             GetMouse(&currPt);
@@ -3911,8 +4055,18 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                 } else if (hitShape) {
                     hitShape->bounds.x += dx;
                     hitShape->bounds.y += dy;
+                    if (singleShapeMove)
+                        ComputeSmartGuides(hitShape->bounds, hitShape->rotation,
+                                           LocateShapeParent(hitShape), hitShape, nullptr);
+                    else
+                        gActiveGuides.clear();
                 } else {
                     MoveFrameTree(hitFrame, dx, dy);
+                    if (!isMultiDrag && !isLayoutFrameDrag)
+                        ComputeSmartGuides(hitFrame->bounds, hitFrame->rotation,
+                                           hitFrame->parent, nullptr, hitFrame);
+                    else
+                        gActiveGuides.clear();
                 }
 
                 if (singleShapeMove) {
@@ -3921,14 +4075,32 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                                     std::min(prevReach.left, currReach.left),
                                     std::max(prevReach.bottom, currReach.bottom),
                                     std::max(prevReach.right, currReach.right) };
+                    // Widen for both this tick's guides (about to be drawn) and last
+                    // tick's (may have moved or vanished — still need erasing).
+                    for (const GuideLine& g : gActiveGuides) {
+                        Rect gr = GuideLineScreenRect(g);
+                        dirty.top = std::min(dirty.top, gr.top); dirty.left = std::min(dirty.left, gr.left);
+                        dirty.bottom = std::max(dirty.bottom, gr.bottom); dirty.right = std::max(dirty.right, gr.right);
+                    }
+                    for (const GuideLine& g : prevGuides) {
+                        Rect gr = GuideLineScreenRect(g);
+                        dirty.top = std::min(dirty.top, gr.top); dirty.left = std::min(dirty.left, gr.left);
+                        dirty.bottom = std::max(dirty.bottom, gr.bottom); dirty.right = std::max(dirty.right, gr.right);
+                    }
                     DrawWindowContent(win, &dirty);
                     prevReach = currReach;
+                    prevGuides = gActiveGuides;
                 } else {
                     DrawWindowContent(win);
                 }
                 prevPt = currPt;
             }
         }
+        // Clear so a stray earlier guide never lingers into a later, unrelated
+        // redraw — the unconditional full-portRect InvalWindowRect further down
+        // this function repaints the whole window at least once more anyway,
+        // which is what actually erases any guide pixels still on screen.
+        gActiveGuides.clear();
 
         gLayoutDragShape   = nullptr;
         gLayoutDragFrame   = nullptr;
@@ -5598,6 +5770,10 @@ void HandleMenuCommand(long menuResult) {
             case kViewZoomOut: StepZoom(-1); break;
             case kViewZoomFit: ZoomToFit();  break;
             case kViewZoom100: ZoomTo(100);  break;
+            case kViewSmartGuides:
+                gSmartGuidesEnabled = !gSmartGuidesEnabled;
+                CheckItem(GetMenuHandle(kViewMenuID), kViewSmartGuides, gSmartGuidesEnabled);
+                break;
         }
     }
     UpdateMenuState();
