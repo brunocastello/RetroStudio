@@ -22,6 +22,11 @@ std::vector<Frame*> gSelectedFrames;
 Shape*              gLayoutDragShape   = nullptr;
 Frame*              gLayoutDragFrame   = nullptr;
 bool                gIsLayoutMultiDrag = false;
+// True for the whole duration of a live resize-handle drag (HandleResizeDrag).
+// AutoLayout.cpp's ApplyConstraints freezes its reference baseline while this is
+// true instead of re-basing on every mouse-move tick — see AutoLayout.cpp for why
+// re-basing every tick silently destroyed Scale-constrained children's proportions.
+bool                gIsResizeDragging  = false;
 int        gNextFrameNum  = 2;
 bool       gIsDoubleClick = false;
 SInt32     gCanvasOffsetX = 0;
@@ -3140,6 +3145,7 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     };
     Rect prevReach = ComputeReachRect(*b);
 
+    gIsResizeDragging = true;
     while (Button()) {
         GetMouse(&curr);
         if (curr.h != prev.h || curr.v != prev.v) {
@@ -3250,6 +3256,7 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
             prev = curr;
         }
     }
+    gIsResizeDragging = false;
 
     Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
 }

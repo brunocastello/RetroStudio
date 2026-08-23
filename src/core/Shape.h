@@ -52,6 +52,12 @@ public:
     bool           isAbsolutePosition = false;  // true = opt out of the parent's Auto Layout flow, position freely (parent must have layoutMode != None)
     ConstraintMode constraintH        = ConstraintMode::Start;
     ConstraintMode constraintV        = ConstraintMode::Start;
+    // Runtime-only: this shape's own bounds as of the last settled (non-live-drag)
+    // constraint pass — see AutoLayout.cpp's ApplyConstraints. Not serialized; a
+    // stale/default value here self-heals within one redraw (any pass where the
+    // parent hasn't moved refreshes it), so no special handling is needed on
+    // Clone(), load, or undo.
+    Bounds2 constraintBaseline;
 };
 
 class RectShape : public Shape {

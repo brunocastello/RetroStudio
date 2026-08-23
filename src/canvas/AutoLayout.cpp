@@ -42,83 +42,117 @@ static SInt32 ScaleRounded(SInt32 value, SInt32 num, SInt32 den) {
     return static_cast<SInt32>(prod >= 0 ? (prod + half) / den : (prod - half) / den);
 }
 
-// Repositions/resizes f's direct children per their constraintH/constraintV when f's
-// own bounds.w/h have changed since the last layout pass (delta applied once, then
-// f->lastLayoutW/H are updated to consume it — see Frame.h for why this is safe
-// across undo/redo and document loads).
+// Live resize-handle drag in progress — see window.cpp. ApplyConstraints freezes
+// its reference baseline for the whole drag while this is true, instead of
+// re-basing on every mouse-move tick.
+extern bool gIsResizeDragging;
+
+// Repositions/resizes f's direct children per their constraintH/constraintV when
+// f's own bounds have changed since the last SETTLED layout pass.
+//
+// Every child's position/size is recomputed from scratch each pass as a function
+// of (a) the child's own constraintBaseline — its bounds as of the last settled
+// pass — and (b) f's delta since that same settled pass (f->lastLayoutX/Y/W/H).
+// This is deliberately NOT "add today's tiny delta to whatever the child's bounds
+// already are": while gIsResizeDragging is true, neither f's baseline nor any
+// child's baseline advances, so every tick of a live drag recomputes against the
+// SAME fixed reference — mathematically identical to applying one single big
+// resize, however many intermediate ticks the drag actually produces. Advancing
+// the baseline every tick (the previous approach) fed each tick's already-rounded
+// result back in as the next tick's input: for the additive modes that's exact
+// (integer addition doesn't lose precision), but Scale's rounding is *not*
+// reversible step-by-step, and a real per-pixel drag is hundreds of tiny steps —
+// per-tick fractional growth routinely rounds away to nothing every single tick
+// (frozen child), or different children/axes cross their own rounding threshold
+// at different ticks (children drifting out of sync with each other and with
+// their own aspect ratio). Freezing the baseline for the whole gesture removes
+// the compounding entirely.
+//
+// The baseline update itself doubles as self-healing: any pass where nothing is
+// actively dragging refreshes every child's baseline to its current bounds, so a
+// stale baseline (fresh shape, cloned shape, post-undo state — none of these
+// fields are serialized or explicitly copied) corrects itself within one redraw
+// with no special-case handling needed at those call sites.
 //
 // Runs for every frame, not just non-layout ones: a plain frame (layoutMode==None)
-// applies constraints to ALL of its children, while an Auto Layout frame applies them
-// only to children flagged isAbsolutePosition (flow-managed children are repositioned
-// by RunFrameLayout itself below and are skipped here to avoid wasted/contradictory work).
+// applies constraints to ALL of its children, while an Auto Layout frame applies
+// them only to children flagged isAbsolutePosition (flow-managed children are
+// repositioned by RunFrameLayout itself below and are skipped here).
 static void ApplyConstraints(Frame* f) {
-    bool   primed = (f->lastLayoutW >= 0);
-    SInt32 oldX = f->lastLayoutX, oldY = f->lastLayoutY;
-    SInt32 oldW = f->lastLayoutW, oldH = f->lastLayoutH;
-    SInt32 newX = f->bounds.x,    newY = f->bounds.y;
-    SInt32 newW = f->bounds.w,    newH = f->bounds.h;
-    f->lastLayoutX = newX; f->lastLayoutY = newY;
-    f->lastLayoutW = newW; f->lastLayoutH = newH;
-    if (!primed) return;
+    bool primed = (f->lastLayoutW >= 0);
+    SInt32 baseX = f->lastLayoutX, baseY = f->lastLayoutY;
+    SInt32 baseW = f->lastLayoutW, baseH = f->lastLayoutH;
+    SInt32 curX  = f->bounds.x,    curY  = f->bounds.y;
+    SInt32 curW  = f->bounds.w,    curH  = f->bounds.h;
 
-    // A resize handle other than bottom-right moves the frame's own x/y in the
-    // same step as w/h (e.g. dragging the left edge shrinks w AND increases x
-    // to keep the right edge fixed) — every mode below has to account for BOTH,
-    // not just the size change, or a child drifts any time a resize also moves
-    // the frame's origin.
-    SInt32 dX = newX - oldX, dY = newY - oldY;
-    SInt32 dW = newW - oldW, dH = newH - oldH;
-    if (dX == 0 && dY == 0 && dW == 0 && dH == 0) return;
+    bool freshBaseline = !primed;               // first pass ever for this frame
+    bool captureNow     = freshBaseline || !gIsResizeDragging;
+    if (captureNow) {
+        f->lastLayoutX = curX; f->lastLayoutY = curY;
+        f->lastLayoutW = curW; f->lastLayoutH = curH;
+    }
 
-    auto applyOne = [&](Bounds2& b, ConstraintMode ch, ConstraintMode cv) {
+    auto applyOne = [&](Bounds2& b, Bounds2& base, ConstraintMode ch, ConstraintMode cv) {
+        if (freshBaseline) { base = b; return; }  // nothing to move yet — just establish the reference
+
+        SInt32 dX = curX - baseX, dY = curY - baseY;
+        SInt32 dW = curW - baseW, dH = curH - baseH;
+        if (dX == 0 && dY == 0 && dW == 0 && dH == 0) {
+            if (captureNow) base = b;
+            return;
+        }
+
+        Bounds2 nb = base;
         switch (ch) {
-            case ConstraintMode::Start:    b.x += dX; break;                  // left edge offset fixed
-            case ConstraintMode::End:      b.x += dX + dW; break;             // right edge offset fixed
-            case ConstraintMode::Center:   b.x += dX + dW / 2; break;         // center offset fixed
-            case ConstraintMode::StartEnd: {                                  // both edge offsets fixed (stretch)
-                b.x += dX;
-                SInt32 nw = b.w + dW; b.w = (nw < 1) ? 1 : nw;
+            case ConstraintMode::Start:    nb.x = base.x + dX; break;                  // left edge offset fixed
+            case ConstraintMode::End:      nb.x = base.x + dX + dW; break;             // right edge offset fixed
+            case ConstraintMode::Center:   nb.x = base.x + dX + dW / 2; break;         // center offset fixed
+            case ConstraintMode::StartEnd: {                                          // both edge offsets fixed (stretch)
+                nb.x = base.x + dX;
+                SInt32 w2 = base.w + dW; nb.w = (w2 < 1) ? 1 : w2;
             } break;
             case ConstraintMode::Scale:
-                // b.x is an ABSOLUTE canvas coordinate, not relative to the parent frame —
-                // scale the offset from the frame's OLD left edge (before this step moved
-                // it), then re-anchor to the new one, or the item drifts by however much
-                // the frame itself moved on top of the actual scale.
-                if (oldW > 0) {
-                    SInt32 relX = b.x - oldX;
-                    b.x = newX + ScaleRounded(relX, newW, oldW);
-                    SInt32 nw = ScaleRounded(b.w, newW, oldW);
-                    b.w = (nw < 1) ? 1 : nw;
+                // base.x is an ABSOLUTE canvas coordinate, not relative to the parent
+                // frame — scale the offset from the frame's baseline left edge, then
+                // re-anchor to the frame's CURRENT left edge.
+                if (baseW > 0) {
+                    SInt32 relX = base.x - baseX;
+                    nb.x = curX + ScaleRounded(relX, curW, baseW);
+                    SInt32 w2 = ScaleRounded(base.w, curW, baseW);
+                    nb.w = (w2 < 1) ? 1 : w2;
                 }
                 break;
         }
         switch (cv) {
-            case ConstraintMode::Start:    b.y += dY; break;
-            case ConstraintMode::End:      b.y += dY + dH; break;
-            case ConstraintMode::Center:   b.y += dY + dH / 2; break;
+            case ConstraintMode::Start:    nb.y = base.y + dY; break;
+            case ConstraintMode::End:      nb.y = base.y + dY + dH; break;
+            case ConstraintMode::Center:   nb.y = base.y + dY + dH / 2; break;
             case ConstraintMode::StartEnd: {
-                b.y += dY;
-                SInt32 nh = b.h + dH; b.h = (nh < 1) ? 1 : nh;
+                nb.y = base.y + dY;
+                SInt32 h2 = base.h + dH; nb.h = (h2 < 1) ? 1 : h2;
             } break;
             case ConstraintMode::Scale:
-                if (oldH > 0) {
-                    SInt32 relY = b.y - oldY;
-                    b.y = newY + ScaleRounded(relY, newH, oldH);
-                    SInt32 nh = ScaleRounded(b.h, newH, oldH);
-                    b.h = (nh < 1) ? 1 : nh;
+                if (baseH > 0) {
+                    SInt32 relY = base.y - baseY;
+                    nb.y = curY + ScaleRounded(relY, curH, baseH);
+                    SInt32 h2 = ScaleRounded(base.h, curH, baseH);
+                    nb.h = (h2 < 1) ? 1 : h2;
                 }
                 break;
         }
+
+        b = nb;
+        if (captureNow) base = nb;
     };
 
     bool freeForm = (f->layoutMode == LayoutMode::None);
     for (auto& s : f->children) {
         if (!freeForm && !s->isAbsolutePosition) continue;
-        applyOne(s->bounds, s->constraintH, s->constraintV);
+        applyOne(s->bounds, s->constraintBaseline, s->constraintH, s->constraintV);
     }
     for (auto& cf : f->childFrames) {
         if (!freeForm && !cf->isAbsolutePosition) continue;
-        applyOne(cf->bounds, cf->constraintH, cf->constraintV);
+        applyOne(cf->bounds, cf->constraintBaseline, cf->constraintH, cf->constraintV);
     }
 }
 

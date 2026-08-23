@@ -70,6 +70,11 @@ public:
     SInt32 lastLayoutY = 0;
     SInt32 lastLayoutW = -1;
     SInt32 lastLayoutH = -1;
+    // Runtime-only: this frame's own bounds, as a CHILD of some other frame, as of
+    // the last settled (non-live-drag) constraint pass. Same self-healing property
+    // as Shape's constraintBaseline (see Shape.h) — deliberately excluded from
+    // CloneFrame's copy list, same reasoning as lastLayoutX/Y/W/H above.
+    Bounds2 constraintBaseline;
 
     Frame* parent = nullptr;  // null = owned by Document::frames
 
