@@ -1388,6 +1388,63 @@ static void PaintRotatedPixelBlock(const std::vector<RGBColor>& pixels, const st
     }
 }
 
+// Pixel width of `line` with the port's CURRENT font/size/face already set
+// (callers are responsible for that, same convention the rest of the text
+// code already uses) — the manual per-char sum matches DrawShape's own
+// letter-spacing math exactly so wrap decisions and actual glyph placement
+// never disagree about where a line's edge falls.
+static short MeasureTextLineWidth(const std::string& line, short letterSpacingPx) {
+    Str255 pl; pl[0] = 0;
+    for (size_t ci = 0; ci < line.size() && ci < 255; ++ci) { pl[ci+1] = static_cast<unsigned char>(line[ci]); pl[0]++; }
+    if (letterSpacingPx == 0) return StringWidth(pl);
+    short w = 0;
+    for (int ci = 1; ci <= pl[0]; ++ci) w = static_cast<short>(w + CharWidth(static_cast<char>(pl[ci])) + letterSpacingPx);
+    return w;
+}
+
+// Splits `text` into the actual display lines: explicit '\n' breaks are
+// always preserved as paragraph boundaries, and within each paragraph, when
+// maxWidthPx > 0, greedily word-wraps on space boundaries to fit — a single
+// word wider than maxWidthPx on its own still gets its own line rather than
+// being split mid-word, ordinary word-wrap behavior. maxWidthPx <= 0 means
+// "don't wrap" (AutoWidth: the box grows to fit one line instead).
+//
+// Shared by UpdateTextShapeBounds (to count wrapped lines for AutoHeight's
+// height calc) and DrawShape's drawLines (to actually draw them) so the two
+// can never disagree about where lines break.
+static std::vector<std::string> WrapTextLines(const std::string& text, short maxWidthPx, short letterSpacingPx) {
+    std::vector<std::string> outLines;
+    size_t pos = 0;
+    do {
+        size_t nl  = text.find('\n', pos);
+        size_t end = (nl == std::string::npos) ? text.size() : nl;
+        std::string para = text.substr(pos, end - pos);
+        if (maxWidthPx <= 0 || para.empty()) {
+            outLines.push_back(para);
+        } else {
+            std::string cur;
+            size_t wpos = 0;
+            while (wpos < para.size()) {
+                size_t sp = para.find(' ', wpos);
+                size_t wend = (sp == std::string::npos) ? para.size() : sp;
+                std::string word = para.substr(wpos, wend - wpos);
+                std::string trial = cur.empty() ? word : (cur + " " + word);
+                if (!cur.empty() && MeasureTextLineWidth(trial, letterSpacingPx) > maxWidthPx) {
+                    outLines.push_back(cur);
+                    cur = word;
+                } else {
+                    cur = trial;
+                }
+                wpos = (sp == std::string::npos) ? para.size() : sp + 1;
+            }
+            outLines.push_back(cur);
+        }
+        if (nl == std::string::npos) break;
+        pos = nl + 1;
+    } while (true);
+    return outLines;
+}
+
 static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
     if (!shape.visible) return;
     if (gEditingTextShape && &shape == static_cast<const Shape*>(gEditingTextShape)) return;
@@ -1560,24 +1617,18 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                 short baselineOffset = fi.ascent > 0 ? fi.ascent : scaledSize;
                 short drawY = static_cast<short>(rect.top + baselineOffset);
                 short boxW  = static_cast<short>(rect.right - rect.left);
-                size_t pos = 0;
-                do {
-                    size_t nl  = str.find('\n', pos);
-                    size_t len = (nl == std::string::npos) ? str.size() - pos : nl - pos;
-                    if (len > 0) {
+                // AutoWidth never wraps (the box grows to fit a single line
+                // instead); AutoHeight/Fixed wrap to the box's own width,
+                // matching Figma. WrapTextLines also always preserves
+                // explicit '\n' breaks regardless of wrapW.
+                short wrapW = (t.textSizing == TextSizing::AutoWidth) ? 0 : boxW;
+                for (const std::string& line : WrapTextLines(str, wrapW, lsxPx)) {
+                    if (!line.empty()) {
                         Str255 pline; pline[0] = 0;
-                        for (size_t ci = 0; ci < len && ci < 255; ++ci) {
-                            pline[ci+1] = static_cast<unsigned char>(str[pos+ci]); pline[0]++;
+                        for (size_t ci = 0; ci < line.size() && ci < 255; ++ci) {
+                            pline[ci+1] = static_cast<unsigned char>(line[ci]); pline[0]++;
                         }
-                        // Line width for alignment
-                        short lw;
-                        if (lsxPx == 0) {
-                            lw = StringWidth(pline);
-                        } else {
-                            lw = 0;
-                            for (int ci = 1; ci <= pline[0]; ++ci)
-                                lw = static_cast<short>(lw + CharWidth((char)pline[ci]) + lsxPx);
-                        }
+                        short lw = MeasureTextLineWidth(line, lsxPx);
                         // Alignment → start X
                         short sx;
                         if (t.textAlign == 1)      sx = static_cast<short>(rect.left + (boxW - lw) / 2);
@@ -1595,10 +1646,8 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                             }
                         }
                     }
-                    if (nl == std::string::npos) break;
-                    pos   = nl + 1;
                     drawY = static_cast<short>(drawY + lineH);
-                } while (pos < str.size());
+                }
             };
 
             // True glyph rotation, done entirely on the REAL window port —
@@ -2602,31 +2651,38 @@ static void UpdateTextShapeBounds(TextShape& ts) {
     if (fs > 127) fs = 127;
     TextFont(fontID); TextSize(fs); TextFace(ts.fontFace);
 
-    // Measure each explicit line; count lines
+    // Measure each explicit line; count lines. AutoWidth never wraps (box
+    // grows to fit a single line); AutoHeight/Fixed wrap to the box's own
+    // current width first, via the same WrapTextLines DrawShape's drawLines
+    // uses, so the computed line count always matches what actually renders.
     const std::string& str = ts.text;
     short maxW    = 8;   // minimum 8px
     int   nLines  = 0;
-    size_t pos    = 0;
-    do {
-        size_t nl  = str.find('\n', pos);
-        size_t len = (nl == std::string::npos) ? str.size() - pos : nl - pos;
-        Str255 pl; pl[0] = 0;
-        for (size_t ci = 0; ci < len && ci < 255; ++ci) {
-            pl[ci+1] = static_cast<unsigned char>(str[pos+ci]); pl[0]++;
-        }
-        short lw;
-        if (ts.letterSpacing == 0) {
-            lw = StringWidth(pl);
-        } else {
-            lw = 0;
-            for (int ci = 1; ci <= pl[0]; ++ci)
-                lw = static_cast<short>(lw + CharWidth(static_cast<char>(pl[ci])) + ts.letterSpacing);
-        }
-        if (lw > maxW) maxW = lw;
-        ++nLines;
-        if (nl == std::string::npos) break;
-        pos = nl + 1;
-    } while (pos < str.size());
+    if (ts.textSizing == TextSizing::AutoWidth) {
+        size_t pos = 0;
+        do {
+            size_t nl  = str.find('\n', pos);
+            size_t len = (nl == std::string::npos) ? str.size() - pos : nl - pos;
+            Str255 pl; pl[0] = 0;
+            for (size_t ci = 0; ci < len && ci < 255; ++ci) {
+                pl[ci+1] = static_cast<unsigned char>(str[pos+ci]); pl[0]++;
+            }
+            short lw;
+            if (ts.letterSpacing == 0) {
+                lw = StringWidth(pl);
+            } else {
+                lw = 0;
+                for (int ci = 1; ci <= pl[0]; ++ci)
+                    lw = static_cast<short>(lw + CharWidth(static_cast<char>(pl[ci])) + ts.letterSpacing);
+            }
+            if (lw > maxW) maxW = lw;
+            ++nLines;
+            if (nl == std::string::npos) break;
+            pos = nl + 1;
+        } while (pos < str.size());
+    } else {
+        nLines = static_cast<int>(WrapTextLines(str, static_cast<short>(ts.bounds.w), static_cast<short>(ts.letterSpacing)).size());
+    }
     if (nLines == 0) nLines = 1;
 
     short lineH = static_cast<short>(SInt32(fs) * ts.lineHeight / 100);
