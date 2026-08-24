@@ -2366,9 +2366,9 @@ void UpdateCanvasCursor(Point globalPt) {
         for (const auto& step : SelectedAmbientChain()) shapeRot += step.angleDeg;
     }
 
-    // Corner handles: indices 0,2,4,6 — inner rect = resize, outer ring = rotate
-    // (rotate zone is single-select only — group rotate isn't implemented,
-    // so multi-select corners are resize-only, no outer ring).
+    // Corner handles: indices 0,2,4,6 — inner rect = resize, outer ring = rotate.
+    // Multi-select rotates the whole group around the aggregate's own center
+    // (see HandleMultiRotateDrag), so the rotate zone applies there too.
     static const int kCorner[4] = {0, 2, 4, 6};
     int rotateCorner = -1;
     for (int ci = 0; ci < 4; ++ci) {
@@ -2382,7 +2382,7 @@ void UpdateCanvasCursor(Point globalPt) {
             SetCursor(GetResizeCursor(HandleBucket(i, shapeRot)));
             return;
         }
-        if (!isMultiSel && dist <= kHandleHW + EffectiveRotateZone(hx, hy, i)) rotateCorner = i;
+        if (dist <= kHandleHW + EffectiveRotateZone(hx, hy, i)) rotateCorner = i;
     }
     if (rotateCorner >= 0) {
         SetCursor(GetRotateCursor(HandleBucket(rotateCorner, shapeRot)));
@@ -3967,6 +3967,102 @@ static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
     Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
 }
 
+// Rotate the WHOLE multi-selection as one rigid body around the aggregate
+// bbox's own center: every top-level selected item's own rotation field
+// increments by the same delta AND its center orbits the shared pivot by
+// that same delta — unlike single-item rotate (which spins an object about
+// its own center, so "spin" and "orbit" are the same thing there), a group
+// member that isn't already centered on the pivot needs both to end up in
+// the right place, matching Figma's group-rotate.
+//
+// The pivot/angle measurement happens in SCREEN space (mouse coordinates,
+// same as single-item HandleRotateDrag) but the orbit itself is applied in
+// CANVAS space directly from the frozen origAgg snapshot — valid because
+// zoom is a uniform scale with no shear, so screen-space and canvas-space
+// angles are identical; only magnitudes differ.
+//
+// Nested-selection handling mirrors move/resize: a selected frame that is a
+// descendant of another selected frame is left out of the direct transform
+// and instead follows its ancestor's new rotation/position via the existing
+// ambient rotation chain (AncestorChainFor/ApplyRotChain) the render and
+// hit-test code already walks — rotating the ancestor's own fields is
+// sufficient, no separate cascade needed the way MoveFrameTree needs one for
+// translation.
+static void HandleMultiRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
+    Bounds2 origAgg;
+    if (!ComputeMultiSelectAggregateBounds(origAgg)) return;
+
+    auto hasSelectedAncestor = [&](Frame* f) -> bool {
+        for (Frame* cur = f->parent; cur; cur = cur->parent)
+            if (std::find(gSelectedFrames.begin(), gSelectedFrames.end(), cur) != gSelectedFrames.end())
+                return true;
+        return false;
+    };
+
+    struct GroupItem { Shape* shape; Frame* frame; Bounds2 origBounds; SInt16 origRot; };
+    std::vector<GroupItem> items;
+    for (Shape* s : gSelectedShapes) items.push_back({ s, nullptr, s->bounds, s->rotation });
+    for (Frame* f : gSelectedFrames) if (!hasSelectedAncestor(f)) items.push_back({ nullptr, f, f->bounds, f->rotation });
+    if (items.empty()) return;
+
+    double pivotCanvasX = origAgg.x + origAgg.w * 0.5;
+    double pivotCanvasY = origAgg.y + origAgg.h * 0.5;
+
+    Rect r = CanvasRect(origAgg);
+    double pivotScreenX = (r.left + r.right) * 0.5;
+    double pivotScreenY = (r.top  + r.bottom) * 0.5;
+
+    double startAngle = std::atan2(static_cast<double>(startPt.v) - pivotScreenY,
+                                   static_cast<double>(startPt.h) - pivotScreenX)
+                        * 180.0 / 3.14159265358979323846;
+    bool pushedUndo = false;
+
+    SetCursor(GetRotateCursor(HandleBucket(cornerIdx, 0.0)));
+
+    auto roundSInt32 = [](double v) -> SInt32 {
+        return static_cast<SInt32>(v + (v >= 0 ? 0.5 : -0.5));
+    };
+
+    Point prev = startPt, curr = startPt;
+    while (Button()) {
+        GetMouse(&curr);
+        if (curr.h != prev.h || curr.v != prev.v) {
+            if (!pushedUndo) { PushUndo(); pushedUndo = true; }
+            double curAngle = std::atan2(static_cast<double>(curr.v) - pivotScreenY,
+                                         static_cast<double>(curr.h) - pivotScreenX)
+                              * 180.0 / 3.14159265358979323846;
+            double deltaDeg = curAngle - startAngle;
+            double rad = deltaDeg * 3.14159265358979323846 / 180.0;
+            double cosA = std::cos(rad), sinA = std::sin(rad);
+
+            for (auto& it : items) {
+                double cx = it.origBounds.x + it.origBounds.w * 0.5;
+                double cy = it.origBounds.y + it.origBounds.h * 0.5;
+                double relX = cx - pivotCanvasX, relY = cy - pivotCanvasY;
+                double newCx = pivotCanvasX + relX * cosA - relY * sinA;
+                double newCy = pivotCanvasY + relX * sinA + relY * cosA;
+                SInt32 newX = roundSInt32(newCx - it.origBounds.w * 0.5);
+                SInt32 newY = roundSInt32(newCy - it.origBounds.h * 0.5);
+                int newRotI = static_cast<int>(it.origRot + deltaDeg + 0.5);
+                SInt16 newRot = static_cast<SInt16>(((newRotI % 360) + 360) % 360);
+                if (it.shape) {
+                    it.shape->bounds.x = newX; it.shape->bounds.y = newY;
+                    it.shape->rotation = newRot;
+                } else if (it.frame) {
+                    it.frame->bounds.x = newX; it.frame->bounds.y = newY;
+                    it.frame->rotation = newRot;
+                }
+            }
+
+            SetCursor(GetRotateCursor(HandleBucket(cornerIdx, deltaDeg)));
+            DrawWindowContent(win);
+            prev = curr;
+        }
+    }
+
+    Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
+}
+
 // Forward declaration — full definition lives further down, near HandleTextPlace.
 static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit = true);
 
@@ -3982,15 +4078,23 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
     GlobalToLocal(&pt);
 
     bool isMultiSelForHandles = (gSelectedShapes.size() + gSelectedFrames.size()) > 1;
+    auto anySelectedLocked = [&]() -> bool {
+        return std::any_of(gSelectedShapes.begin(), gSelectedShapes.end(),
+                            [](Shape* s) { return s->locked; })
+            || std::any_of(gSelectedFrames.begin(), gSelectedFrames.end(),
+                            [](Frame* f) { return f->locked; });
+    };
 
     // ---- 1a. Rotate zone (near corner, outside handle — checked before resize) ----
-    // Group rotate isn't implemented — multi-select never enters the rotate
-    // zone (see UpdateCanvasCursor, which matches this restriction).
-    int rotateCorner = isMultiSelForHandles ? -1 : HitTestRotateZone(pt);
+    int rotateCorner = HitTestRotateZone(pt);
     if (rotateCorner >= 0) {
-        bool selLocked = gSelectedShape ? gSelectedShape->locked
-                                        : (gSelectedFrame ? gSelectedFrame->locked : false);
-        if (!selLocked) HandleRotateDrag(win, pt, rotateCorner);
+        if (isMultiSelForHandles) {
+            if (!anySelectedLocked()) HandleMultiRotateDrag(win, pt, rotateCorner);
+        } else {
+            bool selLocked = gSelectedShape ? gSelectedShape->locked
+                                            : (gSelectedFrame ? gSelectedFrame->locked : false);
+            if (!selLocked) HandleRotateDrag(win, pt, rotateCorner);
+        }
         return;
     }
 
@@ -3998,11 +4102,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
     int handleIdx = HitTestHandles(pt);
     if (handleIdx >= 0) {
         if (isMultiSelForHandles) {
-            bool anyLocked = std::any_of(gSelectedShapes.begin(), gSelectedShapes.end(),
-                                          [](Shape* s) { return s->locked; })
-                           || std::any_of(gSelectedFrames.begin(), gSelectedFrames.end(),
-                                          [](Frame* f) { return f->locked; });
-            if (!anyLocked) HandleMultiResizeDrag(win, handleIdx, pt);
+            if (!anySelectedLocked()) HandleMultiResizeDrag(win, handleIdx, pt);
         } else {
             bool selLocked = gSelectedShape ? gSelectedShape->locked
                                             : (gSelectedFrame ? gSelectedFrame->locked : false);
