@@ -1404,10 +1404,12 @@ static short MeasureTextLineWidth(const std::string& line, short letterSpacingPx
 
 // Splits `text` into the actual display lines: explicit '\n' breaks are
 // always preserved as paragraph boundaries, and within each paragraph, when
-// maxWidthPx > 0, greedily word-wraps on space boundaries to fit — a single
-// word wider than maxWidthPx on its own still gets its own line rather than
-// being split mid-word, ordinary word-wrap behavior. maxWidthPx <= 0 means
-// "don't wrap" (AutoWidth: the box grows to fit one line instead).
+// maxWidthPx > 0, greedily word-wraps on space boundaries to fit. A single
+// word that's STILL too wide even alone on its own line gets broken at
+// character boundaries instead of overflowing — matches Figma: shrink a box
+// past its last word and the word itself starts breaking letter by letter,
+// not just wrapping at word boundaries. maxWidthPx <= 0 means "don't wrap"
+// (AutoWidth: the box grows to fit one line instead).
 //
 // Shared by UpdateTextShapeBounds (to count wrapped lines for AutoHeight's
 // height calc) and DrawShape's drawLines (to actually draw them) so the two
@@ -1428,12 +1430,35 @@ static std::vector<std::string> WrapTextLines(const std::string& text, short max
                 size_t sp = para.find(' ', wpos);
                 size_t wend = (sp == std::string::npos) ? para.size() : sp;
                 std::string word = para.substr(wpos, wend - wpos);
-                std::string trial = cur.empty() ? word : (cur + " " + word);
-                if (!cur.empty() && MeasureTextLineWidth(trial, letterSpacingPx) > maxWidthPx) {
-                    outLines.push_back(cur);
-                    cur = word;
+
+                if (!word.empty() && MeasureTextLineWidth(word, letterSpacingPx) > maxWidthPx) {
+                    // Word alone would still overflow — flush whatever's
+                    // pending, then break the word itself char by char,
+                    // packing as many characters per line as fit.
+                    if (!cur.empty()) { outLines.push_back(cur); cur.clear(); }
+                    std::string chunk;
+                    for (char c : word) {
+                        std::string trial = chunk + c;
+                        if (!chunk.empty() && MeasureTextLineWidth(trial, letterSpacingPx) > maxWidthPx) {
+                            outLines.push_back(chunk);
+                            chunk = std::string(1, c);
+                        } else {
+                            chunk = trial;
+                        }
+                    }
+                    // Leftover fragment carries forward as the start of the
+                    // next line, same as any ordinary short word would —
+                    // the space that follows in the source text (if any)
+                    // still joins it to whatever comes next normally.
+                    cur = chunk;
                 } else {
-                    cur = trial;
+                    std::string trial = cur.empty() ? word : (cur + " " + word);
+                    if (!cur.empty() && MeasureTextLineWidth(trial, letterSpacingPx) > maxWidthPx) {
+                        outLines.push_back(cur);
+                        cur = word;
+                    } else {
+                        cur = trial;
+                    }
                 }
                 wpos = (sp == std::string::npos) ? para.size() : sp + 1;
             }
