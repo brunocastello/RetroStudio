@@ -2315,24 +2315,52 @@ static bool ComputeMultiSelectAggregateBounds(Bounds2& out);
 
 // Union bounding box of the WHOLE current multi-selection (shapes ∪ frames),
 // in absolute canvas coordinates. Shared by the aggregate selection outline,
-// the aggregate resize handles, and group-resize drag math — one definition
-// so all three always agree on what "the group" means. Returns false when
-// nothing is selected.
+// the aggregate resize handles, and group-resize/rotate drag math — one
+// definition so all four always agree on what "the group" means. Returns
+// false when nothing is selected.
+//
+// Each item contributes its own ROTATED axis-aligned extent (own rotation
+// only, no ambient parent-chain — consistent with every other multi-select
+// aggregate restriction: no rotated-context support yet), not its raw local
+// box — a 45°-rotated square's true on-screen footprint is wider/taller
+// than its unrotated w/h, and skipping this made the aggregate box (and
+// therefore the resize anchor and rotate pivot derived from it) too small
+// and off-center for any selection containing a rotated member.
 static bool ComputeMultiSelectAggregateBounds(Bounds2& out) {
     bool have = false;
-    SInt32 l = 0, t = 0, r = 0, b = 0;
-    auto uni = [&](const Bounds2& bb) {
-        SInt32 bl = bb.x, bt = bb.y, br = bb.x + bb.w, bb2 = bb.y + bb.h;
+    double l = 0, t = 0, r = 0, b = 0;
+    auto uni = [&](const Bounds2& bb, SInt16 rotationDeg) {
+        double bl, bt, br, bb2;
+        if (rotationDeg == 0) {
+            bl = bb.x; bt = bb.y; br = bb.x + bb.w; bb2 = bb.y + bb.h;
+        } else {
+            double cx = bb.x + bb.w * 0.5, cy = bb.y + bb.h * 0.5;
+            double hw = bb.w * 0.5, hh = bb.h * 0.5;
+            double rad = static_cast<double>(rotationDeg) * 3.14159265358979323846 / 180.0;
+            double cosA = std::cos(rad), sinA = std::sin(rad);
+            double lx[4] = { -hw, hw, hw, -hw }, ly[4] = { -hh, -hh, hh, hh };
+            double minX = 1e18, maxX = -1e18, minY = 1e18, maxY = -1e18;
+            for (int i = 0; i < 4; ++i) {
+                double ox = cx + lx[i]*cosA - ly[i]*sinA;
+                double oy = cy + lx[i]*sinA + ly[i]*cosA;
+                minX = std::min(minX, ox); maxX = std::max(maxX, ox);
+                minY = std::min(minY, oy); maxY = std::max(maxY, oy);
+            }
+            bl = minX; bt = minY; br = maxX; bb2 = maxY;
+        }
         if (!have) { l = bl; t = bt; r = br; b = bb2; have = true; }
         else {
             l = std::min(l, bl); t = std::min(t, bt);
             r = std::max(r, br); b = std::max(b, bb2);
         }
     };
-    for (Shape* s : gSelectedShapes) uni(s->bounds);
-    for (Frame* f : gSelectedFrames) uni(f->bounds);
+    for (Shape* s : gSelectedShapes) uni(s->bounds, s->rotation);
+    for (Frame* f : gSelectedFrames) uni(f->bounds, f->rotation);
     if (!have) return false;
-    out = Bounds2{ l, t, r - l, b - t };
+    auto roundSInt32 = [](double v) -> SInt32 {
+        return static_cast<SInt32>(v + (v >= 0 ? 0.5 : -0.5));
+    };
+    out = Bounds2{ roundSInt32(l), roundSInt32(t), roundSInt32(r - l), roundSInt32(b - t) };
     return true;
 }
 
@@ -3746,6 +3774,15 @@ static void HandleMultiResizeDrag(WindowRef win, int hi, Point startPt) {
                 if (scaleY < minScaleY) scaleY = minScaleY;
             }
 
+            // it.orig.x/y is each item's raw LOCAL box corner (unrotated,
+            // rotation is a separate field applied at render time around the
+            // item's own center) — anchor-scaling that corner directly against
+            // xAnchor/yAnchor (now the rotation-aware aggregate edge) is still
+            // exactly right regardless of the item's own rotation: algebraically
+            // it's identical to scaling the item's center relative to the
+            // anchor and re-deriving the corner from the new center and new
+            // width/height, since rotation never changes where an object's own
+            // center sits.
             auto roundSInt32 = [](double v) -> SInt32 {
                 return static_cast<SInt32>(v + (v >= 0 ? 0.5 : -0.5));
             };
