@@ -3477,6 +3477,10 @@ static Rect GuideLineScreenRect(const GuideLine& g) {
     return Rect{ static_cast<short>(pos-1), lo, static_cast<short>(pos+1), hi };
 }
 
+// Forward declaration — full definition lives further down, near
+// UpdateTextShapeBoundsInFrame.
+static void UpdateTextShapeBounds(TextShape& ts);
+
 // Drag the selected object's bounds by moving only the edge(s) implied by
 // handleIdx, then redraw live.  Minimum dimension: 10px.
 static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startMods = 0) {
@@ -3741,6 +3745,19 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                 }
             } else {
                 gActiveGuides.clear();
+            }
+
+            // AutoHeight text needs its height re-derived from the wrap
+            // state at the NEW b->w right now, before the reach/dirty-rect
+            // below is computed from *b — otherwise the dirty rect is built
+            // from last tick's (shorter) height while the box is actively
+            // growing taller as it wraps into more lines, so each tick's
+            // erase/repaint doesn't reach far enough down and old line
+            // pixels never get cleared out from under the new ones,
+            // showing up as overlapping/garbled text.
+            if (gSelectedShape && gSelectedShape->GetType() == Shape::kText) {
+                TextShape* liveTs = static_cast<TextShape*>(gSelectedShape);
+                if (liveTs->textSizing == TextSizing::AutoHeight) UpdateTextShapeBounds(*liveTs);
             }
 
             Rect newReach = ComputeReachRect(*b);
