@@ -79,6 +79,11 @@ static Rect sCornerBLRect             = {0,0,0,0};
 static Rect sCornerIndividualBtnRect  = {0,0,0,0};
 static Rect sOpacityRect              = {0,0,0,0};
 static Rect sRotationRect             = {0,0,0,0};
+// Min/Max Width & Height clamps (SIZE section)
+static Rect sMinWRect                 = {0,0,0,0};
+static Rect sMaxWRect                 = {0,0,0,0};
+static Rect sMinHRect                 = {0,0,0,0};
+static Rect sMaxHRect                 = {0,0,0,0};
 // Align row: Left, Center-H, Right, Top, Middle-V, Bottom
 static Rect sAlignBtnRect[6]          = {};
 // Absolute position toggle + Constraints dropdowns (H then V)
@@ -121,7 +126,8 @@ enum EditField { kNoField, kFieldX, kFieldY, kFieldW, kFieldH, kFieldStrokeWidth
                  kFieldPadH, kFieldPadV, kFieldPadTop, kFieldPadRight, kFieldPadBottom, kFieldPadLeft,
                  kFieldCounterGap, kFieldCornerRadius,
                  kFieldCornerTL, kFieldCornerTR, kFieldCornerBR, kFieldCornerBL,
-                 kFieldOpacity, kFieldRotation };
+                 kFieldOpacity, kFieldRotation,
+                 kFieldMinW, kFieldMaxW, kFieldMinH, kFieldMaxH };
 static EditField sActiveField = kNoField;
 static char      sEditBuf[12] = {};
 static int       sEditLen     = 0;
@@ -264,6 +270,50 @@ static short DrawNumField(short x, short y, short boxW, EditField field,
         LineTo(outRect.right, outRect.bottom);
     }
     return outRect.right;
+}
+
+// Min/Max Width & Height fields: -1 = unset, shown blank rather than "-1".
+static short DrawMinMaxField(short x, short y, short boxW, EditField field,
+                              SInt32 value, Rect& outRect) {
+    std::string disp = (value < 0) ? "" : numStr(value);
+    return DrawStrField(x, y, boxW, field, disp.c_str(), outRect);
+}
+
+static void StartEditMinMax(EditField field, SInt32 value) {
+    if (value < 0) StartEditStr(field, "");
+    else           StartEdit(field, value);
+}
+
+// Draws the "Min/Max" mini grid used at the bottom of the SIZE section:
+// a W/H header row, then a Min row and a Max row, right-aligned to cRight.
+// Returns y after the block.
+static short DrawMinMaxSizeRows(short y, short cRight, const RGBColor& labelClr,
+                                 SInt32 minW, SInt32 maxW, SInt32 minH, SInt32 maxH) {
+    Str255 ps;
+    short colWX = 30;
+    short colHX = static_cast<short>(cRight - 40);
+    short fldW  = 34;
+
+    RGBForeColor(&labelClr); TextSize(9);
+    PStrC("W", ps); MoveTo(colWX, static_cast<short>(y + 9)); DrawString(ps);
+    PStrC("H", ps); MoveTo(colHX, static_cast<short>(y + 9)); DrawString(ps);
+    y = static_cast<short>(y + 12);
+
+    RGBForeColor(&labelClr); TextSize(9);
+    PStrC("Min", ps); MoveTo(6, static_cast<short>(y + 11)); DrawString(ps);
+    TextSize(11);
+    DrawMinMaxField(colWX, static_cast<short>(y + 11), fldW, kFieldMinW, minW, sMinWRect);
+    DrawMinMaxField(colHX, static_cast<short>(y + 11), fldW, kFieldMinH, minH, sMinHRect);
+    y = static_cast<short>(y + 18);
+
+    RGBForeColor(&labelClr); TextSize(9);
+    PStrC("Max", ps); MoveTo(6, static_cast<short>(y + 11)); DrawString(ps);
+    TextSize(11);
+    DrawMinMaxField(colWX, static_cast<short>(y + 11), fldW, kFieldMaxW, maxW, sMaxWRect);
+    DrawMinMaxField(colHX, static_cast<short>(y + 11), fldW, kFieldMaxH, maxH, sMaxHRect);
+    y = static_cast<short>(y + 18);
+
+    return y;
 }
 
 // --------------------------------------------------------------------------
@@ -814,6 +864,7 @@ void DrawInspectorPanel() {
     sLayoutCounterGapRect = sLayoutCounterGapModeRect = {0,0,0,0};
     sCornerRadiusRect = sCornerTLRect = sCornerTRRect = sCornerBRRect = sCornerBLRect = {0,0,0,0};
     sCornerIndividualBtnRect = sOpacityRect = sRotationRect = {0,0,0,0};
+    sMinWRect = sMaxWRect = sMinHRect = sMaxHRect = {0,0,0,0};
     for (int i=0;i<6;++i) sAlignBtnRect[i]={0,0,0,0};
     sAbsolutePositionRect = {0,0,0,0};
     sConstraintHRect = sConstraintVRect = {0,0,0,0};
@@ -994,6 +1045,10 @@ void DrawInspectorPanel() {
             DrawNumField(100, static_cast<short>(y2+12), static_cast<short>(cRight - 104), kFieldH,
                          gSelectedFrame->bounds.h, sFieldHRect);
         y2 = static_cast<short>(y2 + 22);
+
+        y2 = DrawMinMaxSizeRows(y2, cRight, labelClr2,
+                                 gSelectedFrame->minWidth, gSelectedFrame->maxWidth,
+                                 gSelectedFrame->minHeight, gSelectedFrame->maxHeight);
 
         // LAYOUT — uses gSelectedFrame as reference; edits apply to all selected frames
         {
@@ -2004,6 +2059,14 @@ void DrawInspectorPanel() {
         }
     }
 
+    {
+        SInt32 mnW = gSelectedShape ? gSelectedShape->minWidth  : (gSelectedFrame ? gSelectedFrame->minWidth  : -1);
+        SInt32 mxW = gSelectedShape ? gSelectedShape->maxWidth  : (gSelectedFrame ? gSelectedFrame->maxWidth  : -1);
+        SInt32 mnH = gSelectedShape ? gSelectedShape->minHeight : (gSelectedFrame ? gSelectedFrame->minHeight : -1);
+        SInt32 mxH = gSelectedShape ? gSelectedShape->maxHeight : (gSelectedFrame ? gSelectedFrame->maxHeight : -1);
+        y = DrawMinMaxSizeRows(y, cRight, labelClr, mnW, mxW, mnH, mxH);
+    }
+
     gInspectorTotalH = static_cast<short>(y + 8);  // record content height
 
     // Restore origin before drawing controls
@@ -2104,6 +2167,18 @@ static void StartEditForField(EditField field) {
         case kFieldY: if (b) StartEdit(field, b->y); break;
         case kFieldW: if (b) StartEdit(field, b->w); break;
         case kFieldH: if (b) StartEdit(field, b->h); break;
+        case kFieldMinW:
+            StartEditMinMax(field, gSelectedShape ? gSelectedShape->minWidth  : (gSelectedFrame ? gSelectedFrame->minWidth  : -1));
+            break;
+        case kFieldMaxW:
+            StartEditMinMax(field, gSelectedShape ? gSelectedShape->maxWidth  : (gSelectedFrame ? gSelectedFrame->maxWidth  : -1));
+            break;
+        case kFieldMinH:
+            StartEditMinMax(field, gSelectedShape ? gSelectedShape->minHeight : (gSelectedFrame ? gSelectedFrame->minHeight : -1));
+            break;
+        case kFieldMaxH:
+            StartEditMinMax(field, gSelectedShape ? gSelectedShape->maxHeight : (gSelectedFrame ? gSelectedFrame->maxHeight : -1));
+            break;
         default: break;
     }
 }
@@ -2162,6 +2237,10 @@ static EditField TabToNextField(EditField cur, bool reverse) {
     // Size — always in tab order (typing auto-switches Hug/Fill frames to Fixed)
     order.push_back(kFieldW);
     order.push_back(kFieldH);
+    order.push_back(kFieldMinW);
+    order.push_back(kFieldMaxW);
+    order.push_back(kFieldMinH);
+    order.push_back(kFieldMaxH);
 
     if (order.empty()) return kNoField;
 
@@ -2250,19 +2329,29 @@ bool InspectorInEditMode() { return sActiveField != kNoField; }
 
 void ApplyInspectorEdit() {
     if (sActiveField == kNoField) return;
+    // Min/Max fields are the one exception to "blank cancels": an empty buffer
+    // there means "clear this bound" (-1 = unset), a legitimate value to commit,
+    // not a no-op click-away.
+    bool isMinMaxField = (sActiveField == kFieldMinW || sActiveField == kFieldMaxW ||
+                          sActiveField == kFieldMinH || sActiveField == kFieldMaxH);
     // An empty buffer (e.g. clicking into a "Mixed" field, which starts blank, and
     // clicking away without typing) must cancel rather than commit — otherwise it
     // parses as 0, and every numeric field's clamp floor would silently apply that
     // as 1 to every selected item instead of leaving them alone.
-    if (sEditLen == 0) { CancelInspectorEdit(); return; }
+    if (sEditLen == 0 && !isMinMaxField) { CancelInspectorEdit(); return; }
     sEditBuf[sEditLen] = '\0';
 
     SInt32 val = 0; int i = 0; bool neg = false;
-    if (sEditLen > 0 && sEditBuf[0] == '-') { neg = true; i = 1; }
-    for (; i < sEditLen; ++i)
-        if (sEditBuf[i] >= '0' && sEditBuf[i] <= '9')
-            val = val * 10 + (sEditBuf[i] - '0');
-    if (neg) val = -val;
+    if (sEditLen == 0 && isMinMaxField) {
+        val = -1;
+    } else {
+        if (sEditLen > 0 && sEditBuf[0] == '-') { neg = true; i = 1; }
+        for (; i < sEditLen; ++i)
+            if (sEditBuf[i] >= '0' && sEditBuf[i] <= '9')
+                val = val * 10 + (sEditBuf[i] - '0');
+        if (neg) val = -val;
+        if (isMinMaxField && val < 0) val = 0;  // typed "-5" etc.: floor at 0, not the unset sentinel
+    }
 
     const bool applyMulti      = (gSelectedShapes.size() > 1);
     const bool applyMultiFrame = (gSelectedFrames.size() > 1);
@@ -2389,6 +2478,33 @@ void ApplyInspectorEdit() {
         } else if (appliedField == kFieldH && val > 0) {
             b->w = val * origW / origH;
             if (b->w < 1) b->w = 1;
+        }
+    }
+    // Min/Max Width & Height: val here is either -1 (cleared) or a >=0 bound.
+    // Applies to shapes and frames alike, single or multi-select, same "set
+    // absolute value on every selected item" convention as W/H above.
+    if (isMinMaxField) {
+        auto setOn = [&](SInt32 Shape::* sf, SInt32 Frame::* ff) {
+            if (applyMultiFrame) {
+                bool any = false;
+                for (Frame* f : gSelectedFrames) if (f->*ff != val) { any = true; break; }
+                if (any) { PushUndo(); for (Frame* f : gSelectedFrames) f->*ff = val; changed = true; }
+            } else if (applyMulti) {
+                bool any = false;
+                for (Shape* s : gSelectedShapes) if (s->*sf != val) { any = true; break; }
+                if (any) { PushUndo(); for (Shape* s : gSelectedShapes) s->*sf = val; changed = true; }
+            } else if (gSelectedShape) {
+                if (gSelectedShape->*sf != val) { PushUndo(); gSelectedShape->*sf = val; changed = true; }
+            } else if (gSelectedFrame) {
+                if (gSelectedFrame->*ff != val) { PushUndo(); gSelectedFrame->*ff = val; changed = true; }
+            }
+        };
+        switch (sActiveField) {
+            case kFieldMinW: setOn(&Shape::minWidth,  &Frame::minWidth);  break;
+            case kFieldMaxW: setOn(&Shape::maxWidth,  &Frame::maxWidth);  break;
+            case kFieldMinH: setOn(&Shape::minHeight, &Frame::minHeight); break;
+            case kFieldMaxH: setOn(&Shape::maxHeight, &Frame::maxHeight); break;
+            default: break;
         }
     }
     if (sActiveField == kFieldCornerRadius) {
@@ -3075,6 +3191,22 @@ void HandleInspectorClick(Point localPt) {
     if (PtInRect(localPt, &sFieldYRect))  { StartEdit(kFieldY, bounds.y);  return; }
     if (PtInRect(localPt, &sFieldWRect))  { if (wMixed) StartEditStr(kFieldW, ""); else StartEdit(kFieldW, bounds.w); return; }
     if (PtInRect(localPt, &sFieldHRect))  { if (hMixed) StartEditStr(kFieldH, ""); else StartEdit(kFieldH, bounds.h); return; }
+    if (PtInRect(localPt, &sMinWRect)) {
+        StartEditMinMax(kFieldMinW, gSelectedShape ? gSelectedShape->minWidth : gSelectedFrame->minWidth);
+        return;
+    }
+    if (PtInRect(localPt, &sMaxWRect)) {
+        StartEditMinMax(kFieldMaxW, gSelectedShape ? gSelectedShape->maxWidth : gSelectedFrame->maxWidth);
+        return;
+    }
+    if (PtInRect(localPt, &sMinHRect)) {
+        StartEditMinMax(kFieldMinH, gSelectedShape ? gSelectedShape->minHeight : gSelectedFrame->minHeight);
+        return;
+    }
+    if (PtInRect(localPt, &sMaxHRect)) {
+        StartEditMinMax(kFieldMaxH, gSelectedShape ? gSelectedShape->maxHeight : gSelectedFrame->maxHeight);
+        return;
+    }
     if (PtInRect(localPt, &sFieldSwRect)) {
         UInt16 sw = gSelectedShape ? gSelectedShape->strokeWidth : gSelectedFrame->strokeWidth;
         StartEdit(kFieldStrokeWidth, static_cast<SInt32>(sw));

@@ -27,7 +27,7 @@ static pascal void NavOpenEventProc(NavEventCallbackMessage, NavCBRecPtr, void*)
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
 static const UInt32 kMagic   = 0x52535444;  // 'RSTD'
-static const UInt16 kVersion = 20;
+static const UInt16 kVersion = 21;
 
 // Folder Manager constants — defined here because Retro68 Carbon headers
 // don't always expose <Folders.h> constants via <Carbon.h>.
@@ -109,6 +109,8 @@ static void WriteShape(Writer& w, const Shape& s) {
     w.w8(s.isAbsolutePosition ? 1 : 0);
     w.w8(static_cast<UInt8>(s.constraintH));
     w.w8(static_cast<UInt8>(s.constraintV));
+    w.w32(s.minWidth); w.w32(s.maxWidth);
+    w.w32(s.minHeight); w.w32(s.maxHeight);
     if (s.GetType() == Shape::kRectangle) {
         const auto& rs = static_cast<const RectShape&>(s);
         w.w16(static_cast<UInt16>(rs.cornerRadius));
@@ -154,6 +156,11 @@ static std::unique_ptr<Shape> ReadShape(Reader& r, UInt16 ver) {
         absPos = r.r8() != 0;
         ch     = static_cast<ConstraintMode>(r.r8());
         cv     = static_cast<ConstraintMode>(r.r8());
+    }
+    SInt32 minW = -1, maxW = -1, minH = -1, maxH = -1;
+    if (ver >= 21) {
+        minW = r.r32(); maxW = r.r32();
+        minH = r.r32(); maxH = r.r32();
     }
 
     std::unique_ptr<Shape> shape;
@@ -202,6 +209,10 @@ static std::unique_ptr<Shape> ReadShape(Reader& r, UInt16 ver) {
     shape->isAbsolutePosition = absPos;
     shape->constraintH        = ch;
     shape->constraintV        = cv;
+    shape->minWidth    = minW;
+    shape->maxWidth    = maxW;
+    shape->minHeight   = minH;
+    shape->maxHeight   = maxH;
     shape->name        = r.rStr();
     return r.ok ? std::move(shape) : nullptr;
 }
@@ -247,6 +258,8 @@ static void WriteFrame(Writer& w, const Frame& f) {
     w.w8(f.isAbsolutePosition ? 1 : 0);
     w.w8(static_cast<UInt8>(f.constraintH));
     w.w8(static_cast<UInt8>(f.constraintV));
+    w.w32(f.minWidth); w.w32(f.maxWidth);
+    w.w32(f.minHeight); w.w32(f.maxHeight);
 
     // Interleaved child serialization preserving childOrder z-ordering.
     // If childOrder is empty (legacy), fall back to shapes-then-frames.
@@ -314,6 +327,10 @@ static std::unique_ptr<Frame> ReadFrame(Reader& r, Frame* parent, UInt16 ver) {
         f->isAbsolutePosition = r.r8() != 0;
         f->constraintH        = static_cast<ConstraintMode>(r.r8());
         f->constraintV        = static_cast<ConstraintMode>(r.r8());
+    }
+    if (ver >= 21) {
+        f->minWidth  = r.r32(); f->maxWidth  = r.r32();
+        f->minHeight = r.r32(); f->maxHeight = r.r32();
     }
 
     // Interleaved child deserialization (v12+). Each entry: type byte (0=shape,1=frame)

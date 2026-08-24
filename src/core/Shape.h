@@ -46,6 +46,13 @@ public:
     // Per-child sizing within an Auto Layout frame: 0=Fixed, 2=Fill (matches SizingMode values)
     UInt8       wSizing     = 0;
     UInt8       hSizing     = 0;
+    // Sizing bounds: -1 = unset (no clamp). Applied to Fill/Hug results and to
+    // interactive/flip resize drags; never applied to a Fixed-size shape typed
+    // in directly (the user's explicit number always wins there).
+    SInt32      minWidth    = -1;
+    SInt32      maxWidth    = -1;
+    SInt32      minHeight   = -1;
+    SInt32      maxHeight   = -1;
     UInt8       opacity     = 100;  // 0–100 percent
     SInt16      rotation    = 0;    // degrees, 0–359 clockwise
     // Position & Constraints

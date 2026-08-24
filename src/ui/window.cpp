@@ -3604,6 +3604,20 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     bool origFlippedH = cts && cts->flippedH;
     bool origFlippedV = cts && cts->flippedV;
 
+    // Sizing bounds (-1 = unset). Clamped on the MAGNITUDE of newW/newH below,
+    // before the anchor-preserving center math runs, so the anchor point stays
+    // exactly fixed even when a bound kicks in.
+    SInt32 selMinW = cs ? cs->minWidth  : (cf ? cf->minWidth  : -1);
+    SInt32 selMaxW = cs ? cs->maxWidth  : (cf ? cf->maxWidth  : -1);
+    SInt32 selMinH = cs ? cs->minHeight : (cf ? cf->minHeight : -1);
+    SInt32 selMaxH = cs ? cs->maxHeight : (cf ? cf->maxHeight : -1);
+    auto clampMag = [](double v, SInt32 mn, SInt32 mx) -> double {
+        double mag = std::abs(v);
+        if (mn >= 0 && mag < mn) mag = mn;
+        if (mx >= 0 && mag > mx) mag = mx;
+        return (v < 0) ? -mag : mag;
+    };
+
     Point prev = startPt, curr = startPt;
     bool pushedUndo = false;
 
@@ -3724,6 +3738,12 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                 double baseH = aspectBtnLocked ? origB.h : shiftLockH;
                 if (baseW > 0 && baseH > 0) newH = newW * baseH / baseW;
             }
+
+            // Min/Max Width & Height: clamp magnitude only, preserving sign, so a
+            // bound never blocks a flip mid-crossing — it just stops the box from
+            // shrinking/growing past the bound on either side of zero.
+            newW = clampMag(newW, selMinW, selMaxW);
+            newH = clampMag(newH, selMinH, selMaxH);
 
             // No floor here — letting newW/newH go through zero and negative
             // is exactly what makes the flip-through-anchor case below work.
@@ -3902,6 +3922,7 @@ static void HandleMultiResizeDrag(WindowRef win, int hi, Point startPt) {
         Shape* shape; Frame* frame; Bounds2 orig;
         SInt16 origCornerTL, origCornerTR, origCornerBR, origCornerBL;
         bool origFlippedH, origFlippedV;
+        SInt32 minW, maxW, minH, maxH;
     };
     std::vector<GroupItem> items;
     // cornerTL/TR/BR/BL live on RectShape (not the Shape base class) and on
@@ -3913,12 +3934,14 @@ static void HandleMultiResizeDrag(WindowRef win, int hi, Point startPt) {
         SInt16 br = rs ? rs->cornerBR : 0, bl = rs ? rs->cornerBL : 0;
         TextShape* ts = (s->GetType() == Shape::kText) ? static_cast<TextShape*>(s) : nullptr;
         items.push_back({ s, nullptr, s->bounds, tl, tr, br, bl,
-                           ts && ts->flippedH, ts && ts->flippedV });
+                           ts && ts->flippedH, ts && ts->flippedV,
+                           s->minWidth, s->maxWidth, s->minHeight, s->maxHeight });
     }
     for (Frame* f : gSelectedFrames)
         if (!hasSelectedAncestor(f))
             items.push_back({ nullptr, f, f->bounds, f->cornerTL, f->cornerTR, f->cornerBR, f->cornerBL,
-                               false, false });
+                               false, false,
+                               f->minWidth, f->maxWidth, f->minHeight, f->maxHeight });
     if (items.empty()) return;
 
     static const SInt32 kMin = 10;
@@ -4050,11 +4073,21 @@ static void HandleMultiResizeDrag(WindowRef win, int hi, Point startPt) {
                 if ( rowIsBottom && !colIsRight) return it.origCornerBL;
                 return it.origCornerBR;
             };
+            // Magnitude clamp preserving sign, same pattern as single-item
+            // resize — applied per item (each may have its own bounds), so a
+            // uniform group scale can still end up non-uniform once a member
+            // hits its own min/max, same as Figma.
+            auto clampMag = [](double v, SInt32 mn, SInt32 mx) -> double {
+                double mag = std::abs(v);
+                if (mn >= 0 && mag < mn) mag = mn;
+                if (mx >= 0 && mag > mx) mag = mx;
+                return (v < 0) ? -mag : mag;
+            };
             for (auto& it : items) {
                 double rawX = xAnchor + (it.orig.x - xAnchor) * scaleX;
-                double rawW = it.orig.w * scaleX;
+                double rawW = clampMag(it.orig.w * scaleX, it.minW, it.maxW);
                 double rawY = yAnchor + (it.orig.y - yAnchor) * scaleY;
-                double rawH = it.orig.h * scaleY;
+                double rawH = clampMag(it.orig.h * scaleY, it.minH, it.maxH);
                 double finalX = flipX ? (rawX + rawW) : rawX;
                 double finalY = flipY ? (rawY + rawH) : rawY;
                 double finalW = flipX ? -rawW : rawW;
@@ -6307,6 +6340,10 @@ static std::unique_ptr<Frame> CloneFrame(const Frame* src, Frame* newParent) {
     f->crossAlign      = src->crossAlign;
     f->widthSizing     = src->widthSizing;
     f->heightSizing    = src->heightSizing;
+    f->minWidth        = src->minWidth;
+    f->maxWidth        = src->maxWidth;
+    f->minHeight       = src->minHeight;
+    f->maxHeight       = src->maxHeight;
     f->cornerRadius      = src->cornerRadius;
     f->cornerIndividual  = src->cornerIndividual;
     f->cornerTL = src->cornerTL; f->cornerTR = src->cornerTR;

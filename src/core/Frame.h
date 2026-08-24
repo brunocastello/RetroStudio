@@ -54,6 +54,12 @@ public:
     SizingMode   widthSizing   = SizingMode::Fixed;
     SizingMode   heightSizing  = SizingMode::Fixed;
 
+    // Sizing bounds: -1 = unset (no clamp). Same semantics as Shape's (see Shape.h).
+    SInt32       minWidth      = -1;
+    SInt32       maxWidth      = -1;
+    SInt32       minHeight     = -1;
+    SInt32       maxHeight     = -1;
+
     // Position & Constraints (same meaning as Shape's — see Shape.h)
     bool           isAbsolutePosition = false;
     ConstraintMode constraintH        = ConstraintMode::Start;

@@ -26,7 +26,15 @@ struct LayoutItem {
     SInt32  effH     = 0;   // AABB height for rotated shapes (0 = use *h)
     SInt32  xOff     = 0;   // x correction after layout: (aabbW - w) / 2 for rotated
     SInt32  yOff     = 0;   // y correction after layout: (aabbH - h) / 2 for rotated
+    SInt32  minW = -1, maxW = -1, minH = -1, maxH = -1;  // sizing bounds, -1 = unset
 };
+
+// -1 = unset (no clamp) on either end.
+static SInt32 ClampDim(SInt32 v, SInt32 mn, SInt32 mx) {
+    if (mn >= 0 && v < mn) v = mn;
+    if (mx >= 0 && v > mx) v = mx;
+    return v;
+}
 
 // value*num/den, rounded to nearest instead of truncated toward zero. Plain
 // integer division here would bias every application toward shrinking (it only
@@ -92,7 +100,8 @@ static void ApplyConstraints(Frame* f) {
         f->lastLayoutW = curW; f->lastLayoutH = curH;
     }
 
-    auto applyOne = [&](Bounds2& b, Bounds2& base, ConstraintMode ch, ConstraintMode cv) {
+    auto applyOne = [&](Bounds2& b, Bounds2& base, ConstraintMode ch, ConstraintMode cv,
+                         SInt32 minW, SInt32 maxW, SInt32 minH, SInt32 maxH) {
         if (freshBaseline) { base = b; return; }  // nothing to move yet — just establish the reference
 
         SInt32 dX = curX - baseX, dY = curY - baseY;
@@ -109,7 +118,8 @@ static void ApplyConstraints(Frame* f) {
             case ConstraintMode::Center:   nb.x = base.x + dX + dW / 2; break;         // center offset fixed
             case ConstraintMode::StartEnd: {                                          // both edge offsets fixed (stretch)
                 nb.x = base.x + dX;
-                SInt32 w2 = base.w + dW; nb.w = (w2 < 1) ? 1 : w2;
+                SInt32 w2 = base.w + dW; if (w2 < 1) w2 = 1;
+                nb.w = ClampDim(w2, minW, maxW);
             } break;
             case ConstraintMode::Scale:
                 // base.x is an ABSOLUTE canvas coordinate, not relative to the parent
@@ -119,7 +129,8 @@ static void ApplyConstraints(Frame* f) {
                     SInt32 relX = base.x - baseX;
                     nb.x = curX + ScaleRounded(relX, curW, baseW);
                     SInt32 w2 = ScaleRounded(base.w, curW, baseW);
-                    nb.w = (w2 < 1) ? 1 : w2;
+                    if (w2 < 1) w2 = 1;
+                    nb.w = ClampDim(w2, minW, maxW);
                 }
                 break;
         }
@@ -129,14 +140,16 @@ static void ApplyConstraints(Frame* f) {
             case ConstraintMode::Center:   nb.y = base.y + dY + dH / 2; break;
             case ConstraintMode::StartEnd: {
                 nb.y = base.y + dY;
-                SInt32 h2 = base.h + dH; nb.h = (h2 < 1) ? 1 : h2;
+                SInt32 h2 = base.h + dH; if (h2 < 1) h2 = 1;
+                nb.h = ClampDim(h2, minH, maxH);
             } break;
             case ConstraintMode::Scale:
                 if (baseH > 0) {
                     SInt32 relY = base.y - baseY;
                     nb.y = curY + ScaleRounded(relY, curH, baseH);
                     SInt32 h2 = ScaleRounded(base.h, curH, baseH);
-                    nb.h = (h2 < 1) ? 1 : h2;
+                    if (h2 < 1) h2 = 1;
+                    nb.h = ClampDim(h2, minH, maxH);
                 }
                 break;
         }
@@ -148,11 +161,13 @@ static void ApplyConstraints(Frame* f) {
     bool freeForm = (f->layoutMode == LayoutMode::None);
     for (auto& s : f->children) {
         if (!freeForm && !s->isAbsolutePosition) continue;
-        applyOne(s->bounds, s->constraintBaseline, s->constraintH, s->constraintV);
+        applyOne(s->bounds, s->constraintBaseline, s->constraintH, s->constraintV,
+                 s->minWidth, s->maxWidth, s->minHeight, s->maxHeight);
     }
     for (auto& cf : f->childFrames) {
         if (!freeForm && !cf->isAbsolutePosition) continue;
-        applyOne(cf->bounds, cf->constraintBaseline, cf->constraintH, cf->constraintV);
+        applyOne(cf->bounds, cf->constraintBaseline, cf->constraintH, cf->constraintV,
+                 cf->minWidth, cf->maxWidth, cf->minHeight, cf->maxHeight);
     }
 }
 
@@ -195,6 +210,8 @@ static void RunFrameLayout(Frame* f) {
                 it.w = &cf->bounds.w; it.h = &cf->bounds.h;
                 it.wSizing = static_cast<UInt8>(cf->widthSizing);
                 it.hSizing = static_cast<UInt8>(cf->heightSizing);
+                it.minW = cf->minWidth; it.maxW = cf->maxWidth;
+                it.minH = cf->minHeight; it.maxH = cf->maxHeight;
                 computeXtra(cf->hasStroke, cf->strokeWidth, cf->strokeAlign, it.xtraW, it.xtraH);
                 it.baseline = 0;
                 items.push_back(it);
@@ -211,6 +228,8 @@ static void RunFrameLayout(Frame* f) {
                 it.w = &s->bounds.w; it.h = &s->bounds.h;
                 it.wSizing = s->wSizing;
                 it.hSizing = s->hSizing;
+                it.minW = s->minWidth; it.maxW = s->maxWidth;
+                it.minH = s->minHeight; it.maxH = s->maxHeight;
                 computeXtra(s->hasStroke, s->strokeWidth, s->strokeAlign, it.xtraW, it.xtraH);
                 it.baseline = 0;
                 if (f->alignTextBaseline && s->GetType() == Shape::kText) {
@@ -271,6 +290,8 @@ static void RunFrameLayout(Frame* f) {
             it.w = &cf->bounds.w; it.h = &cf->bounds.h;
             it.wSizing = static_cast<UInt8>(cf->widthSizing);
             it.hSizing = static_cast<UInt8>(cf->heightSizing);
+            it.minW = cf->minWidth; it.maxW = cf->maxWidth;
+            it.minH = cf->minHeight; it.maxH = cf->maxHeight;
             computeXtra(cf->hasStroke, cf->strokeWidth, cf->strokeAlign, it.xtraW, it.xtraH);
             it.baseline = 0;
             items.push_back(it);
@@ -413,11 +434,14 @@ static void RunFrameLayout(Frame* f) {
                 UInt8 ps = isHoriz ? it.wSizing : it.hSizing;
                 UInt8 ss = isHoriz ? it.hSizing : it.wSizing;
                 if (ps == static_cast<UInt8>(SizingMode::Fill)) {
-                    if (isHoriz) *it.w = fillPriSz; else *it.h = fillPriSz;
+                    SInt32 v = isHoriz ? ClampDim(fillPriSz, it.minW, it.maxW)
+                                        : ClampDim(fillPriSz, it.minH, it.maxH);
+                    if (isHoriz) *it.w = v; else *it.h = v;
                 }
                 if (!hugSec && ss == static_cast<UInt8>(SizingMode::Fill)) {
                     SInt32 fs = ln.crossMax - (isHoriz ? it.xtraH : it.xtraW);
                     if (fs < 1) fs = 1;
+                    fs = isHoriz ? ClampDim(fs, it.minH, it.maxH) : ClampDim(fs, it.minW, it.maxW);
                     if (isHoriz) *it.h = fs; else *it.w = fs;
                 }
             }
@@ -469,13 +493,16 @@ static void RunFrameLayout(Frame* f) {
         if (!dragActive) {
             if (hugPri) {
                 SInt32 newPri = maxLineSpan + padPri1 + padPri2; if (newPri < 1) newPri = 1;
-                if (isHoriz) f->bounds.w = newPri; else f->bounds.h = newPri;
+                if (isHoriz) f->bounds.w = ClampDim(newPri, f->minWidth, f->maxWidth);
+                else         f->bounds.h = ClampDim(newPri, f->minHeight, f->maxHeight);
             }
             // Secondary hug
             if (isHoriz && f->heightSizing == SizingMode::Hug) {
-                SInt32 h = totalCross + padSec1 + padSec2; f->bounds.h = (h > 0) ? h : 1;
+                SInt32 h = totalCross + padSec1 + padSec2; if (h < 1) h = 1;
+                f->bounds.h = ClampDim(h, f->minHeight, f->maxHeight);
             } else if (!isHoriz && f->widthSizing == SizingMode::Hug) {
-                SInt32 w = totalCross + padSec1 + padSec2; f->bounds.w = (w > 0) ? w : 1;
+                SInt32 w = totalCross + padSec1 + padSec2; if (w < 1) w = 1;
+                f->bounds.w = ClampDim(w, f->minWidth, f->maxWidth);
             }
         }
         return;
@@ -537,11 +564,14 @@ static void RunFrameLayout(Frame* f) {
         UInt8 secSiz = isHoriz ? it.hSizing : it.wSizing;
 
         if (priSiz == static_cast<UInt8>(SizingMode::Fill)) {
-            if (isHoriz) *it.w = fillPriSize; else *it.h = fillPriSize;
+            SInt32 v = isHoriz ? ClampDim(fillPriSize, it.minW, it.maxW)
+                                : ClampDim(fillPriSize, it.minH, it.maxH);
+            if (isHoriz) *it.w = v; else *it.h = v;
         }
         if (!hugSec && secSiz == static_cast<UInt8>(SizingMode::Fill)) {
             SInt32 fs = fillSecSize - (isHoriz ? it.xtraH : it.xtraW);
             if (fs < 1) fs = 1;
+            fs = isHoriz ? ClampDim(fs, it.minH, it.maxH) : ClampDim(fs, it.minW, it.maxW);
             if (isHoriz) *it.h = fs; else *it.w = fs;
         }
 
@@ -580,11 +610,11 @@ static void RunFrameLayout(Frame* f) {
         SInt32 newPri = totalWithGap + padPri1 + padPri2; if (newPri < 1) newPri = 1;
         SInt32 newSec = maxSecSize   + padSec1 + padSec2; if (newSec < 1) newSec = 1;
         if (isHoriz) {
-            if (f->widthSizing  == SizingMode::Hug) f->bounds.w = newPri;
-            if (f->heightSizing == SizingMode::Hug) f->bounds.h = newSec;
+            if (f->widthSizing  == SizingMode::Hug) f->bounds.w = ClampDim(newPri, f->minWidth, f->maxWidth);
+            if (f->heightSizing == SizingMode::Hug) f->bounds.h = ClampDim(newSec, f->minHeight, f->maxHeight);
         } else {
-            if (f->heightSizing == SizingMode::Hug) f->bounds.h = newPri;
-            if (f->widthSizing  == SizingMode::Hug) f->bounds.w = newSec;
+            if (f->heightSizing == SizingMode::Hug) f->bounds.h = ClampDim(newPri, f->minHeight, f->maxHeight);
+            if (f->widthSizing  == SizingMode::Hug) f->bounds.w = ClampDim(newSec, f->minWidth, f->maxWidth);
         }
     }
 }
