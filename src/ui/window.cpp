@@ -2311,14 +2311,39 @@ static bool ComputeSelectionHandles(short hx[8], short hy[8]);
 static double SelectedOwnRotation();
 static RotChain SelectedAmbientChain();
 static short EffectiveRotateZone(const short hx[8], const short hy[8], int cornerIdx);
+static bool ComputeMultiSelectAggregateBounds(Bounds2& out);
+
+// Union bounding box of the WHOLE current multi-selection (shapes ∪ frames),
+// in absolute canvas coordinates. Shared by the aggregate selection outline,
+// the aggregate resize handles, and group-resize drag math — one definition
+// so all three always agree on what "the group" means. Returns false when
+// nothing is selected.
+static bool ComputeMultiSelectAggregateBounds(Bounds2& out) {
+    bool have = false;
+    SInt32 l = 0, t = 0, r = 0, b = 0;
+    auto uni = [&](const Bounds2& bb) {
+        SInt32 bl = bb.x, bt = bb.y, br = bb.x + bb.w, bb2 = bb.y + bb.h;
+        if (!have) { l = bl; t = bt; r = br; b = bb2; have = true; }
+        else {
+            l = std::min(l, bl); t = std::min(t, bt);
+            r = std::max(r, br); b = std::max(b, bb2);
+        }
+    };
+    for (Shape* s : gSelectedShapes) uni(s->bounds);
+    for (Frame* f : gSelectedFrames) uni(f->bounds);
+    if (!have) return false;
+    out = Bounds2{ l, t, r - l, b - t };
+    return true;
+}
 
 void UpdateCanvasCursor(Point globalPt) {
-    // Only for the select tool with a single selection over the canvas
+    // Select tool with something selected over the canvas — single item or
+    // a multi-selection (which gets the aggregate handle set, resize-only).
     if (gActiveTool != Tool::Select || !gMainWindow) { InitCursor(); return; }
-    bool hasSingle = (gSelectedShape && gSelectedShapes.size() <= 1 && gSelectedFrames.empty())
-                  || (gSelectedFrame && gSelectedFrames.size() <= 1 && !gSelectedShape
-                      && gSelectedShapes.empty());
-    if (!hasSingle) { InitCursor(); return; }
+    bool hasSelection = gSelectedShape || gSelectedFrame
+                      || !gSelectedShapes.empty() || !gSelectedFrames.empty();
+    if (!hasSelection) { InitCursor(); return; }
+    bool isMultiSel = (gSelectedShapes.size() + gSelectedFrames.size()) > 1;
 
     WindowRef hitWin = nullptr;
     short part = FindWindow(globalPt, &hitWin);
@@ -2333,10 +2358,17 @@ void UpdateCanvasCursor(Point globalPt) {
 
     // Net rotation (own + every rotated ancestor) picks which of the 8/4 preset
     // cursor bitmaps looks right — matches HandleBucket's screen-angle convention.
-    double shapeRot = SelectedOwnRotation();
-    for (const auto& step : SelectedAmbientChain()) shapeRot += step.angleDeg;
+    // The aggregate multi-select box is always axis-aligned (see
+    // ComputeSelectionHandles), so its cursor bucket is always 0.
+    double shapeRot = 0.0;
+    if (!isMultiSel) {
+        shapeRot = SelectedOwnRotation();
+        for (const auto& step : SelectedAmbientChain()) shapeRot += step.angleDeg;
+    }
 
     // Corner handles: indices 0,2,4,6 — inner rect = resize, outer ring = rotate
+    // (rotate zone is single-select only — group rotate isn't implemented,
+    // so multi-select corners are resize-only, no outer ring).
     static const int kCorner[4] = {0, 2, 4, 6};
     int rotateCorner = -1;
     for (int ci = 0; ci < 4; ++ci) {
@@ -2350,7 +2382,7 @@ void UpdateCanvasCursor(Point globalPt) {
             SetCursor(GetResizeCursor(HandleBucket(i, shapeRot)));
             return;
         }
-        if (dist <= kHandleHW + EffectiveRotateZone(hx, hy, i)) rotateCorner = i;
+        if (!isMultiSel && dist <= kHandleHW + EffectiveRotateZone(hx, hy, i)) rotateCorner = i;
     }
     if (rotateCorner >= 0) {
         SetCursor(GetRotateCursor(HandleBucket(rotateCorner, shapeRot)));
@@ -2397,16 +2429,16 @@ static void DrawSelectionHighlight() {
         }
     };
 
-    auto drawItem = [&](const Rect& r) {
+    auto drawItem = [&](const Rect& r, bool withHandles = true) {
         RGBForeColor(&selBlue);
         PenSize(2, 2); FrameRect(&r); PenSize(1, 1);
-        drawHandles(r);
+        if (withHandles) drawHandles(r);
     };
 
     // Rotated border + handles placed at rotated corner and edge-midpoint positions.
     // `angleDeg` is the object's own rotation; `ambient` carries it through any
     // rotated ancestor frames, same convention as DrawFrame/ComputeSelectionHandles.
-    auto drawRotatedItem = [&](const Bounds2& bounds, double angleDeg, const RotChain& ambient) {
+    auto drawRotatedItem = [&](const Bounds2& bounds, double angleDeg, const RotChain& ambient, bool withHandles = true) {
         Rect r = CanvasRect(bounds);
         double cx = (r.left + r.right)  * 0.5;
         double cy = (r.top  + r.bottom) * 0.5;
@@ -2438,6 +2470,7 @@ static void DrawSelectionHighlight() {
         // 8 handle positions in LOCAL (pre-rotation) space, corners
         // interleaved with edge midpoints — same 0=TL,1=N,2=TR,3=E,4=BR,
         // 5=S,6=BL,7=W convention as ComputeSelectionHandles.
+        if (!withHandles) return;
         double hlx[8] = { -hw, 0,  hw,  hw,  hw,  0, -hw, -hw };
         double hly[8] = { -hh, -hh, -hh, 0,  hh, hh,  hh,  0 };
         for (int i = 0; i < 8; ++i) {
@@ -2469,16 +2502,31 @@ static void DrawSelectionHighlight() {
         }
     };
 
+    // Multi-select gets ONE aggregate resize handle set for the whole group
+    // (see below); individual members below draw border-only in that case so
+    // there's only ever one clickable set of handles on screen, matching
+    // Figma and the aggregate hit-testing HitTestHandles now does.
+    bool isMultiSel = (gSelectedShapes.size() + gSelectedFrames.size()) > 1;
+
     for (Shape* s : gSelectedShapes) {
         if (s == static_cast<Shape*>(gEditingTextShape)) continue;
         RotChain ambient = AncestorChainFor(LocateShapeParent(s));
-        if (s->rotation != 0 || !ambient.empty()) drawRotatedItem(s->bounds, s->rotation, ambient);
-        else                                      drawItem(CanvasRect(s->bounds));
+        if (s->rotation != 0 || !ambient.empty()) drawRotatedItem(s->bounds, s->rotation, ambient, !isMultiSel);
+        else                                      drawItem(CanvasRect(s->bounds), !isMultiSel);
     }
     for (Frame* f : gSelectedFrames) {
         RotChain ambient = AncestorChainFor(f->parent);
-        if (f->rotation != 0 || !ambient.empty()) drawRotatedItem(f->bounds, f->rotation, ambient);
-        else                                      drawItem(CanvasRect(f->bounds));
+        if (f->rotation != 0 || !ambient.empty()) drawRotatedItem(f->bounds, f->rotation, ambient, !isMultiSel);
+        else                                      drawItem(CanvasRect(f->bounds), !isMultiSel);
+    }
+
+    // Aggregate box + handles for the whole multi-selection — always
+    // axis-aligned (no attempt to rotate the group outline even if every
+    // member happens to share a rotation), matching the same restriction
+    // ComputeSelectionHandles/HandleMultiResizeDrag apply.
+    if (isMultiSel) {
+        Bounds2 agg;
+        if (ComputeMultiSelectAggregateBounds(agg)) drawItem(CanvasRect(agg));
     }
 
     // Primary single-select item (skip if already drawn as part of multi-select)
@@ -2994,6 +3042,26 @@ static double SelectedOwnRotation() {
 // Populate hx[8]/hy[8] with the 8 handle positions for the current selection.
 // Order matches DrawSelectionHighlight: corners 0,2,4,6; edges 1,3,5,7.
 static bool ComputeSelectionHandles(short hx[8], short hy[8]) {
+    // Multi-select: one handle set around the aggregate bbox, always
+    // axis-aligned regardless of any individual member's own rotation —
+    // matches DrawSelectionHighlight's aggregate outline and is what
+    // HandleMultiResizeDrag actually resizes.
+    if (gSelectedShapes.size() + gSelectedFrames.size() > 1) {
+        Bounds2 agg;
+        if (!ComputeMultiSelectAggregateBounds(agg)) return false;
+        Rect r = CanvasRect(agg);
+        short cx = static_cast<short>((r.left + r.right) / 2);
+        short cy = static_cast<short>((r.top  + r.bottom) / 2);
+        hx[0]=r.left;  hy[0]=r.top;
+        hx[1]=cx;      hy[1]=r.top;
+        hx[2]=r.right; hy[2]=r.top;
+        hx[3]=r.right; hy[3]=cy;
+        hx[4]=r.right; hy[4]=r.bottom;
+        hx[5]=cx;      hy[5]=r.bottom;
+        hx[6]=r.left;  hy[6]=r.bottom;
+        hx[7]=r.left;  hy[7]=cy;
+        return true;
+    }
     if (!gSelectedShape && !gSelectedFrame) return false;
 
     double ownRot = SelectedOwnRotation();
@@ -3541,6 +3609,172 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
 }
 
+// Resize the WHOLE multi-selection as one rigid unit: an affine scale
+// (scaleX, scaleY) anchored at the corner/edge line opposite the dragged
+// handle, applied uniformly to every top-level selected item's own bounds
+// (position AND size) — matches Figma's group-resize. Always axis-aligned
+// (the aggregate box itself never rotates, see ComputeSelectionHandles), so
+// unlike single-item HandleResizeDrag this needs no rotation-chain math.
+//
+// Nested-selection handling mirrors the move-drag multi-select code: a
+// selected frame that is itself a descendant of another selected frame is
+// left out of the direct scale and instead follows whatever its ancestor's
+// own resize + Auto Layout/Constraints response does to it — scaling both
+// directly would double-transform it.
+//
+// Smart Guides are not wired up here (aggregate-vs-aggregate-resize guides
+// are a separate, un-designed scope) — gActiveGuides is just kept cleared.
+static void HandleMultiResizeDrag(WindowRef win, int hi, Point startPt) {
+    static const bool bL[8]={ true,  false, false, false, false, false, true,  true  };
+    static const bool bT[8]={ true,  true,  true,  false, false, false, false, false };
+    static const bool bR[8]={ false, false, true,  true,  true,  false, false, false };
+    static const bool bB[8]={ false, false, false, false, true,  true,  true,  false };
+
+    Bounds2 origAgg;
+    if (!ComputeMultiSelectAggregateBounds(origAgg)) return;
+    if (origAgg.w <= 0 || origAgg.h <= 0) return;
+
+    auto hasSelectedAncestor = [&](Frame* f) -> bool {
+        for (Frame* cur = f->parent; cur; cur = cur->parent)
+            if (std::find(gSelectedFrames.begin(), gSelectedFrames.end(), cur) != gSelectedFrames.end())
+                return true;
+        return false;
+    };
+
+    struct GroupItem { Shape* shape; Frame* frame; Bounds2 orig; };
+    std::vector<GroupItem> items;
+    for (Shape* s : gSelectedShapes) items.push_back({ s, nullptr, s->bounds });
+    for (Frame* f : gSelectedFrames) if (!hasSelectedAncestor(f)) items.push_back({ nullptr, f, f->bounds });
+    if (items.empty()) return;
+
+    static const SInt32 kMin = 10;
+    bool isCorner      = (hi == 0 || hi == 2 || hi == 4 || hi == 6);
+    bool widthChanged  = bL[hi] || bR[hi];
+    bool heightChanged = bT[hi] || bB[hi];
+
+    // Fixed anchor line for each axis: whichever edge ISN'T being dragged.
+    double xAnchor = bL[hi] ? double(origAgg.x + origAgg.w) : double(origAgg.x);
+    double yAnchor = bT[hi] ? double(origAgg.y + origAgg.h) : double(origAgg.y);
+
+    // Smallest member on each axis — caps how far the group can shrink so no
+    // single item collapses past kMin, without breaking the shared scale
+    // factor every item uses (see the per-tick clamp below).
+    double minItemW = items[0].orig.w, minItemH = items[0].orig.h;
+    for (auto& it : items) {
+        minItemW = std::min(minItemW, double(it.orig.w));
+        minItemH = std::min(minItemH, double(it.orig.h));
+    }
+
+    bool prevShiftHeld = false;
+    double shiftLockW = origAgg.w, shiftLockH = origAgg.h;
+    double curAggW = origAgg.w, curAggH = origAgg.h;
+
+    Point prev = startPt, curr = startPt;
+    bool pushedUndo = false;
+
+    gIsResizeDragging = true;
+    while (Button()) {
+        GetMouse(&curr);
+        if (curr.h != prev.h || curr.v != prev.v) {
+            if (!pushedUndo) {
+                PushUndo();
+                pushedUndo = true;
+                // Same rationale as single-item HandleResizeDrag: manually
+                // resizing overrides Hug/Fill sizing (Frame) and Auto sizing
+                // (TextShape) to Fixed, or RunDocumentLayout re-derives the
+                // hugged/auto size right back on the very next redraw and the
+                // drag looks like it does nothing.
+                for (auto& it : items) {
+                    if (it.shape && it.shape->GetType() == Shape::kText) {
+                        TextShape* ts = static_cast<TextShape*>(it.shape);
+                        if (heightChanged) {
+                            ts->textSizing = TextSizing::Fixed;
+                        } else if (widthChanged && ts->textSizing == TextSizing::AutoWidth) {
+                            ts->textSizing = TextSizing::AutoHeight;
+                        }
+                    }
+                    if (it.frame) {
+                        if (widthChanged  && it.frame->widthSizing  != SizingMode::Fixed)
+                            it.frame->widthSizing  = SizingMode::Fixed;
+                        if (heightChanged && it.frame->heightSizing != SizingMode::Fixed)
+                            it.frame->heightSizing = SizingMode::Fixed;
+                    }
+                }
+            }
+
+            double dCanvasX = static_cast<double>(curr.h - startPt.h) * 100.0 / gCanvasZoom;
+            double dCanvasY = static_cast<double>(curr.v - startPt.v) * 100.0 / gCanvasZoom;
+
+            double newLeft = origAgg.x, newRight = origAgg.x + origAgg.w;
+            double newTop  = origAgg.y, newBottom = origAgg.y + origAgg.h;
+            if (bL[hi]) newLeft   = origAgg.x + dCanvasX;
+            if (bR[hi]) newRight  = origAgg.x + origAgg.w + dCanvasX;
+            if (bT[hi]) newTop    = origAgg.y + dCanvasY;
+            if (bB[hi]) newBottom = origAgg.y + origAgg.h + dCanvasY;
+
+            double newW = newRight - newLeft;
+            double newH = newBottom - newTop;
+
+            bool aspectBtnLocked = IsAspectLocked();
+            bool shiftHeldNow    = IsShiftKeyDownNow();
+            if (shiftHeldNow && !prevShiftHeld) { shiftLockW = curAggW; shiftLockH = curAggH; }
+            prevShiftHeld = shiftHeldNow;
+
+            bool lockAR = isCorner && (aspectBtnLocked || shiftHeldNow);
+            if (lockAR) {
+                double baseW = aspectBtnLocked ? double(origAgg.w) : shiftLockW;
+                double baseH = aspectBtnLocked ? double(origAgg.h) : shiftLockH;
+                if (baseW > 0 && baseH > 0) {
+                    newH = newW * baseH / baseW;
+                    if (bB[hi]) newBottom = newTop + newH; else newTop = newBottom - newH;
+                }
+            }
+
+            if (newW < kMin) newW = kMin;
+            if (newH < kMin) newH = kMin;
+
+            double scaleX = widthChanged  ? (newW / origAgg.w) : 1.0;
+            double scaleY = heightChanged ? (newH / origAgg.h) : 1.0;
+
+            // Never let the shared scale shrink any one member below kMin.
+            if (widthChanged  && minItemW > 0) {
+                double minScaleX = kMin / minItemW;
+                if (scaleX < minScaleX) scaleX = minScaleX;
+            }
+            if (heightChanged && minItemH > 0) {
+                double minScaleY = kMin / minItemH;
+                if (scaleY < minScaleY) scaleY = minScaleY;
+            }
+
+            auto roundSInt32 = [](double v) -> SInt32 {
+                return static_cast<SInt32>(v + (v >= 0 ? 0.5 : -0.5));
+            };
+            for (auto& it : items) {
+                Bounds2 nb;
+                nb.x = roundSInt32(xAnchor + (it.orig.x - xAnchor) * scaleX);
+                nb.w = roundSInt32(it.orig.w * scaleX);
+                nb.y = roundSInt32(yAnchor + (it.orig.y - yAnchor) * scaleY);
+                nb.h = roundSInt32(it.orig.h * scaleY);
+                if (nb.w < kMin) nb.w = kMin;
+                if (nb.h < kMin) nb.h = kMin;
+                if (it.shape) it.shape->bounds = nb;
+                else if (it.frame) it.frame->bounds = nb;
+            }
+
+            curAggW = origAgg.w * scaleX;
+            curAggH = origAgg.h * scaleY;
+
+            gActiveGuides.clear();
+            DrawWindowContent(win);
+            prev = curr;
+        }
+    }
+    gIsResizeDragging = false;
+    gActiveGuides.clear();
+
+    Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
+}
+
 // --------------------------------------------------------------------------
 // Name-label hit-tests (canvas coordinate space, port = main window)
 // --------------------------------------------------------------------------
@@ -3747,8 +3981,12 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
     Point pt = startGlobal;
     GlobalToLocal(&pt);
 
+    bool isMultiSelForHandles = (gSelectedShapes.size() + gSelectedFrames.size()) > 1;
+
     // ---- 1a. Rotate zone (near corner, outside handle — checked before resize) ----
-    int rotateCorner = HitTestRotateZone(pt);
+    // Group rotate isn't implemented — multi-select never enters the rotate
+    // zone (see UpdateCanvasCursor, which matches this restriction).
+    int rotateCorner = isMultiSelForHandles ? -1 : HitTestRotateZone(pt);
     if (rotateCorner >= 0) {
         bool selLocked = gSelectedShape ? gSelectedShape->locked
                                         : (gSelectedFrame ? gSelectedFrame->locked : false);
@@ -3759,9 +3997,17 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
     // ---- 1b. Resize handle (on the handle square) ----
     int handleIdx = HitTestHandles(pt);
     if (handleIdx >= 0) {
-        bool selLocked = gSelectedShape ? gSelectedShape->locked
-                                        : (gSelectedFrame ? gSelectedFrame->locked : false);
-        if (!selLocked) HandleResizeDrag(win, handleIdx, pt, modifiers);
+        if (isMultiSelForHandles) {
+            bool anyLocked = std::any_of(gSelectedShapes.begin(), gSelectedShapes.end(),
+                                          [](Shape* s) { return s->locked; })
+                           || std::any_of(gSelectedFrames.begin(), gSelectedFrames.end(),
+                                          [](Frame* f) { return f->locked; });
+            if (!anyLocked) HandleMultiResizeDrag(win, handleIdx, pt);
+        } else {
+            bool selLocked = gSelectedShape ? gSelectedShape->locked
+                                            : (gSelectedFrame ? gSelectedFrame->locked : false);
+            if (!selLocked) HandleResizeDrag(win, handleIdx, pt, modifiers);
+        }
         return;
     }
 
