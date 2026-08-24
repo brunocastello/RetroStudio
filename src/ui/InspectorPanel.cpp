@@ -287,7 +287,7 @@ static void StartEditMinMax(EditField field, SInt32 value) {
 // Draws the "Min/Max" mini grid used at the bottom of the SIZE section:
 // a W/H header row, then a Min row and a Max row, right-aligned to cRight.
 // Returns y after the block.
-static short DrawMinMaxSizeRows(short y, short cRight, const RGBColor& labelClr,
+static short DrawMinMaxSizeRows(short y, short cRight, RGBColor labelClr,
                                  SInt32 minW, SInt32 maxW, SInt32 minH, SInt32 maxH) {
     Str255 ps;
     short colWX = 30;
