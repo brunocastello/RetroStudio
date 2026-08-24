@@ -3495,12 +3495,16 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     // dragging back and forth across the crossing point any number of times
     // always lands on the exactly-correct corner, same "freeze a baseline,
     // recompute fresh" pattern the Scale-constraint math already relies on.
+    // cornerTL/TR/BR/BL live on RectShape (not the Shape base class) and on
+    // Frame directly — cs is only non-null for an actual rectangle, never
+    // for an ellipse or text shape, which have no corner radius to swap.
     Shape* cs = gSelectedShape;
     Frame* cf = gSelectedFrame;
-    SInt16 origCornerTL = cs ? cs->cornerTL : (cf ? cf->cornerTL : 0);
-    SInt16 origCornerTR = cs ? cs->cornerTR : (cf ? cf->cornerTR : 0);
-    SInt16 origCornerBR = cs ? cs->cornerBR : (cf ? cf->cornerBR : 0);
-    SInt16 origCornerBL = cs ? cs->cornerBL : (cf ? cf->cornerBL : 0);
+    RectShape* crs = (cs && cs->GetType() == Shape::kRectangle) ? static_cast<RectShape*>(cs) : nullptr;
+    SInt16 origCornerTL = crs ? crs->cornerTL : (cf ? cf->cornerTL : 0);
+    SInt16 origCornerTR = crs ? crs->cornerTR : (cf ? cf->cornerTR : 0);
+    SInt16 origCornerBR = crs ? crs->cornerBR : (cf ? cf->cornerBR : 0);
+    SInt16 origCornerBL = crs ? crs->cornerBL : (cf ? cf->cornerBL : 0);
 
     Point prev = startPt, curr = startPt;
     bool pushedUndo = false;
@@ -3665,7 +3669,7 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
             // every tick (see the snapshot comment above) so whichever corner is
             // now visually top-left/right/etc. carries the radius that belonged
             // to that corner before any flip.
-            if (cs || cf) {
+            if (crs || cf) {
                 auto pick = [&](bool rowIsBottom, bool colIsRight) -> SInt16 {
                     if (!rowIsBottom && !colIsRight) return origCornerTL;
                     if (!rowIsBottom &&  colIsRight) return origCornerTR;
@@ -3676,8 +3680,8 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                 SInt16 newTR = pick(flipY, !flipX);
                 SInt16 newBL = pick(!flipY, flipX);
                 SInt16 newBR = pick(!flipY, !flipX);
-                if (cs) { cs->cornerTL = newTL; cs->cornerTR = newTR; cs->cornerBL = newBL; cs->cornerBR = newBR; }
-                else    { cf->cornerTL = newTL; cf->cornerTR = newTR; cf->cornerBL = newBL; cf->cornerBR = newBR; }
+                if (crs) { crs->cornerTL = newTL; crs->cornerTR = newTR; crs->cornerBL = newBL; crs->cornerBR = newBR; }
+                else     { cf->cornerTL = newTL; cf->cornerTR = newTR; cf->cornerBL = newBL; cf->cornerBR = newBR; }
             }
 
             // Smart Guides: snap only the specific edge(s) this handle drags —
@@ -3782,8 +3786,15 @@ static void HandleMultiResizeDrag(WindowRef win, int hi, Point startPt) {
         SInt16 origCornerTL, origCornerTR, origCornerBR, origCornerBL;
     };
     std::vector<GroupItem> items;
-    for (Shape* s : gSelectedShapes)
-        items.push_back({ s, nullptr, s->bounds, s->cornerTL, s->cornerTR, s->cornerBR, s->cornerBL });
+    // cornerTL/TR/BR/BL live on RectShape (not the Shape base class) and on
+    // Frame directly — an ellipse or text shape has no corner radius, so its
+    // snapshot is just zeros (harmless: swapping zeros around does nothing).
+    for (Shape* s : gSelectedShapes) {
+        RectShape* rs = (s->GetType() == Shape::kRectangle) ? static_cast<RectShape*>(s) : nullptr;
+        SInt16 tl = rs ? rs->cornerTL : 0, tr = rs ? rs->cornerTR : 0;
+        SInt16 br = rs ? rs->cornerBR : 0, bl = rs ? rs->cornerBL : 0;
+        items.push_back({ s, nullptr, s->bounds, tl, tr, br, bl });
+    }
     for (Frame* f : gSelectedFrames)
         if (!hasSelectedAncestor(f))
             items.push_back({ nullptr, f, f->bounds, f->cornerTL, f->cornerTR, f->cornerBR, f->cornerBL });
@@ -3940,9 +3951,10 @@ static void HandleMultiResizeDrag(WindowRef win, int hi, Point startPt) {
                 SInt16 newTR = pickCorner(flipY, !flipX, it);
                 SInt16 newBL = pickCorner(!flipY, flipX, it);
                 SInt16 newBR = pickCorner(!flipY, !flipX, it);
-                if (it.shape) {
-                    it.shape->cornerTL = newTL; it.shape->cornerTR = newTR;
-                    it.shape->cornerBL = newBL; it.shape->cornerBR = newBR;
+                if (it.shape && it.shape->GetType() == Shape::kRectangle) {
+                    RectShape* rs = static_cast<RectShape*>(it.shape);
+                    rs->cornerTL = newTL; rs->cornerTR = newTR;
+                    rs->cornerBL = newBL; rs->cornerBR = newBR;
                 } else if (it.frame) {
                     it.frame->cornerTL = newTL; it.frame->cornerTR = newTR;
                     it.frame->cornerBL = newBL; it.frame->cornerBR = newBR;
