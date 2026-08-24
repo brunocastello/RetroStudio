@@ -3431,6 +3431,21 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     int signX = bL[hi] ? 1 : (bR[hi] ? -1 : 0);
     int signY = bT[hi] ? 1 : (bB[hi] ? -1 : 0);
 
+    // Corner-radius snapshot for the flip-through-anchor case below: dragging
+    // a handle far enough to cross the opposite edge mirrors the object
+    // (Figma behavior), which means whichever corner is now visually
+    // top-left is a DIFFERENT one of the ORIGINAL four corners — recomputed
+    // fresh from this snapshot every tick (never incrementally toggled) so
+    // dragging back and forth across the crossing point any number of times
+    // always lands on the exactly-correct corner, same "freeze a baseline,
+    // recompute fresh" pattern the Scale-constraint math already relies on.
+    Shape* cs = gSelectedShape;
+    Frame* cf = gSelectedFrame;
+    SInt16 origCornerTL = cs ? cs->cornerTL : (cf ? cf->cornerTL : 0);
+    SInt16 origCornerTR = cs ? cs->cornerTR : (cf ? cf->cornerTR : 0);
+    SInt16 origCornerBR = cs ? cs->cornerBR : (cf ? cf->cornerBR : 0);
+    SInt16 origCornerBL = cs ? cs->cornerBL : (cf ? cf->cornerBL : 0);
+
     Point prev = startPt, curr = startPt;
     bool pushedUndo = false;
 
@@ -3552,14 +3567,16 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                 if (baseW > 0 && baseH > 0) newH = newW * baseH / baseW;
             }
 
-            if (newW < kMin) newW = kMin;
-            if (newH < kMin) newH = kMin;
-
+            // No floor here — letting newW/newH go through zero and negative
+            // is exactly what makes the flip-through-anchor case below work.
             // Keep the handle opposite the dragged one fixed on screen: solve for the
             // new center that leaves that anchor point's rotated position unchanged.
             // Purely local math (bounds.x/y live in local/pre-ambient space, and any
             // enclosing ambient rotation is constant during this drag), so it only
-            // needs the object's OWN rotation, not the net one used above.
+            // needs the object's OWN rotation, not the net one used above. This holds
+            // for negative newW/newH too — the algebra doesn't care about sign, so the
+            // anchor point stays fixed straight through a crossing without any extra
+            // casework here.
             double halfW = newW * 0.5, halfH = newH * 0.5;
             double dLocalX = signX * (origHalfW - halfW);
             double dLocalY = signY * (origHalfH - halfH);
@@ -3567,10 +3584,45 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
             double newCenterY = origCenterY + (dLocalX * ownSinT + dLocalY * ownCosT);
 
             double newX = newCenterX - halfW, newY = newCenterY - halfH;
-            b->w = static_cast<SInt32>(newW + (newW >= 0 ? 0.5 : -0.5));
-            b->h = static_cast<SInt32>(newH + (newH >= 0 ? 0.5 : -0.5));
-            b->x = static_cast<SInt32>(newX + (newX >= 0 ? 0.5 : -0.5));
-            b->y = static_cast<SInt32>(newY + (newY >= 0 ? 0.5 : -0.5));
+
+            // Flip-through-anchor (Figma behavior): dragging a handle far enough
+            // to cross the opposite edge mirrors the object instead of sticking
+            // at a minimum size. Detect a negative width/height and normalize it
+            // back to positive by relabeling which edge is "left"/"top" — this
+            // is exactly what makes the anchor end up as the OPPOSITE edge after
+            // crossing (verified algebraically: the box's center and its anchor
+            // edge position are both preserved through this relabeling).
+            bool flipX = newW < 0.0, flipY = newH < 0.0;
+            double finalX = flipX ? (newX + newW) : newX;
+            double finalY = flipY ? (newY + newH) : newY;
+            double finalW = flipX ? -newW : newW;
+            double finalH = flipY ? -newH : newH;
+            if (finalW < 1.0) finalW = 1.0;
+            if (finalH < 1.0) finalH = 1.0;
+
+            b->w = static_cast<SInt32>(finalW + 0.5);
+            b->h = static_cast<SInt32>(finalH + 0.5);
+            b->x = static_cast<SInt32>(finalX + (finalX >= 0 ? 0.5 : -0.5));
+            b->y = static_cast<SInt32>(finalY + (finalY >= 0 ? 0.5 : -0.5));
+
+            // Recompute individual corner radii fresh from the pre-drag snapshot
+            // every tick (see the snapshot comment above) so whichever corner is
+            // now visually top-left/right/etc. carries the radius that belonged
+            // to that corner before any flip.
+            if (cs || cf) {
+                auto pick = [&](bool rowIsBottom, bool colIsRight) -> SInt16 {
+                    if (!rowIsBottom && !colIsRight) return origCornerTL;
+                    if (!rowIsBottom &&  colIsRight) return origCornerTR;
+                    if ( rowIsBottom && !colIsRight) return origCornerBL;
+                    return origCornerBR;
+                };
+                SInt16 newTL = pick(flipY, flipX);
+                SInt16 newTR = pick(flipY, !flipX);
+                SInt16 newBL = pick(!flipY, flipX);
+                SInt16 newBR = pick(!flipY, !flipX);
+                if (cs) { cs->cornerTL = newTL; cs->cornerTR = newTR; cs->cornerBL = newBL; cs->cornerBR = newBR; }
+                else    { cf->cornerTL = newTL; cf->cornerTR = newTR; cf->cornerBL = newBL; cf->cornerBR = newBR; }
+            }
 
             // Smart Guides: snap only the specific edge(s) this handle drags —
             // never the anchored opposite edge. Unrotated-only (own + ambient),
@@ -3669,10 +3721,16 @@ static void HandleMultiResizeDrag(WindowRef win, int hi, Point startPt) {
         return false;
     };
 
-    struct GroupItem { Shape* shape; Frame* frame; Bounds2 orig; };
+    struct GroupItem {
+        Shape* shape; Frame* frame; Bounds2 orig;
+        SInt16 origCornerTL, origCornerTR, origCornerBR, origCornerBL;
+    };
     std::vector<GroupItem> items;
-    for (Shape* s : gSelectedShapes) items.push_back({ s, nullptr, s->bounds });
-    for (Frame* f : gSelectedFrames) if (!hasSelectedAncestor(f)) items.push_back({ nullptr, f, f->bounds });
+    for (Shape* s : gSelectedShapes)
+        items.push_back({ s, nullptr, s->bounds, s->cornerTL, s->cornerTR, s->cornerBR, s->cornerBL });
+    for (Frame* f : gSelectedFrames)
+        if (!hasSelectedAncestor(f))
+            items.push_back({ nullptr, f, f->bounds, f->cornerTL, f->cornerTR, f->cornerBR, f->cornerBL });
     if (items.empty()) return;
 
     static const SInt32 kMin = 10;
@@ -3758,21 +3816,33 @@ static void HandleMultiResizeDrag(WindowRef win, int hi, Point startPt) {
                 }
             }
 
-            if (newW < kMin) newW = kMin;
-            if (newH < kMin) newH = kMin;
+            // No floor here — letting newW/newH (and therefore the shared scale
+            // factor) go through zero and negative is what makes the
+            // flip-through-anchor case below work, same as single-item resize.
 
             double scaleX = widthChanged  ? (newW / origAgg.w) : 1.0;
             double scaleY = heightChanged ? (newH / origAgg.h) : 1.0;
 
-            // Never let the shared scale shrink any one member below kMin.
-            if (widthChanged  && minItemW > 0) {
+            // Never let the shared scale's MAGNITUDE shrink any one member below
+            // kMin — expressed on the magnitude (not a plain floor) so a scale
+            // crossing through zero to a negative (mirrored) value is still
+            // allowed; only collapsing toward zero size is prevented.
+            if (widthChanged && minItemW > 0) {
                 double minScaleX = kMin / minItemW;
-                if (scaleX < minScaleX) scaleX = minScaleX;
+                if (scaleX >= 0.0 && scaleX < minScaleX) scaleX = minScaleX;
+                else if (scaleX < 0.0 && scaleX > -minScaleX) scaleX = -minScaleX;
             }
             if (heightChanged && minItemH > 0) {
                 double minScaleY = kMin / minItemH;
-                if (scaleY < minScaleY) scaleY = minScaleY;
+                if (scaleY >= 0.0 && scaleY < minScaleY) scaleY = minScaleY;
+                else if (scaleY < 0.0 && scaleY > -minScaleY) scaleY = -minScaleY;
             }
+
+            // A negative scale mirrors the WHOLE group at once — every member's
+            // own w becomes negative in lockstep (it.orig.w is always positive,
+            // so rawW's sign is just scaleX's sign), so flipX/flipY only need
+            // computing once, not per item.
+            bool flipX = scaleX < 0.0, flipY = scaleY < 0.0;
 
             // it.orig.x/y is each item's raw LOCAL box corner (unrotated,
             // rotation is a separate field applied at render time around the
@@ -3786,20 +3856,45 @@ static void HandleMultiResizeDrag(WindowRef win, int hi, Point startPt) {
             auto roundSInt32 = [](double v) -> SInt32 {
                 return static_cast<SInt32>(v + (v >= 0 ? 0.5 : -0.5));
             };
+            auto pickCorner = [](bool rowIsBottom, bool colIsRight, const GroupItem& it) -> SInt16 {
+                if (!rowIsBottom && !colIsRight) return it.origCornerTL;
+                if (!rowIsBottom &&  colIsRight) return it.origCornerTR;
+                if ( rowIsBottom && !colIsRight) return it.origCornerBL;
+                return it.origCornerBR;
+            };
             for (auto& it : items) {
+                double rawX = xAnchor + (it.orig.x - xAnchor) * scaleX;
+                double rawW = it.orig.w * scaleX;
+                double rawY = yAnchor + (it.orig.y - yAnchor) * scaleY;
+                double rawH = it.orig.h * scaleY;
+                double finalX = flipX ? (rawX + rawW) : rawX;
+                double finalY = flipY ? (rawY + rawH) : rawY;
+                double finalW = flipX ? -rawW : rawW;
+                double finalH = flipY ? -rawH : rawH;
+                if (finalW < 1.0) finalW = 1.0;
+                if (finalH < 1.0) finalH = 1.0;
+
                 Bounds2 nb;
-                nb.x = roundSInt32(xAnchor + (it.orig.x - xAnchor) * scaleX);
-                nb.w = roundSInt32(it.orig.w * scaleX);
-                nb.y = roundSInt32(yAnchor + (it.orig.y - yAnchor) * scaleY);
-                nb.h = roundSInt32(it.orig.h * scaleY);
-                if (nb.w < kMin) nb.w = kMin;
-                if (nb.h < kMin) nb.h = kMin;
+                nb.x = roundSInt32(finalX); nb.y = roundSInt32(finalY);
+                nb.w = roundSInt32(finalW); nb.h = roundSInt32(finalH);
                 if (it.shape) it.shape->bounds = nb;
                 else if (it.frame) it.frame->bounds = nb;
+
+                SInt16 newTL = pickCorner(flipY, flipX, it);
+                SInt16 newTR = pickCorner(flipY, !flipX, it);
+                SInt16 newBL = pickCorner(!flipY, flipX, it);
+                SInt16 newBR = pickCorner(!flipY, !flipX, it);
+                if (it.shape) {
+                    it.shape->cornerTL = newTL; it.shape->cornerTR = newTR;
+                    it.shape->cornerBL = newBL; it.shape->cornerBR = newBR;
+                } else if (it.frame) {
+                    it.frame->cornerTL = newTL; it.frame->cornerTR = newTR;
+                    it.frame->cornerBL = newBL; it.frame->cornerBR = newBR;
+                }
             }
 
-            curAggW = origAgg.w * scaleX;
-            curAggH = origAgg.h * scaleY;
+            curAggW = std::abs(origAgg.w * scaleX);
+            curAggH = std::abs(origAgg.h * scaleY);
 
             gActiveGuides.clear();
             DrawWindowContent(win);
