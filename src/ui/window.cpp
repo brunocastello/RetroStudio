@@ -3115,6 +3115,191 @@ static bool IsShiftKeyDownNow() {
     return (km[shiftVKeyCode >> 3] & (1 << (shiftVKeyCode & 7))) != 0;
 }
 
+// --------------------------------------------------------------------------
+// Smart alignment guides (Figma-style) — single-item move-drag only
+// --------------------------------------------------------------------------
+
+// Snaps b into alignment with its parent's center or a sibling's edges/center
+// when within a few screen pixels, and populates gActiveGuides with every
+// guide line to draw at the final (possibly snapped) position — not just the
+// one that triggered the snap, so several siblings sharing the same aligned
+// edge all light up at once, same as Figma.
+//
+// Scope: only when both the dragged item and its parent are unrotated (rotated
+// alignment needs the same rotation-chain math HandleResizeDrag/HandleRotateDrag
+// use elsewhere in this file — not attempted here) and only when there's an
+// actual parent frame to align within (no canvas-viewport-relative guides for
+// root-level items).
+//
+// Shared by four callers: single-item move-drag (ComputeSmartGuides),
+// aggregate-bbox multi-select move-drag (ComputeSmartGuidesMulti), and
+// single-edge resize-drag (ComputeSmartGuidesEdge) — each supplies its own
+// exclusion test so the dragged item(s) never "align" against themselves.
+//
+// xMask/yMask select WHICH of an axis's three candidate positions
+// (left/right/center, encoded as bits below) actually participate. Move-drag
+// callers pass the full mask — an object's edge landing on a sibling's
+// center (or vice versa) should guide just as much as center-to-center —
+// but resize-drag passes only the single edge actually being dragged, so a
+// stationary anchored edge never falsely "snaps" against something it isn't
+// moving toward.
+static constexpr unsigned kEdgeLeft = 1, kEdgeRight = 2, kEdgeCenter = 4;
+static constexpr unsigned kEdgeTop = kEdgeLeft, kEdgeBottom = kEdgeRight; // same bits, Y axis
+static constexpr unsigned kEdgeAll = kEdgeLeft | kEdgeRight | kEdgeCenter; // used for both axes
+
+template <typename ExcludeShapeFn, typename ExcludeFrameFn>
+static void ComputeSmartGuidesCore(Bounds2& b, Frame* parent, unsigned xMask, unsigned yMask,
+                                    ExcludeShapeFn excludeShape, ExcludeFrameFn excludeFrame) {
+    gActiveGuides.clear();
+    if (!gSmartGuidesEnabled) return;
+    if (!parent) return;
+    double ambientRotDeg = 0.0;
+    for (const auto& step : AncestorChainFor(parent)) ambientRotDeg += step.angleDeg;
+    if (ambientRotDeg != 0.0) return;
+
+    const SInt32 tolerance = std::max<SInt32>(1, SInt32(4) * 100 / gCanvasZoom);
+
+    SInt32 left = b.x, right = b.x + b.w, centerX = b.x + b.w / 2;
+    SInt32 top  = b.y, bottom = b.y + b.h, centerY = b.y + b.h / 2;
+
+    // ---- pass 1: find the single best X and Y snap ----
+    SInt32 bestDX = 0, bestDY = 0;
+    bool haveDX = false, haveDY = false;
+    auto absOf = [](SInt32 v) { return v < 0 ? -v : v; };
+    auto considerX = [&](SInt32 target, SInt32 from) {
+        SInt32 d = target - from;
+        if (absOf(d) <= tolerance && (!haveDX || absOf(d) < absOf(bestDX))) { bestDX = d; haveDX = true; }
+    };
+    auto considerY = [&](SInt32 target, SInt32 from) {
+        SInt32 d = target - from;
+        if (absOf(d) <= tolerance && (!haveDY || absOf(d) < absOf(bestDY))) { bestDY = d; haveDY = true; }
+    };
+    // Try `target` against whichever of our own left/right/center xMask enables.
+    auto tryX = [&](SInt32 target) {
+        if (xMask & kEdgeLeft)   considerX(target, left);
+        if (xMask & kEdgeRight)  considerX(target, right);
+        if (xMask & kEdgeCenter) considerX(target, centerX);
+    };
+    auto tryY = [&](SInt32 target) {
+        if (yMask & kEdgeTop)    considerY(target, top);
+        if (yMask & kEdgeBottom) considerY(target, bottom);
+        if (yMask & kEdgeCenter) considerY(target, centerY);
+    };
+
+    // Parent-center guide: compare against whichever of the dragged object's
+    // own left/right/center the mask allows — an object's edge landing
+    // exactly on the parent's centerline should snap/guide just as much as
+    // its own center would (for move-drag; resize-drag narrows this to
+    // whichever single edge is actually moving).
+    SInt32 pCenterX = parent->bounds.x + parent->bounds.w / 2;
+    SInt32 pCenterY = parent->bounds.y + parent->bounds.h / 2;
+    tryX(pCenterX);
+    tryY(pCenterY);
+
+    auto scanSibling = [&](const Bounds2& sb) {
+        SInt32 sL = sb.x, sR = sb.x + sb.w, sCX = sb.x + sb.w / 2;
+        SInt32 sT = sb.y, sB = sb.y + sb.h, sCY = sb.y + sb.h / 2;
+        tryX(sL); tryX(sR); tryX(sCX);
+        tryY(sT); tryY(sB); tryY(sCY);
+    };
+    for (auto& s : parent->children)    if (!excludeShape(s.get())) scanSibling(s->bounds);
+    for (auto& cf : parent->childFrames) if (!excludeFrame(cf.get())) scanSibling(cf->bounds);
+
+    if (haveDX) b.x += bestDX;
+    if (haveDY) b.y += bestDY;
+
+    // ---- pass 2: at the final position, collect EVERY exact match to draw ----
+    left = b.x; right = b.x + b.w; centerX = b.x + b.w / 2;
+    top  = b.y; bottom = b.y + b.h; centerY = b.y + b.h / 2;
+
+    // Note: the guide's own position is pCenterX/pCenterY, not centerX/centerY —
+    // when it's the object's LEFT or RIGHT edge (not its center) that matched,
+    // centerX has a different value than pCenterX even though the match is exact.
+    bool centerXGuide = ((xMask & kEdgeLeft)   && left   == pCenterX)
+                      || ((xMask & kEdgeRight)  && right  == pCenterX)
+                      || ((xMask & kEdgeCenter) && centerX == pCenterX);
+    bool centerYGuide = ((yMask & kEdgeTop)    && top    == pCenterY)
+                      || ((yMask & kEdgeBottom) && bottom == pCenterY)
+                      || ((yMask & kEdgeCenter) && centerY == pCenterY);
+    if (centerXGuide) gActiveGuides.push_back({ true,  pCenterX, parent->bounds.y, parent->bounds.y + parent->bounds.h });
+    if (centerYGuide) gActiveGuides.push_back({ false, pCenterY, parent->bounds.x, parent->bounds.x + parent->bounds.w });
+
+    auto matchSibling = [&](const Bounds2& sb) {
+        SInt32 sL = sb.x, sR = sb.x + sb.w, sCX = sb.x + sb.w / 2;
+        SInt32 sT = sb.y, sB = sb.y + sb.h, sCY = sb.y + sb.h / 2;
+        if ((xMask & kEdgeLeft) && (left == sL || left == sR || left == sCX))
+            gActiveGuides.push_back({ true, left, std::min(top, sT), std::max(bottom, sB) });
+        if ((xMask & kEdgeRight) && (right == sL || right == sR || right == sCX))
+            gActiveGuides.push_back({ true, right, std::min(top, sT), std::max(bottom, sB) });
+        // Skip only if this would duplicate the parent-center line already added
+        // above (same position) — not just because SOME parent-center guide fired,
+        // which may be at a different x (e.g. triggered by the left/right edge).
+        if ((xMask & kEdgeCenter) && centerX != pCenterX && centerX == sCX)
+            gActiveGuides.push_back({ true, centerX, std::min(top, sT), std::max(bottom, sB) });
+        if ((yMask & kEdgeTop) && (top == sT || top == sB || top == sCY))
+            gActiveGuides.push_back({ false, top, std::min(left, sL), std::max(right, sR) });
+        if ((yMask & kEdgeBottom) && (bottom == sT || bottom == sB || bottom == sCY))
+            gActiveGuides.push_back({ false, bottom, std::min(left, sL), std::max(right, sR) });
+        if ((yMask & kEdgeCenter) && centerY != pCenterY && centerY == sCY)
+            gActiveGuides.push_back({ false, centerY, std::min(left, sL), std::max(right, sR) });
+    };
+    for (auto& s : parent->children)     if (!excludeShape(s.get())) matchSibling(s->bounds);
+    for (auto& cf : parent->childFrames) if (!excludeFrame(cf.get())) matchSibling(cf->bounds);
+}
+
+// Single-item move-drag: excludeShape/excludeFrame is whichever of the two
+// the dragged item itself is, so it doesn't trivially "align" with itself.
+// Rotated items are out of scope (see ComputeSmartGuidesCore's header comment).
+static void ComputeSmartGuides(Bounds2& b, SInt16 selfRotation, Frame* parent,
+                                Shape* excludeShape, Frame* excludeFrame) {
+    if (selfRotation != 0) { gActiveGuides.clear(); return; }
+    ComputeSmartGuidesCore(b, parent, kEdgeAll, kEdgeAll,
+        [&](Shape* s) { return s == excludeShape; },
+        [&](Frame* f) { return f == excludeFrame; });
+}
+
+// Multi-select move-drag: b is the aggregate bounding box of the WHOLE
+// selection (shapes ∪ frames, already moved by this tick's raw delta before
+// this call), snapped as one rigid unit — matches Figma's multi-drag guide
+// behavior. Every selected shape/frame is excluded from the sibling scan so
+// the selection never aligns against its own members.
+static void ComputeSmartGuidesMulti(Bounds2& b, Frame* parent,
+                                     const std::vector<Shape*>& selShapes,
+                                     const std::vector<Frame*>& selFrames) {
+    ComputeSmartGuidesCore(b, parent, kEdgeAll, kEdgeAll,
+        [&](Shape* s) { return std::find(selShapes.begin(), selShapes.end(), s) != selShapes.end(); },
+        [&](Frame* f) { return std::find(selFrames.begin(), selFrames.end(), f) != selFrames.end(); });
+}
+
+// Resize-drag: only the SPECIFIC edge(s) actually being dragged snap/guide —
+// e.g. dragging the right handle only tests the right edge against
+// parent-center and sibling edges/centers, never the (stationary, anchored)
+// left edge or the box's center. xMask/yMask are kEdgeLeft/kEdgeRight/
+// kEdgeTop/kEdgeBottom (or 0 for an axis this handle doesn't touch) — never
+// kEdgeCenter, since resize guides are edge-only per design. b is the
+// shape/frame's trial bounds after this tick's resize math; the core mutates
+// whichever of b.x/b.y snapped, which the caller then has to translate back
+// into a width/height adjustment (see HandleResizeDrag).
+static void ComputeSmartGuidesEdge(Bounds2& b, SInt16 selfRotation, Frame* parent,
+                                    unsigned xMask, unsigned yMask,
+                                    Shape* excludeShape, Frame* excludeFrame) {
+    if (selfRotation != 0) { gActiveGuides.clear(); return; }
+    ComputeSmartGuidesCore(b, parent, xMask, yMask,
+        [&](Shape* s) { return s == excludeShape; },
+        [&](Frame* f) { return f == excludeFrame; });
+}
+
+// A guide line's own footprint converted to a SCREEN rect (same zoom/offset
+// transform CanvasRect uses), padded 1px either side of its axis, so widening
+// a live-drag dirty rect with this reliably covers the drawn line.
+static Rect GuideLineScreenRect(const GuideLine& g) {
+    short pos = static_cast<short>(SInt32(g.pos)   * gCanvasZoom / 100 + (g.vertical ? gCanvasOffsetX : gCanvasOffsetY));
+    short lo  = static_cast<short>(SInt32(g.start) * gCanvasZoom / 100 + (g.vertical ? gCanvasOffsetY : gCanvasOffsetX));
+    short hi  = static_cast<short>(SInt32(g.end)   * gCanvasZoom / 100 + (g.vertical ? gCanvasOffsetY : gCanvasOffsetX));
+    if (g.vertical) return Rect{ lo, static_cast<short>(pos-1), hi, static_cast<short>(pos+1) };
+    return Rect{ static_cast<short>(pos-1), lo, static_cast<short>(pos+1), hi };
+}
+
 // Drag the selected object's bounds by moving only the edge(s) implied by
 // handleIdx, then redraw live.  Minimum dimension: 10px.
 static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startMods = 0) {
@@ -3190,6 +3375,7 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                      static_cast<short>(maxY+pad), static_cast<short>(maxX+pad) };
     };
     Rect prevReach = ComputeReachRect(*b);
+    std::vector<GuideLine> prevGuides;  // last tick's guides, so a line that moves or disappears this tick still gets erased
 
     gIsResizeDragging = true;
     while (Button()) {
@@ -3290,6 +3476,40 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
             b->x = static_cast<SInt32>(newX + (newX >= 0 ? 0.5 : -0.5));
             b->y = static_cast<SInt32>(newY + (newY >= 0 ? 0.5 : -0.5));
 
+            // Smart Guides: snap only the specific edge(s) this handle drags —
+            // never the anchored opposite edge. Unrotated-only (own + ambient),
+            // same restriction move-drag has (see ComputeSmartGuidesCore).
+            // ComputeSmartGuidesEdge mutates a trial copy's x/y by however far the
+            // matched edge should shift; the caller (here) translates that into a
+            // width/height change on the correct side so the anchored edge never
+            // moves — see ComputeSmartGuidesEdge's own comment for why a plain
+            // b.x += delta from the core is still correct math even though we
+            // apply it to b->w for a right/bottom-edge drag.
+            unsigned xEdgeMask = bL[hi] ? kEdgeLeft : (bR[hi] ? kEdgeRight : 0u);
+            unsigned yEdgeMask = bT[hi] ? kEdgeTop  : (bB[hi] ? kEdgeBottom : 0u);
+            if (xEdgeMask || yEdgeMask) {
+                Frame* guideParent = gSelectedShape ? LocateShapeParent(gSelectedShape)
+                                     : (gSelectedFrame ? gSelectedFrame->parent : nullptr);
+                SInt16 selfRot = gSelectedShape ? gSelectedShape->rotation
+                                 : (gSelectedFrame ? gSelectedFrame->rotation : SInt16(0));
+                Bounds2 trial = *b;
+                ComputeSmartGuidesEdge(trial, selfRot, guideParent, xEdgeMask, yEdgeMask,
+                                        gSelectedShape, gSelectedFrame);
+                SInt32 snapDX = trial.x - b->x, snapDY = trial.y - b->y;
+                if (snapDX != 0) {
+                    if (bR[hi]) b->w += snapDX;
+                    else        { b->x += snapDX; b->w -= snapDX; }
+                    if (b->w < kMin) b->w = kMin;
+                }
+                if (snapDY != 0) {
+                    if (bB[hi]) b->h += snapDY;
+                    else        { b->y += snapDY; b->h -= snapDY; }
+                    if (b->h < kMin) b->h = kMin;
+                }
+            } else {
+                gActiveGuides.clear();
+            }
+
             Rect newReach = ComputeReachRect(*b);
             Rect dirtyRect = {
                 std::min(prevReach.top,  newReach.top),
@@ -3297,12 +3517,26 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                 std::max(prevReach.bottom, newReach.bottom),
                 std::max(prevReach.right,  newReach.right)
             };
+            // Widen for both this tick's guides (about to be drawn) and last
+            // tick's (may have moved or vanished — still need erasing).
+            for (const GuideLine& g : gActiveGuides) {
+                Rect gr = GuideLineScreenRect(g);
+                dirtyRect.top = std::min(dirtyRect.top, gr.top); dirtyRect.left = std::min(dirtyRect.left, gr.left);
+                dirtyRect.bottom = std::max(dirtyRect.bottom, gr.bottom); dirtyRect.right = std::max(dirtyRect.right, gr.right);
+            }
+            for (const GuideLine& g : prevGuides) {
+                Rect gr = GuideLineScreenRect(g);
+                dirtyRect.top = std::min(dirtyRect.top, gr.top); dirtyRect.left = std::min(dirtyRect.left, gr.left);
+                dirtyRect.bottom = std::max(dirtyRect.bottom, gr.bottom); dirtyRect.right = std::max(dirtyRect.right, gr.right);
+            }
             DrawWindowContent(win, &dirtyRect);
             prevReach = newReach;
+            prevGuides = gActiveGuides;
             prev = curr;
         }
     }
     gIsResizeDragging = false;
+    gActiveGuides.clear();
 
     Rect pr; GetWindowPortBounds(win, &pr); InvalWindowRect(win, &pr);
 }
@@ -3501,120 +3735,6 @@ static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
 
 // Forward declaration — full definition lives further down, near HandleTextPlace.
 static void EditTextInPlace(WindowRef win, TextShape* ts, bool pushUndoOnCommit = true);
-
-// --------------------------------------------------------------------------
-// Smart alignment guides (Figma-style) — single-item move-drag only
-// --------------------------------------------------------------------------
-
-// Snaps b into alignment with its parent's center or a sibling's edges/center
-// when within a few screen pixels, and populates gActiveGuides with every
-// guide line to draw at the final (possibly snapped) position — not just the
-// one that triggered the snap, so several siblings sharing the same aligned
-// edge all light up at once, same as Figma.
-//
-// Scope: only when both the dragged item and its parent are unrotated (rotated
-// alignment needs the same rotation-chain math HandleResizeDrag/HandleRotateDrag
-// use elsewhere in this file — not attempted here) and only when there's an
-// actual parent frame to align within (no canvas-viewport-relative guides for
-// root-level items). excludeShape/excludeFrame is whichever of the two the
-// dragged item itself is, so it doesn't trivially "align" with itself.
-static void ComputeSmartGuides(Bounds2& b, SInt16 selfRotation, Frame* parent,
-                                Shape* excludeShape, Frame* excludeFrame) {
-    gActiveGuides.clear();
-    if (!gSmartGuidesEnabled) return;
-    if (selfRotation != 0 || !parent) return;
-    double ambientRotDeg = 0.0;
-    for (const auto& step : AncestorChainFor(parent)) ambientRotDeg += step.angleDeg;
-    if (ambientRotDeg != 0.0) return;
-
-    const SInt32 tolerance = std::max<SInt32>(1, SInt32(4) * 100 / gCanvasZoom);
-
-    SInt32 left = b.x, right = b.x + b.w, centerX = b.x + b.w / 2;
-    SInt32 top  = b.y, bottom = b.y + b.h, centerY = b.y + b.h / 2;
-
-    // ---- pass 1: find the single best X and Y snap ----
-    SInt32 bestDX = 0, bestDY = 0;
-    bool haveDX = false, haveDY = false;
-    auto absOf = [](SInt32 v) { return v < 0 ? -v : v; };
-    auto considerX = [&](SInt32 target, SInt32 from) {
-        SInt32 d = target - from;
-        if (absOf(d) <= tolerance && (!haveDX || absOf(d) < absOf(bestDX))) { bestDX = d; haveDX = true; }
-    };
-    auto considerY = [&](SInt32 target, SInt32 from) {
-        SInt32 d = target - from;
-        if (absOf(d) <= tolerance && (!haveDY || absOf(d) < absOf(bestDY))) { bestDY = d; haveDY = true; }
-    };
-
-    // Parent-center guide: compare against the dragged object's left/right/center
-    // (not just its own center), same as siblings below — an object's edge landing
-    // exactly on the parent's centerline should snap/guide just as much as its
-    // own center would.
-    SInt32 pCenterX = parent->bounds.x + parent->bounds.w / 2;
-    SInt32 pCenterY = parent->bounds.y + parent->bounds.h / 2;
-    considerX(pCenterX, left); considerX(pCenterX, right); considerX(pCenterX, centerX);
-    considerY(pCenterY, top);  considerY(pCenterY, bottom); considerY(pCenterY, centerY);
-
-    auto scanSibling = [&](const Bounds2& sb) {
-        SInt32 sL = sb.x, sR = sb.x + sb.w, sCX = sb.x + sb.w / 2;
-        SInt32 sT = sb.y, sB = sb.y + sb.h, sCY = sb.y + sb.h / 2;
-        considerX(sL, left);  considerX(sL, right);  considerX(sL, centerX);
-        considerX(sR, left);  considerX(sR, right);  considerX(sR, centerX);
-        considerX(sCX, centerX);
-        considerY(sT, top);   considerY(sT, bottom); considerY(sT, centerY);
-        considerY(sB, top);   considerY(sB, bottom); considerY(sB, centerY);
-        considerY(sCY, centerY);
-    };
-    for (auto& s : parent->children)    if (s.get()  != excludeShape) scanSibling(s->bounds);
-    for (auto& cf : parent->childFrames) if (cf.get() != excludeFrame) scanSibling(cf->bounds);
-
-    if (haveDX) b.x += bestDX;
-    if (haveDY) b.y += bestDY;
-
-    // ---- pass 2: at the final position, collect EVERY exact match to draw ----
-    left = b.x; right = b.x + b.w; centerX = b.x + b.w / 2;
-    top  = b.y; bottom = b.y + b.h; centerY = b.y + b.h / 2;
-
-    // Note: the guide's own position is pCenterX/pCenterY, not centerX/centerY —
-    // when it's the object's LEFT or RIGHT edge (not its center) that matched,
-    // centerX has a different value than pCenterX even though the match is exact.
-    bool centerXGuide = (left == pCenterX || right == pCenterX || centerX == pCenterX);
-    bool centerYGuide = (top == pCenterY || bottom == pCenterY || centerY == pCenterY);
-    if (centerXGuide) gActiveGuides.push_back({ true,  pCenterX, parent->bounds.y, parent->bounds.y + parent->bounds.h });
-    if (centerYGuide) gActiveGuides.push_back({ false, pCenterY, parent->bounds.x, parent->bounds.x + parent->bounds.w });
-
-    auto matchSibling = [&](const Bounds2& sb) {
-        SInt32 sL = sb.x, sR = sb.x + sb.w, sCX = sb.x + sb.w / 2;
-        SInt32 sT = sb.y, sB = sb.y + sb.h, sCY = sb.y + sb.h / 2;
-        if (left == sL || left == sR || left == sCX)
-            gActiveGuides.push_back({ true, left, std::min(top, sT), std::max(bottom, sB) });
-        if (right == sL || right == sR || right == sCX)
-            gActiveGuides.push_back({ true, right, std::min(top, sT), std::max(bottom, sB) });
-        // Skip only if this would duplicate the parent-center line already added
-        // above (same position) — not just because SOME parent-center guide fired,
-        // which may be at a different x (e.g. triggered by the left/right edge).
-        if (centerX != pCenterX && centerX == sCX)
-            gActiveGuides.push_back({ true, centerX, std::min(top, sT), std::max(bottom, sB) });
-        if (top == sT || top == sB || top == sCY)
-            gActiveGuides.push_back({ false, top, std::min(left, sL), std::max(right, sR) });
-        if (bottom == sT || bottom == sB || bottom == sCY)
-            gActiveGuides.push_back({ false, bottom, std::min(left, sL), std::max(right, sR) });
-        if (centerY != pCenterY && centerY == sCY)
-            gActiveGuides.push_back({ false, centerY, std::min(left, sL), std::max(right, sR) });
-    };
-    for (auto& s : parent->children)     if (s.get()  != excludeShape) matchSibling(s->bounds);
-    for (auto& cf : parent->childFrames) if (cf.get() != excludeFrame) matchSibling(cf->bounds);
-}
-
-// A guide line's own footprint converted to a SCREEN rect (same zoom/offset
-// transform CanvasRect uses), padded 1px either side of its axis, so widening
-// a live-drag dirty rect with this reliably covers the drawn line.
-static Rect GuideLineScreenRect(const GuideLine& g) {
-    short pos = static_cast<short>(SInt32(g.pos)   * gCanvasZoom / 100 + (g.vertical ? gCanvasOffsetX : gCanvasOffsetY));
-    short lo  = static_cast<short>(SInt32(g.start) * gCanvasZoom / 100 + (g.vertical ? gCanvasOffsetY : gCanvasOffsetX));
-    short hi  = static_cast<short>(SInt32(g.end)   * gCanvasZoom / 100 + (g.vertical ? gCanvasOffsetY : gCanvasOffsetX));
-    if (g.vertical) return Rect{ lo, static_cast<short>(pos-1), hi, static_cast<short>(pos+1) };
-    return Rect{ static_cast<short>(pos-1), lo, static_cast<short>(pos+1), hi };
-}
 
 // --------------------------------------------------------------------------
 // Select tool: resize handles → name labels → body hit-test → move + reparent
@@ -3994,6 +4114,33 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
         if (isMultiDrag && hitFrame && hitFrame->layoutMode != LayoutMode::None)
             gIsLayoutMultiDrag = true;
 
+        // Multi-select Smart Guides setup (topology is stable for the whole
+        // gesture, so this runs once, not per-tick). Aggregate-bbox guides
+        // only fire when every moved item — every selected shape, and every
+        // selected frame that isn't itself nested inside another selected
+        // frame (that one moves along automatically via MoveFrameTree) —
+        // shares one common immediate parent. Mixed selections spanning
+        // different parents, or any root-level item, have no single sibling
+        // set to compare against, so guides are skipped rather than guessed.
+        bool multiGuideValid = isMultiDrag;
+        Frame* multiGuideParent = nullptr;
+        if (isMultiDrag) {
+            bool parentSet = false;
+            auto noteParent = [&](Frame* p) {
+                if (!parentSet) { multiGuideParent = p; parentSet = true; }
+                else if (p != multiGuideParent) multiGuideValid = false;
+            };
+            auto hasSelectedAncestorPre = [&](Frame* f) -> bool {
+                for (Frame* cur = f->parent; cur; cur = cur->parent)
+                    if (std::find(gSelectedFrames.begin(), gSelectedFrames.end(), cur) != gSelectedFrames.end())
+                        return true;
+                return false;
+            };
+            for (Shape* s : gSelectedShapes) noteParent(LocateShapeParent(s));
+            for (Frame* f : gSelectedFrames) if (!hasSelectedAncestorPre(f)) noteParent(f->parent);
+            if (!multiGuideParent) multiGuideValid = false; // root-level selection
+        }
+
         // Single-shape move: same dirty-rect approach HandleResizeDrag/
         // HandleRotateDrag already use, so this loop stops doing a full,
         // unclipped whole-window redraw on every mouse-move. That matters
@@ -4038,6 +4185,34 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                 // Convert screen pixel delta → canvas pixel delta
                 SInt32 dx = SInt32(currPt.h - prevPt.h) * 100 / gCanvasZoom;
                 SInt32 dy = SInt32(currPt.v - prevPt.v) * 100 / gCanvasZoom;
+
+                // Multi-select Smart Guides: build a trial aggregate bbox from the
+                // WHOLE selection's current (pre-move) bounds shifted by this tick's
+                // raw (dx,dy), run it through the snap core, then fold whatever extra
+                // adjustment it made back into dx/dy — the movement code below then
+                // applies the already-snapped delta uniformly, exactly as it would
+                // any other tick, so nothing downstream needs to know snapping happened.
+                if (isMultiDrag && multiGuideValid) {
+                    bool haveBox = false;
+                    Bounds2 agg{0, 0, 0, 0};
+                    auto uni = [&](const Bounds2& bb) {
+                        SInt32 l = bb.x + dx, t = bb.y + dy, r = l + bb.w, bo = t + bb.h;
+                        if (!haveBox) { agg = { l, t, r - l, bo - t }; haveBox = true; }
+                        else {
+                            SInt32 nl = std::min(agg.x, l), nt = std::min(agg.y, t);
+                            SInt32 nr = std::max(agg.x + agg.w, r), nb = std::max(agg.y + agg.h, bo);
+                            agg = { nl, nt, nr - nl, nb - nt };
+                        }
+                    };
+                    for (Shape* s : gSelectedShapes) uni(s->bounds);
+                    for (Frame* f : gSelectedFrames)  uni(f->bounds);
+                    Bounds2 beforeSnap = agg;
+                    ComputeSmartGuidesMulti(agg, multiGuideParent, gSelectedShapes, gSelectedFrames);
+                    dx += agg.x - beforeSnap.x;
+                    dy += agg.y - beforeSnap.y;
+                } else if (isMultiDrag) {
+                    gActiveGuides.clear();
+                }
 
                 // Helper: skip a frame if any of its ancestors is also in gSelectedFrames
                 auto hasSelectedAncestor = [&](Frame* f) -> bool {
