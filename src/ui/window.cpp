@@ -3991,7 +3991,10 @@ static void HandleRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
                                          static_cast<double>(curr.h) - screenCX)
                               * 180.0 / 3.14159265358979323846;
             double delta = curAngle - startAngle;
-            int newRotI = static_cast<int>(origRot + delta + 0.5);
+            double rawRot = origRot + delta;
+            // Shift held: snap to the nearest 15° increment, matching Figma.
+            if (IsShiftKeyDownNow()) rawRot = std::floor(rawRot / 15.0 + 0.5) * 15.0;
+            int newRotI = static_cast<int>(rawRot >= 0 ? rawRot + 0.5 : rawRot - 0.5);
             *pRot = static_cast<SInt16>(((newRotI % 360) + 360) % 360);
             SetCursor(GetRotateCursor(HandleBucket(cornerIdx, *pRot + ambientRotDeg)));
             // DrawWindowContent already runs layout itself right before drawing;
@@ -4069,6 +4072,11 @@ static void HandleMultiRotateDrag(WindowRef win, Point startPt, int cornerIdx) {
                                          static_cast<double>(curr.h) - pivotScreenX)
                               * 180.0 / 3.14159265358979323846;
             double deltaDeg = curAngle - startAngle;
+            // Shift held: snap the whole group's rotation DELTA to the nearest
+            // 15° (not each item's absolute angle independently) — that's what
+            // keeps every member turning by the same amount, matching a rigid
+            // group rotation, same as Figma.
+            if (IsShiftKeyDownNow()) deltaDeg = std::floor(deltaDeg / 15.0 + 0.5) * 15.0;
             double rad = deltaDeg * 3.14159265358979323846 / 180.0;
             double cosA = std::cos(rad), sinA = std::sin(rad);
 
