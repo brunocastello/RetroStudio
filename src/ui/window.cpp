@@ -2069,6 +2069,66 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                 }
             }
 
+            // Mirrored (flipped) text, no rotation involved: a pure axis
+            // reflection within the box's own rect, so — unlike the general
+            // rotation technique above — no trig or inverse-mapping is
+            // needed, just capture-and-paint-back-reflected. Deliberately
+            // scoped to !anyRotation only; flip combined with rotation isn't
+            // attempted here (same "not yet supported together" restriction
+            // as every other rotated-context gap this session — falls
+            // through to the plain upright fallback below instead of
+            // guessing at a combined transform).
+            if (!didPixelRotate && !anyRotation && (t.flippedH || t.flippedV) &&
+                !str.empty() && srcW > 0 && srcH > 0 &&
+                (SInt32)srcW * (SInt32)srcH <= 150000) {
+                FastPixelWriter fastW = GetFastPixelWriter();
+                bool useFast = fastW.Ready();
+                auto getPxM = [&](short px, short py) -> RGBColor {
+                    if (useFast) return fastW.Get(px, py);
+                    RGBColor c; GetCPixel(px, py, &c); return c;
+                };
+                auto setPxM = [&](short px, short py, const RGBColor& c) {
+                    if (useFast) fastW.Set(px, py, c);
+                    else         SetCPixel(px, py, const_cast<RGBColor*>(&c));
+                };
+
+                std::vector<RGBColor> under(static_cast<size_t>(srcW) * srcH);
+                for (short y = 0; y < srcH; ++y)
+                    for (short x = 0; x < srcW; ++x)
+                        under[static_cast<size_t>(y)*srcW + x] = getPxM(static_cast<short>(r.left+x), static_cast<short>(r.top+y));
+
+                RgnHandle savedClipM = NewRgn();
+                GetClip(savedClipM);
+                { Rect cr = r; ClipRect(&cr); }
+                setTextDrawState();
+                drawLines(r);
+                SetClip(savedClipM);
+                DisposeRgn(savedClipM);
+
+                std::vector<RGBColor> glyph(static_cast<size_t>(srcW) * srcH);
+                std::vector<bool> ink(static_cast<size_t>(srcW) * srcH);
+                for (short y = 0; y < srcH; ++y) {
+                    for (short x = 0; x < srcW; ++x) {
+                        RGBColor c = getPxM(static_cast<short>(r.left+x), static_cast<short>(r.top+y));
+                        size_t di = static_cast<size_t>(y)*srcW + x;
+                        const RGBColor& u = under[di];
+                        glyph[di] = c;
+                        ink[di] = c.red != u.red || c.green != u.green || c.blue != u.blue;
+                        setPxM(static_cast<short>(r.left+x), static_cast<short>(r.top+y), u); // restore background
+                    }
+                }
+                for (short y = 0; y < srcH; ++y) {
+                    for (short x = 0; x < srcW; ++x) {
+                        size_t si = static_cast<size_t>(y)*srcW + x;
+                        if (!ink[si]) continue;
+                        short dx = t.flippedH ? static_cast<short>(srcW - 1 - x) : x;
+                        short dy = t.flippedV ? static_cast<short>(srcH - 1 - y) : y;
+                        setPxM(static_cast<short>(r.left+dx), static_cast<short>(r.top+dy), glyph[si]);
+                    }
+                }
+                didPixelRotate = true;
+            }
+
             if (!didPixelRotate) {
                 // Empty text, or box too large to pixel-rotate cheaply:
                 // position tracks the ambient chain but glyphs stay upright.
@@ -3535,6 +3595,15 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     SInt16 origCornerBR = crs ? crs->cornerBR : (cf ? cf->cornerBR : 0);
     SInt16 origCornerBL = crs ? crs->cornerBL : (cf ? cf->cornerBL : 0);
 
+    // Same pre-drag snapshot treatment for a text shape's mirror state: the
+    // FINAL flippedH/V is origFlipped XOR (did this axis cross this drag),
+    // recomputed fresh each tick from this snapshot, never toggled
+    // incrementally — crossing back and forth any number of times within
+    // one gesture always lands on the mathematically correct end state.
+    TextShape* cts = (cs && cs->GetType() == Shape::kText) ? static_cast<TextShape*>(cs) : nullptr;
+    bool origFlippedH = cts && cts->flippedH;
+    bool origFlippedV = cts && cts->flippedV;
+
     Point prev = startPt, curr = startPt;
     bool pushedUndo = false;
 
@@ -3713,6 +3782,12 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                 else     { cf->cornerTL = newTL; cf->cornerTR = newTR; cf->cornerBL = newBL; cf->cornerBR = newBR; }
             }
 
+            // Text mirror state, same fresh-from-snapshot XOR pattern.
+            if (cts) {
+                cts->flippedH = origFlippedH != flipX;
+                cts->flippedV = origFlippedV != flipY;
+            }
+
             // Smart Guides: snap only the specific edge(s) this handle drags —
             // never the anchored opposite edge. Unrotated-only (own + ambient),
             // same restriction move-drag has (see ComputeSmartGuidesCore).
@@ -3826,6 +3901,7 @@ static void HandleMultiResizeDrag(WindowRef win, int hi, Point startPt) {
     struct GroupItem {
         Shape* shape; Frame* frame; Bounds2 orig;
         SInt16 origCornerTL, origCornerTR, origCornerBR, origCornerBL;
+        bool origFlippedH, origFlippedV;
     };
     std::vector<GroupItem> items;
     // cornerTL/TR/BR/BL live on RectShape (not the Shape base class) and on
@@ -3835,11 +3911,14 @@ static void HandleMultiResizeDrag(WindowRef win, int hi, Point startPt) {
         RectShape* rs = (s->GetType() == Shape::kRectangle) ? static_cast<RectShape*>(s) : nullptr;
         SInt16 tl = rs ? rs->cornerTL : 0, tr = rs ? rs->cornerTR : 0;
         SInt16 br = rs ? rs->cornerBR : 0, bl = rs ? rs->cornerBL : 0;
-        items.push_back({ s, nullptr, s->bounds, tl, tr, br, bl });
+        TextShape* ts = (s->GetType() == Shape::kText) ? static_cast<TextShape*>(s) : nullptr;
+        items.push_back({ s, nullptr, s->bounds, tl, tr, br, bl,
+                           ts && ts->flippedH, ts && ts->flippedV });
     }
     for (Frame* f : gSelectedFrames)
         if (!hasSelectedAncestor(f))
-            items.push_back({ nullptr, f, f->bounds, f->cornerTL, f->cornerTR, f->cornerBR, f->cornerBL });
+            items.push_back({ nullptr, f, f->bounds, f->cornerTL, f->cornerTR, f->cornerBR, f->cornerBL,
+                               false, false });
     if (items.empty()) return;
 
     static const SInt32 kMin = 10;
@@ -4000,6 +4079,12 @@ static void HandleMultiResizeDrag(WindowRef win, int hi, Point startPt) {
                 } else if (it.frame) {
                     it.frame->cornerTL = newTL; it.frame->cornerTR = newTR;
                     it.frame->cornerBL = newBL; it.frame->cornerBR = newBR;
+                }
+
+                if (it.shape && it.shape->GetType() == Shape::kText) {
+                    TextShape* ts = static_cast<TextShape*>(it.shape);
+                    ts->flippedH = it.origFlippedH != flipX;
+                    ts->flippedV = it.origFlippedV != flipY;
                 }
             }
 

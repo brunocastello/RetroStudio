@@ -95,4 +95,6 @@ public:
     UInt16      lineHeight    = 120;  // percent of font size (120 = 1.2em)
     SInt16      letterSpacing = 0;    // extra canvas-px between characters (0=normal)
     TextSizing  textSizing    = TextSizing::AutoWidth;
+    bool        flippedH      = false;  // mirrored glyphs (crossed the opposite edge on a width resize)
+    bool        flippedV      = false;  // mirrored glyphs (crossed the opposite edge on a height resize)
 };

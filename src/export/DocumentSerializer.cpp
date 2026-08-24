@@ -27,7 +27,7 @@ static pascal void NavOpenEventProc(NavEventCallbackMessage, NavCBRecPtr, void*)
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
 static const UInt32 kMagic   = 0x52535444;  // 'RSTD'
-static const UInt16 kVersion = 19;
+static const UInt16 kVersion = 20;
 
 // Folder Manager constants — defined here because Retro68 Carbon headers
 // don't always expose <Folders.h> constants via <Carbon.h>.
@@ -125,6 +125,8 @@ static void WriteShape(Writer& w, const Shape& s) {
         w.w16(ts.lineHeight);
         w.w16(static_cast<UInt16>(static_cast<SInt16>(ts.letterSpacing)));
         w.w8(static_cast<UInt8>(ts.textSizing));
+        w.w8(ts.flippedH ? 1 : 0);
+        w.w8(ts.flippedV ? 1 : 0);
     }
     w.wStr(s.name);
 }
@@ -174,6 +176,10 @@ static std::unique_ptr<Shape> ReadShape(Reader& r, UInt16 ver) {
         ts->lineHeight   = r.r16();
         ts->letterSpacing = static_cast<SInt16>(r.r16());
         ts->textSizing    = static_cast<TextSizing>(r.r8());
+        if (ver >= 20) {
+            ts->flippedH = r.r8() != 0;
+            ts->flippedV = r.r8() != 0;
+        }
         shape = std::move(ts);
     } else {
         shape = std::make_unique<EllipseShape>();
