@@ -3890,6 +3890,18 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
 
                 const SInt32 releaseAt = std::max<SInt32>(4, SInt32(14) * 100 / gCanvasZoom);
 
+                // Draw this guide the full height/width of the visible window,
+                // ruler-style (matches Figma), instead of stopping at the
+                // frame's own edges — inverse of GuideLineScreenRect's own
+                // canvas->screen transform, so it lines up exactly regardless
+                // of pan/zoom. A real ruler (mentioned as a later feature)
+                // would reuse this same screen<->canvas conversion.
+                Rect winPr; GetWindowPortBounds(win, &winPr);
+                SInt32 fullTop    = (SInt32(winPr.top)    - gCanvasOffsetY) * 100 / gCanvasZoom;
+                SInt32 fullBottom = (SInt32(winPr.bottom) - gCanvasOffsetY) * 100 / gCanvasZoom;
+                SInt32 fullLeft   = (SInt32(winPr.left)   - gCanvasOffsetX) * 100 / gCanvasZoom;
+                SInt32 fullRight  = (SInt32(winPr.right)  - gCanvasOffsetX) * 100 / gCanvasZoom;
+
                 auto tryAxis = [&](bool active, SInt32 raw, SInt32& prevRaw, bool& locked, SInt32& lockedVal,
                                     const std::vector<SInt32>& cands, bool isW) {
                     if (!active) return;
@@ -3908,11 +3920,11 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                             if (isW) {
                                 if (bL[hi]) { SInt32 R = b->x + b->w; b->w = lockedVal; b->x = R - lockedVal; }
                                 else        { b->w = lockedVal; }
-                                gActiveGuides.push_back({ true, bL[hi] ? b->x : (b->x + b->w), b->y, b->y + b->h });
+                                gActiveGuides.push_back({ true, bL[hi] ? b->x : (b->x + b->w), fullTop, fullBottom });
                             } else {
                                 if (bT[hi]) { SInt32 Bo = b->y + b->h; b->h = lockedVal; b->y = Bo - lockedVal; }
                                 else        { b->h = lockedVal; }
-                                gActiveGuides.push_back({ false, bT[hi] ? b->y : (b->y + b->h), b->x, b->x + b->w });
+                                gActiveGuides.push_back({ false, bT[hi] ? b->y : (b->y + b->h), fullLeft, fullRight });
                             }
                         }
                     }
