@@ -3975,38 +3975,48 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                                      const std::vector<SInt32>& cands, bool isW, bool& snappedFlag) {
                     if (!active) return;
                     if (!cands.empty()) {
-                        if (locked) {
+                        SInt32 lo = std::min(prevRaw, raw), hi2 = std::max(prevRaw, raw);
+
+                        // Look for a DIFFERENT candidate this tick's segment
+                        // (prevRaw -> raw) actually passed through, even while
+                        // currently locked to another one — otherwise, while
+                        // "stuck" at one candidate, a nearby one (if it falls
+                        // within THIS lock's release margin) can be silently
+                        // crossed without ever registering, since the plain
+                        // release check below only measures distance from the
+                        // CURRENT lock, not whether a different stop was
+                        // reached along the way. Whenever one is found here,
+                        // transfer straight to it instead of waiting for a
+                        // release. Tie-break prefers whichever crossed
+                        // candidate is closest to PREVRAW (where this tick's
+                        // movement started, not where it ended) — a large
+                        // jump can span several breakpoints at once, and
+                        // picking by proximity to the endpoint would skip
+                        // every earlier one a slower drag would have caught
+                        // first.
+                        SInt32 other = 0, otherDist = 0; bool haveOther = false;
+                        for (SInt32 bp : cands) {
+                            if (locked && bp == lockedVal) continue;
+                            if (bp < lo || bp > hi2) continue;
+                            SInt32 d = (prevRaw >= bp) ? (prevRaw - bp) : (bp - prevRaw);
+                            if (!haveOther || d < otherDist) { other = bp; otherDist = d; haveOther = true; }
+                        }
+                        if (haveOther) {
+                            locked = true;
+                            lockedVal = other;
+                        } else if (locked) {
                             SInt32 ad = raw >= lockedVal ? raw - lockedVal : lockedVal - raw;
                             if (ad >= releaseAt) locked = false;
-                        }
-                        if (!locked) {
-                            SInt32 lo = std::min(prevRaw, raw), hi2 = std::max(prevRaw, raw);
+                        } else {
+                            // No crossing at all this tick (typical for a slow,
+                            // fine-grained drag) — fall back to plain proximity
+                            // to the current position.
                             SInt32 best = 0, bestDist = 0; bool haveBest = false;
-                            // Prefer whichever crossed candidate is closest to
-                            // PREVRAW (where this tick's movement STARTED),
-                            // not raw (where it ENDED) — a large first-tick
-                            // jump can span many breakpoints at once, and
-                            // picking by proximity to the endpoint skips
-                            // straight to whichever is nearest the final
-                            // mouse position, silently passing every earlier
-                            // one a slower drag would have caught first (e.g.
-                            // jumping straight past every object edge down
-                            // toward the padding end on the very first move).
-                            // Proximity to prevRaw instead always picks the
-                            // FIRST one in the direction of travel.
                             for (SInt32 bp : cands) {
-                                if (bp < lo || bp > hi2) continue;
-                                SInt32 d = (prevRaw >= bp) ? (prevRaw - bp) : (bp - prevRaw);
+                                SInt32 d = (raw >= bp) ? (raw - bp) : (bp - raw);
                                 if (!haveBest || d < bestDist) { best = bp; bestDist = d; haveBest = true; }
                             }
-                            if (!haveBest) {
-                                for (SInt32 bp : cands) {
-                                    SInt32 d = (raw >= bp) ? (raw - bp) : (bp - raw);
-                                    if (!haveBest || d < bestDist) { best = bp; bestDist = d; haveBest = true; }
-                                }
-                                if (haveBest && bestDist > tol) haveBest = false;
-                            }
-                            if (haveBest) { locked = true; lockedVal = best; }
+                            if (haveBest && bestDist <= tol) { locked = true; lockedVal = best; }
                         }
                         if (locked) {
                             snappedFlag = true;
