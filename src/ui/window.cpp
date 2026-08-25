@@ -3648,6 +3648,13 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     bool prevShiftHeld = false;
     double shiftLockW = origB.w, shiftLockH = origB.h;
 
+    // Layout-breakpoint guide state (see the block below): just the previous
+    // tick's raw (pre-snap) width/height, unconditionally overwritten every
+    // tick — not a lock/release flag, so there is no ordering between "did we
+    // just release" and "should we scan" left to get wrong the way the
+    // earlier lock-based attempts did.
+    SInt32 prevRawW = origB.w, prevRawH = origB.h;
+
     // Same dirty-rect clipping HandleRotateDrag already uses, adapted for
     // resize: unlike rotation the object's on-screen footprint isn't a
     // fixed radius (it's changing every frame by definition), so recompute
@@ -3886,22 +3893,25 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
             // cross-axis natural size needs summing per-row/column extents,
             // out of scope here, so no cross-axis guide for a Wrap frame).
             //
-            // Deliberately STATELESS: each tick just finds whichever candidate
-            // is nearest the CURRENT raw width/height and snaps to it if
-            // within `tol`, re-decided fresh every tick from absolute position
-            // alone — no locked/prevRaw history carried between ticks. An
-            // earlier crossing-detection + hysteresis version (tracking
-            // whether a candidate was passed between two ticks, to survive a
-            // single tick's mouse movement spanning more than one candidate)
-            // went through three rounds of real bugs and still failed to
-            // catch anything past the first candidate in real testing — not
-            // worth a fourth attempt at that complexity. This version can in
-            // principle miss a candidate if one tick's raw movement jumps
-            // clean over its whole `tol` window without ever landing inside
-            // it, but that needs a single-tick jump bigger than 2*tol to
-            // happen, which is a taller bar than routine mouse-poll
-            // coarseness — and it's trivially correct by inspection, unlike
-            // the stateful version.
+            // One tick of this drag loop is NOT cheap: it can run a full extra
+            // document layout pass (below, when the frame's other axis is
+            // Hug), then DrawWindowContent runs a full document layout pass
+            // AGAIN plus an un-buffered whole-window recursive redraw (see
+            // that function's own comment on why it can't be double-buffered
+            // here), all before the loop calls GetMouse() again. On real Mac
+            // OS 9 hardware/an emulator that's easily enough time for one
+            // tick's mouse movement to jump well past a purely CURRENT-
+            // position proximity window (a prior version of this guide did
+            // exactly that and, confirmed by real testing, essentially never
+            // caught anything past the very first breakpoint reached — the
+            // window was routinely skipped over entirely). So this checks
+            // the SEGMENT this tick's raw value traveled (prevRaw -> raw),
+            // not just its endpoint: any candidate the segment passed through
+            // counts as reached, however big the jump. Still fully stateless
+            // in the sense that matters — prevRaw is just unconditionally
+            // overwritten every tick, no lock/release flag, so there's no
+            // release-vs-scan ordering left to get wrong the way the earlier
+            // attempts did.
             if (gSmartGuidesEnabled && cf && cf->layoutMode != LayoutMode::None) {
                 bool isHorizLayout = (cf->layoutMode == LayoutMode::Horizontal);
                 std::vector<SInt32> candW, candH;
@@ -3927,27 +3937,46 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                 SInt32 fullLeft   = (SInt32(winPr.left)   - gCanvasOffsetX) * 100 / gCanvasZoom;
                 SInt32 fullRight  = (SInt32(winPr.right)  - gCanvasOffsetX) * 100 / gCanvasZoom;
 
-                auto snapAxis = [&](bool active, const std::vector<SInt32>& cands, bool isW) {
-                    if (!active || cands.empty()) return;
-                    SInt32 cur = isW ? b->w : b->h;
-                    SInt32 best = 0, bestDist = -1;
-                    for (SInt32 bp : cands) {
-                        SInt32 d = (cur >= bp) ? (cur - bp) : (bp - cur);
-                        if (bestDist < 0 || d < bestDist) { bestDist = d; best = bp; }
+                auto snapAxis = [&](bool active, SInt32 raw, SInt32& prevRaw,
+                                     const std::vector<SInt32>& cands, bool isW) {
+                    if (!active) return;
+                    if (!cands.empty()) {
+                        SInt32 lo = std::min(prevRaw, raw), hi2 = std::max(prevRaw, raw);
+                        SInt32 best = 0, bestDist = 0; bool haveBest = false;
+                        // Prefer a candidate this tick's segment actually
+                        // passed through, picking whichever is nearest the
+                        // segment's END (closest to "where the drag is now").
+                        for (SInt32 bp : cands) {
+                            if (bp < lo || bp > hi2) continue;
+                            SInt32 d = (raw >= bp) ? (raw - bp) : (bp - raw);
+                            if (!haveBest || d < bestDist) { best = bp; bestDist = d; haveBest = true; }
+                        }
+                        if (!haveBest) {
+                            // Segment didn't cross anything (typical for a slow,
+                            // fine-grained drag) — fall back to plain proximity
+                            // to the current position.
+                            for (SInt32 bp : cands) {
+                                SInt32 d = (raw >= bp) ? (raw - bp) : (bp - raw);
+                                if (!haveBest || d < bestDist) { best = bp; bestDist = d; haveBest = true; }
+                            }
+                            if (haveBest && bestDist > tol) haveBest = false;
+                        }
+                        if (haveBest) {
+                            if (isW) {
+                                if (bL[hi]) { SInt32 R = b->x + b->w; b->w = best; b->x = R - best; }
+                                else        { b->w = best; }
+                                gActiveGuides.push_back({ true, bL[hi] ? b->x : (b->x + b->w), fullTop, fullBottom });
+                            } else {
+                                if (bT[hi]) { SInt32 Bo = b->y + b->h; b->h = best; b->y = Bo - best; }
+                                else        { b->h = best; }
+                                gActiveGuides.push_back({ false, bT[hi] ? b->y : (b->y + b->h), fullLeft, fullRight });
+                            }
+                        }
                     }
-                    if (bestDist < 0 || bestDist > tol) return;
-                    if (isW) {
-                        if (bL[hi]) { SInt32 R = b->x + b->w; b->w = best; b->x = R - best; }
-                        else        { b->w = best; }
-                        gActiveGuides.push_back({ true, bL[hi] ? b->x : (b->x + b->w), fullTop, fullBottom });
-                    } else {
-                        if (bT[hi]) { SInt32 Bo = b->y + b->h; b->h = best; b->y = Bo - best; }
-                        else        { b->h = best; }
-                        gActiveGuides.push_back({ false, bT[hi] ? b->y : (b->y + b->h), fullLeft, fullRight });
-                    }
+                    prevRaw = raw;
                 };
-                snapAxis(bL[hi] || bR[hi], candW, true);
-                snapAxis(bT[hi] || bB[hi], candH, false);
+                snapAxis(bL[hi] || bR[hi], b->w, prevRawW, candW, true);
+                snapAxis(bT[hi] || bB[hi], b->h, prevRawH, candH, false);
             }
 
             // AutoHeight text needs its height re-derived from the wrap
