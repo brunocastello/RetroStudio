@@ -3923,6 +3923,31 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                     }
                 }
 
+                // TEMPORARY DIAGNOSTIC — remove once the "no item-edge stop"
+                // bug is actually found. Four rounds of code-reading + fixes
+                // haven't converged on the real cause, so print what this
+                // tick's candidate list ACTUALLY contains, live, in the
+                // window title, instead of continuing to guess from theory.
+                {
+                    bool wActive = bL[hi] || bR[hi];
+                    bool hActive = bT[hi] || bB[hi];
+                    std::string diag;
+                    auto appendAxis = [&](const char* label, SInt32 cur, const std::vector<SInt32>& cands) {
+                        diag += label; diag += "="; diag += istr(static_cast<int>(cur));
+                        diag += " n"; diag += istr(static_cast<int>(cands.size())); diag += ":[";
+                        for (size_t i = 0; i < cands.size() && i < 6; ++i) {
+                            if (i) diag += ",";
+                            diag += istr(static_cast<int>(cands[i]));
+                        }
+                        diag += "] ";
+                    };
+                    if (wActive) appendAxis("W", b->w, candW);
+                    if (hActive) appendAxis("H", b->h, candH);
+                    if (!wActive && !hActive) diag = "no-axis-active";
+                    Str255 diagPt; ToPStr(diag, diagPt);
+                    SetWTitle(win, diagPt);
+                }
+
                 const SInt32 tol = std::max<SInt32>(3, SInt32(12) * 100 / gCanvasZoom);
 
                 // Draw this guide the full height/width of the visible window,
