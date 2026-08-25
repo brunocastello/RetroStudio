@@ -3629,6 +3629,16 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     bool prevShiftHeld = false;
     double shiftLockW = origB.w, shiftLockH = origB.h;
 
+    // "Reached my own Hug size" guide state (see the hug-limit block below):
+    // tracked across ticks so a normal-speed mouse drag can't just skip past
+    // a narrow per-tick tolerance window between two polled positions —
+    // instead we detect the RAW (pre-clamp) width/height crossing hugW/hugH
+    // between consecutive ticks, which catches it regardless of step size,
+    // then holds ("locks") there with hysteresis until dragged a further
+    // release distance past it.
+    SInt32 prevRawW = origB.w, prevRawH = origB.h;
+    bool   hugLockedW = false, hugLockedH = false;
+
     // Same dirty-rect clipping HandleRotateDrag already uses, adapted for
     // resize: unlike rotation the object's on-screen footprint isn't a
     // fixed radius (it's changing every frame by definition), so recompute
@@ -3843,28 +3853,61 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
             }
 
             // "Reached my own Hug size" guide: manually shrinking/growing a
-            // Fixed-size Auto Layout frame shows a guide (and snaps within the
-            // usual tolerance) at the width/height it would naturally Hug to
-            // given its current children/padding/gap — feedback for exactly
-            // where content stops being clipped, without hard-blocking further
-            // dragging past it. Appended on top of any sibling guide from
-            // above (not exclusive with it); non-wrap frames only (Wrap's
-            // multi-line hug math isn't duplicated in ComputeFrameHugSize).
+            // Fixed-size Auto Layout frame shows a guide (and holds there,
+            // like a magnetic snap) at the width/height it would naturally
+            // Hug to given its current children/padding/gap — feedback for
+            // exactly where content stops being clipped, without hard-
+            // blocking further dragging past it. Appended on top of any
+            // sibling guide from above (not exclusive with it); non-wrap
+            // frames only (Wrap's multi-line hug math isn't duplicated in
+            // ComputeFrameHugSize).
+            //
+            // Uses crossing-detection (did the RAW, pre-clamp width/height
+            // move from one side of hugW/hugH to the other since last tick?)
+            // rather than a narrow "within N px this tick" window — a plain
+            // tolerance window is trivially skippable by ordinary mouse-drag
+            // polling, which routinely moves more than a few px between two
+            // consecutive GetMouse() reads. Once locked, holds until dragged
+            // `releaseAt` further past hugW/hugH, giving the same "stops
+            // there, but I can continue if I want" feel as the aspect-ratio
+            // snap other apps use, instead of relying on the user's mouse
+            // happening to land in a tiny window on some single tick.
             if (gSmartGuidesEnabled && cf && cf->layoutMode != LayoutMode::None && !cf->layoutWrap) {
                 SInt32 hugW = 0, hugH = 0;
                 if (ComputeFrameHugSize(cf, hugW, hugH)) {
-                    const SInt32 tol = std::max<SInt32>(1, SInt32(4) * 100 / gCanvasZoom);
-                    if ((bL[hi] || bR[hi]) &&
-                        (b->w >= hugW ? b->w - hugW : hugW - b->w) <= tol) {
-                        if (bL[hi]) { SInt32 R = b->x + b->w; b->w = hugW; b->x = R - hugW; }
-                        else        { b->w = hugW; }
-                        gActiveGuides.push_back({ true, bL[hi] ? b->x : (b->x + b->w), b->y, b->y + b->h });
+                    const SInt32 releaseAt = std::max<SInt32>(4, SInt32(14) * 100 / gCanvasZoom);
+
+                    if (bL[hi] || bR[hi]) {
+                        SInt32 rawW = b->w;
+                        bool crossed = (prevRawW <= hugW && rawW >= hugW) ||
+                                       (prevRawW >= hugW && rawW <= hugW);
+                        if (!hugLockedW && crossed) hugLockedW = true;
+                        if (hugLockedW) {
+                            SInt32 ad = rawW >= hugW ? rawW - hugW : hugW - rawW;
+                            if (ad >= releaseAt) hugLockedW = false;
+                        }
+                        if (hugLockedW) {
+                            if (bL[hi]) { SInt32 R = b->x + b->w; b->w = hugW; b->x = R - hugW; }
+                            else        { b->w = hugW; }
+                            gActiveGuides.push_back({ true, bL[hi] ? b->x : (b->x + b->w), b->y, b->y + b->h });
+                        }
+                        prevRawW = rawW;
                     }
-                    if ((bT[hi] || bB[hi]) &&
-                        (b->h >= hugH ? b->h - hugH : hugH - b->h) <= tol) {
-                        if (bT[hi]) { SInt32 Bo = b->y + b->h; b->h = hugH; b->y = Bo - hugH; }
-                        else        { b->h = hugH; }
-                        gActiveGuides.push_back({ false, bT[hi] ? b->y : (b->y + b->h), b->x, b->x + b->w });
+                    if (bT[hi] || bB[hi]) {
+                        SInt32 rawH = b->h;
+                        bool crossed = (prevRawH <= hugH && rawH >= hugH) ||
+                                       (prevRawH >= hugH && rawH <= hugH);
+                        if (!hugLockedH && crossed) hugLockedH = true;
+                        if (hugLockedH) {
+                            SInt32 ad = rawH >= hugH ? rawH - hugH : hugH - rawH;
+                            if (ad >= releaseAt) hugLockedH = false;
+                        }
+                        if (hugLockedH) {
+                            if (bT[hi]) { SInt32 Bo = b->y + b->h; b->h = hugH; b->y = Bo - hugH; }
+                            else        { b->h = hugH; }
+                            gActiveGuides.push_back({ false, bT[hi] ? b->y : (b->y + b->h), b->x, b->x + b->w });
+                        }
+                        prevRawH = rawH;
                     }
                 }
             }

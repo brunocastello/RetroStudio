@@ -2432,16 +2432,30 @@ void ApplyInspectorEdit() {
                 if (val < 1) val = 1;
                 // Compare against every selected frame, not just b (the last-selected
                 // representative) — a mixed selection can coincidentally match b's
-                // current value while still needing to change on the others.
+                // current value while still needing to change on the others. Also
+                // force each frame's OWN widthSizing to Fixed (per-item, since a
+                // mixed selection can have some already Fixed and some Hug/Fill) —
+                // otherwise a Hug/Fill frame's typed value is silently overwritten
+                // right back by the very next Auto Layout pass.
                 bool any = false;
-                for (Frame* f : gSelectedFrames) if (f->bounds.w != val) { any = true; break; }
-                if (any) { PushUndo(); for (Frame* f : gSelectedFrames) f->bounds.w = val; changed = true; }
+                for (Frame* f : gSelectedFrames)
+                    if (f->bounds.w != val || f->widthSizing != SizingMode::Fixed) { any = true; break; }
+                if (any) {
+                    PushUndo();
+                    for (Frame* f : gSelectedFrames) { f->widthSizing = SizingMode::Fixed; f->bounds.w = val; }
+                    changed = true;
+                }
             } break;
             case kFieldH: {
                 if (val < 1) val = 1;
                 bool any = false;
-                for (Frame* f : gSelectedFrames) if (f->bounds.h != val) { any = true; break; }
-                if (any) { PushUndo(); for (Frame* f : gSelectedFrames) f->bounds.h = val; changed = true; }
+                for (Frame* f : gSelectedFrames)
+                    if (f->bounds.h != val || f->heightSizing != SizingMode::Fixed) { any = true; break; }
+                if (any) {
+                    PushUndo();
+                    for (Frame* f : gSelectedFrames) { f->heightSizing = SizingMode::Fixed; f->bounds.h = val; }
+                    changed = true;
+                }
             } break;
             default: break;
         }
@@ -2486,10 +2500,18 @@ void ApplyInspectorEdit() {
                 } else if (applyMulti) {
                     // Compare against every selected shape, not just b — a mixed
                     // selection can coincidentally match b's current value while
-                    // still needing to change on the others.
+                    // still needing to change on the others. Also force each
+                    // shape's OWN wSizing to Fixed (per-item — a mixed selection
+                    // can have some already Fixed and some Fill), or a Fill
+                    // shape's typed value is silently overwritten right back by
+                    // the very next Auto Layout pass.
                     bool any = false;
-                    for (Shape* s : gSelectedShapes) if (s->bounds.w != val) { any = true; break; }
-                    if (any) { PushUndo(); for (Shape* s : gSelectedShapes) s->bounds.w = val; changed = true; }
+                    for (Shape* s : gSelectedShapes) if (s->bounds.w != val || s->wSizing != 0) { any = true; break; }
+                    if (any) {
+                        PushUndo();
+                        for (Shape* s : gSelectedShapes) { s->wSizing = 0; s->bounds.w = val; }
+                        changed = true;
+                    }
                 } else if (val != b->w) {
                     PushUndo();
                     b->w = val;
@@ -2510,8 +2532,12 @@ void ApplyInspectorEdit() {
                     changed = true;
                 } else if (applyMulti) {
                     bool any = false;
-                    for (Shape* s : gSelectedShapes) if (s->bounds.h != val) { any = true; break; }
-                    if (any) { PushUndo(); for (Shape* s : gSelectedShapes) s->bounds.h = val; changed = true; }
+                    for (Shape* s : gSelectedShapes) if (s->bounds.h != val || s->hSizing != 0) { any = true; break; }
+                    if (any) {
+                        PushUndo();
+                        for (Shape* s : gSelectedShapes) { s->hSizing = 0; s->bounds.h = val; }
+                        changed = true;
+                    }
                 } else if (val != b->h) {
                     PushUndo();
                     b->h = val;
