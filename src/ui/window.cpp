@@ -3982,9 +3982,21 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                         if (!locked) {
                             SInt32 lo = std::min(prevRaw, raw), hi2 = std::max(prevRaw, raw);
                             SInt32 best = 0, bestDist = 0; bool haveBest = false;
+                            // Prefer whichever crossed candidate is closest to
+                            // PREVRAW (where this tick's movement STARTED),
+                            // not raw (where it ENDED) — a large first-tick
+                            // jump can span many breakpoints at once, and
+                            // picking by proximity to the endpoint skips
+                            // straight to whichever is nearest the final
+                            // mouse position, silently passing every earlier
+                            // one a slower drag would have caught first (e.g.
+                            // jumping straight past every object edge down
+                            // toward the padding end on the very first move).
+                            // Proximity to prevRaw instead always picks the
+                            // FIRST one in the direction of travel.
                             for (SInt32 bp : cands) {
                                 if (bp < lo || bp > hi2) continue;
-                                SInt32 d = (raw >= bp) ? (raw - bp) : (bp - raw);
+                                SInt32 d = (prevRaw >= bp) ? (prevRaw - bp) : (bp - prevRaw);
                                 if (!haveBest || d < bestDist) { best = bp; bestDist = d; haveBest = true; }
                             }
                             if (!haveBest) {
