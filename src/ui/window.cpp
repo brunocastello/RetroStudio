@@ -3611,23 +3611,31 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     SInt32 selMaxW = cs ? cs->maxWidth  : (cf ? cf->maxWidth  : -1);
     SInt32 selMinH = cs ? cs->minHeight : (cf ? cf->minHeight : -1);
     SInt32 selMaxH = cs ? cs->maxHeight : (cf ? cf->maxHeight : -1);
-    // An Auto Layout frame's own padding is an implicit minimum too — matches
-    // Figma: the two padding edges can meet (content area shrinks to zero)
-    // but never cross, so a padded layout frame never flips through itself
-    // the way a plain shape/frame can. Only a floor when padding > 0 on that
-    // axis; a zero-padding frame is free to flip same as any other object.
-    if (cf && cf->layoutMode != LayoutMode::None) {
-        SInt32 padFloorW = static_cast<SInt32>(cf->paddingLeft) + static_cast<SInt32>(cf->paddingRight);
-        SInt32 padFloorH = static_cast<SInt32>(cf->paddingTop)  + static_cast<SInt32>(cf->paddingBottom);
-        if (padFloorW > 0) selMinW = (selMinW >= 0) ? std::max(selMinW, padFloorW) : padFloorW;
-        if (padFloorH > 0) selMinH = (selMinH >= 0) ? std::max(selMinH, padFloorH) : padFloorH;
-    }
     auto clampMag = [](double v, SInt32 mn, SInt32 mx) -> double {
         double mag = std::abs(v);
         if (mn >= 0 && mag < mn) mag = mn;
         if (mx >= 0 && mag > mx) mag = mx;
         return (v < 0) ? -mag : mag;
     };
+
+    // An Auto Layout frame's own padding is a HARD floor, not just a min/max-
+    // style bound — matches Figma: the two padding edges can meet (content
+    // area shrinks to zero) but never cross, so a padded layout frame can
+    // never flip through itself the way a plain shape/frame (or a frame with
+    // zero padding) can. Unlike selMinW/selMaxW above — which clamp the
+    // MAGNITUDE while preserving sign, deliberately allowing a flip once
+    // the bound is reached — this floor is applied to the SIGNED value
+    // directly, after that clamp, so it's a genuine one-sided stop: once
+    // newW/newH would go at or below this, it's pinned there and never
+    // allowed to cross zero into negative (flip) territory. Only a floor
+    // when padding > 0 on that axis; zero padding leaves flip unrestricted.
+    SInt32 padFloorW = -1, padFloorH = -1;
+    if (cf && cf->layoutMode != LayoutMode::None) {
+        SInt32 pfw = static_cast<SInt32>(cf->paddingLeft) + static_cast<SInt32>(cf->paddingRight);
+        SInt32 pfh = static_cast<SInt32>(cf->paddingTop)  + static_cast<SInt32>(cf->paddingBottom);
+        if (pfw > 0) padFloorW = pfw;
+        if (pfh > 0) padFloorH = pfh;
+    }
 
     Point prev = startPt, curr = startPt;
     bool pushedUndo = false;
@@ -3767,8 +3775,16 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
             newW = clampMag(newW, selMinW, selMaxW);
             newH = clampMag(newH, selMinH, selMaxH);
 
-            // No floor here — letting newW/newH go through zero and negative
-            // is exactly what makes the flip-through-anchor case below work.
+            // Auto Layout padding floor: unlike the magnitude-clamp just above,
+            // this genuinely pins the SIGNED value and never lets it cross zero
+            // — see the padFloorW/padFloorH comment above for why flip must be
+            // blocked here specifically (padding edges can meet, never cross).
+            if (padFloorW >= 0 && newW < padFloorW) newW = padFloorW;
+            if (padFloorH >= 0 && newH < padFloorH) newH = padFloorH;
+
+            // No floor here otherwise — letting newW/newH go through zero and
+            // negative (when nothing above pinned them first) is exactly what
+            // makes the flip-through-anchor case below work.
             // Keep the handle opposite the dragged one fixed on screen: solve for the
             // new center that leaves that anchor point's rotated position unchanged.
             // Purely local math (bounds.x/y live in local/pre-ambient space, and any
@@ -3864,19 +3880,22 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                 gActiveGuides.clear();
             }
 
-            // "Reached a layout breakpoint" guide: manually resizing a
-            // Fixed-size Auto Layout frame shows a guide (and holds there,
-            // like a magnetic snap) at each width/height that means something
-            // to its layout — for a non-wrap frame, the single size it would
-            // naturally Hug to given its current children/padding/gap; for a
-            // Wrap frame, EVERY size at which the number of items fitting on
-            // one line changes (one breakpoint per item — see
-            // ComputeWrapBreakpoints). Feedback for exactly where content
-            // stops fitting/starts reflowing, without hard-blocking further
-            // dragging past it. Wrap breakpoints only apply to the wrap's own
-            // flow axis (width for Horizontal, height for Vertical) — the
-            // cross axis has no stepped "breakpoint" the same way and isn't
-            // guided here.
+            // "Reached a layout breakpoint" guide: manually resizing an Auto
+            // Layout frame shows a guide (and holds there, like a magnetic
+            // snap) at each width/height that means something to its layout —
+            // matches Figma: the frame edge "catches" at each item's own
+            // trailing edge, at the gap before it, and at the overall padded
+            // content size, not just one single final size.
+            //
+            // Primary axis (width for Horizontal, height for Vertical): the
+            // FULL per-item breakpoint list from ComputeLayoutBreakpoints —
+            // same values whether Wrap is on or off, since they're just
+            // padding + gaps + each item's own size; only the consequence of
+            // crossing one differs (reflow vs. clipping).
+            // Cross axis: the single natural (Hug-style) size from
+            // ComputeFrameHugSize — a non-wrap frame only (a Wrap frame's
+            // cross-axis natural size needs summing per-row/column extents,
+            // out of scope here, so no cross-axis guide for a Wrap frame).
             //
             // Uses crossing-detection (did the RAW, pre-clamp width/height
             // move from one side of a candidate value to the other since last
@@ -3891,12 +3910,12 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
             if (gSmartGuidesEnabled && cf && cf->layoutMode != LayoutMode::None) {
                 bool isHorizLayout = (cf->layoutMode == LayoutMode::Horizontal);
                 std::vector<SInt32> candW, candH;
-                if (cf->layoutWrap) {
-                    if (isHorizLayout) ComputeWrapBreakpoints(cf, candW);
-                    else                ComputeWrapBreakpoints(cf, candH);
-                } else {
+                ComputeLayoutBreakpoints(cf, isHorizLayout ? candW : candH);
+                if (!cf->layoutWrap) {
                     SInt32 hugW = 0, hugH = 0;
-                    if (ComputeFrameHugSize(cf, hugW, hugH)) { candW.push_back(hugW); candH.push_back(hugH); }
+                    if (ComputeFrameHugSize(cf, hugW, hugH)) {
+                        if (isHorizLayout) candH.push_back(hugH); else candW.push_back(hugW);
+                    }
                 }
 
                 const SInt32 releaseAt = std::max<SInt32>(4, SInt32(14) * 100 / gCanvasZoom);
@@ -4058,21 +4077,10 @@ static void HandleMultiResizeDrag(WindowRef win, int hi, Point startPt) {
                            s->minWidth, s->maxWidth, s->minHeight, s->maxHeight });
     }
     for (Frame* f : gSelectedFrames)
-        if (!hasSelectedAncestor(f)) {
-            // Same padding-as-implicit-minimum rule as single-item resize
-            // (see HandleResizeDrag) — an Auto Layout frame's own padding
-            // edges can meet but never cross.
-            SInt32 minW = f->minWidth, minH = f->minHeight;
-            if (f->layoutMode != LayoutMode::None) {
-                SInt32 padFloorW = static_cast<SInt32>(f->paddingLeft) + static_cast<SInt32>(f->paddingRight);
-                SInt32 padFloorH = static_cast<SInt32>(f->paddingTop)  + static_cast<SInt32>(f->paddingBottom);
-                if (padFloorW > 0) minW = (minW >= 0) ? std::max(minW, padFloorW) : padFloorW;
-                if (padFloorH > 0) minH = (minH >= 0) ? std::max(minH, padFloorH) : padFloorH;
-            }
+        if (!hasSelectedAncestor(f))
             items.push_back({ nullptr, f, f->bounds, f->cornerTL, f->cornerTR, f->cornerBR, f->cornerBL,
                                false, false,
-                               minW, f->maxWidth, minH, f->maxHeight });
-        }
+                               f->minWidth, f->maxWidth, f->minHeight, f->maxHeight });
     if (items.empty()) return;
 
     static const SInt32 kMin = 10;
@@ -4091,6 +4099,34 @@ static void HandleMultiResizeDrag(WindowRef win, int hi, Point startPt) {
     for (auto& it : items) {
         minItemW = std::min(minItemW, double(it.orig.w));
         minItemH = std::min(minItemH, double(it.orig.h));
+    }
+
+    // Same Auto Layout padding floor as single-item resize (see the
+    // padFloorW/padFloorH comment in HandleResizeDrag) — but the WHOLE
+    // group shares one scale factor per axis, so a per-item pixel floor
+    // can't be applied independently the way HandleResizeDrag does it.
+    // Instead this is expressed directly as a floor on the shared scale
+    // itself: the largest (padding / item's own original size) ratio
+    // across every padded Auto Layout member, i.e. the scale at which the
+    // MOST-constrained member would hit its own padding floor first. Since
+    // that floor is always >= 0 whenever any member is constrained, it also
+    // fully blocks the whole group from flipping on that axis, not just
+    // this one member — matches "shouldn't happen unless Auto Layout is
+    // None" for every member, not only the one that would hit it first.
+    bool   hasPadFloorX = false, hasPadFloorY = false;
+    double padScaleFloorX = 0.0, padScaleFloorY = 0.0;
+    for (auto& it : items) {
+        if (!it.frame || it.frame->layoutMode == LayoutMode::None) continue;
+        SInt32 pfw = static_cast<SInt32>(it.frame->paddingLeft) + static_cast<SInt32>(it.frame->paddingRight);
+        SInt32 pfh = static_cast<SInt32>(it.frame->paddingTop)  + static_cast<SInt32>(it.frame->paddingBottom);
+        if (pfw > 0 && it.orig.w > 0) {
+            hasPadFloorX = true;
+            padScaleFloorX = std::max(padScaleFloorX, double(pfw) / double(it.orig.w));
+        }
+        if (pfh > 0 && it.orig.h > 0) {
+            hasPadFloorY = true;
+            padScaleFloorY = std::max(padScaleFloorY, double(pfh) / double(it.orig.h));
+        }
     }
 
     bool prevShiftHeld = false;
@@ -4179,6 +4215,13 @@ static void HandleMultiResizeDrag(WindowRef win, int hi, Point startPt) {
                 if (scaleY >= 0.0 && scaleY < minScaleY) scaleY = minScaleY;
                 else if (scaleY < 0.0 && scaleY > -minScaleY) scaleY = -minScaleY;
             }
+
+            // Auto Layout padding floor: unlike the magnitude-clamp just
+            // above, this pins the SIGNED scale directly and never lets it
+            // go negative when any member is padding-constrained — see the
+            // padScaleFloorX/Y comment above.
+            if (widthChanged  && hasPadFloorX && scaleX < padScaleFloorX) scaleX = padScaleFloorX;
+            if (heightChanged && hasPadFloorY && scaleY < padScaleFloorY) scaleY = padScaleFloorY;
 
             // A negative scale mirrors the WHOLE group at once — every member's
             // own w becomes negative in lockstep (it.orig.w is always positive,

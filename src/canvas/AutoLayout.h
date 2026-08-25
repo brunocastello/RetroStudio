@@ -20,17 +20,18 @@ void InferAutoLayoutSpacing(Frame* f, LayoutMode newMode);
 
 // Non-mutating: the width/height Frame f WOULD hug to right now, given its
 // CURRENT children's sizes, padding, and gap — without touching f's own
-// bounds or sizing mode. Used by the resize-drag "reached my Hug size" guide
-// in window.cpp. Returns false (no meaningful single hug size) for a frame
-// with no Auto Layout or with Wrap enabled — a Wrap frame's equivalent guide
-// is ComputeWrapBreakpoints below instead (a wrap frame has no single
-// "natural size", just per-item-count breakpoints).
+// bounds or sizing mode. Used for the resize-drag CROSS-axis "stop" guide in
+// window.cpp (the primary axis uses ComputeLayoutBreakpoints below instead,
+// which is more granular). Returns false for a frame with no Auto Layout or
+// with Wrap enabled (a Wrap frame's cross-axis natural size needs summing
+// per-row/column extents, out of scope here — not guided on that axis).
 bool ComputeFrameHugSize(const Frame* f, SInt32& outW, SInt32& outH);
 
-// Non-mutating, Wrap-frame counterpart to ComputeFrameHugSize: the set of
-// primary-axis (width if Horizontal, height if Vertical) sizes at which the
-// number of items greedily fitting on the first line changes — i.e. every
-// size where shrinking further wraps the line's last item onto a new line.
-// Used by the resize-drag "reached a wrap point" guide in window.cpp.
-// Returns false for a non-wrap or unlayouted frame.
-bool ComputeWrapBreakpoints(const Frame* f, std::vector<SInt32>& outBreaks);
+// Non-mutating: the set of primary-axis (width if Horizontal, height if
+// Vertical) sizes at which the number of items fitting changes — one
+// breakpoint per item, built from padding + gaps + each item's own size.
+// Same values whether Wrap is on or off (only the consequence of crossing
+// one differs — reflow vs. clipping); used for the resize-drag "stop at
+// paddings, gaps, and item edges" guide in window.cpp, Figma-style. Returns
+// false for a frame with no Auto Layout or with no children.
+bool ComputeLayoutBreakpoints(const Frame* f, std::vector<SInt32>& outBreaks);

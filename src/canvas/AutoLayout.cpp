@@ -677,7 +677,7 @@ void InferAutoLayoutSpacing(Frame* f, LayoutMode newMode) {
     }
 }
 
-// Shared by ComputeFrameHugSize and ComputeWrapBreakpoints: each visible,
+// Shared by ComputeFrameHugSize and ComputeLayoutBreakpoints: each visible,
 // non-absolute child's own primary-axis size (+ stroke extra), IN CHILD
 // ORDER, and the max secondary-axis size seen. Rotated shapes contribute
 // their AABB extent — same measurement RunFrameLayout's own Pass 1 uses.
@@ -770,12 +770,10 @@ bool ComputeFrameHugSize(const Frame* f, SInt32& outW, SInt32& outH) {
     return true;
 }
 
-bool ComputeWrapBreakpoints(const Frame* f, std::vector<SInt32>& outBreaks) {
+bool ComputeLayoutBreakpoints(const Frame* f, std::vector<SInt32>& outBreaks) {
     outBreaks.clear();
+    if (f->layoutMode == LayoutMode::None) return false;
     bool isHoriz = (f->layoutMode == LayoutMode::Horizontal);
-    // Wrap only actually takes effect for Horizontal — see the comment in
-    // ComputeFrameHugSize above and RunFrameLayout's own gate.
-    if (f->layoutMode == LayoutMode::None || !f->layoutWrap || !isHoriz) return false;
     SInt32 padPri1 = isHoriz ? f->paddingLeft : f->paddingTop;
     SInt32 padPri2 = isHoriz ? f->paddingRight : f->paddingBottom;
     SInt32 gap     = static_cast<SInt32>(f->layoutGap);
@@ -789,13 +787,15 @@ bool ComputeWrapBreakpoints(const Frame* f, std::vector<SInt32>& outBreaks) {
     SInt32 maxDim = isHoriz ? f->maxWidth  : f->maxHeight;
 
     // One breakpoint per item, in order: the primary-axis size at which
-    // exactly that many items fit greedily on the first line — dragging
-    // narrower than this drops the last one onto a new line. Exact for a
-    // uniform-size grid (the common case, e.g. a same-size card grid);
-    // later lines reflow using the same available width so in practice
-    // they share these same breakpoints for a uniform grid too. For a
-    // genuinely mixed-size wrap layout this is an approximation (later
-    // lines' own breakpoints aren't separately modeled) — acceptable scope
+    // exactly that many items fit — padding + that many items' own sizes +
+    // the gaps between them. Same value regardless of whether Wrap is on;
+    // only the CONSEQUENCE of shrinking past one differs (a Wrap frame
+    // reflows the next item to a new line, a non-Wrap frame starts clipping
+    // it) — matches Figma's Auto Layout resize feel either way: the frame
+    // edge "catches" on each item's own trailing edge as it passes. Exact
+    // for a uniform-size row/column (the common case); for Wrap specifically
+    // with genuinely mixed item sizes this is an approximation since later
+    // lines' own breakpoints aren't separately modeled — acceptable scope
     // cut for a drag-feel guide, not a layout-correctness computation.
     SInt32 cum = 0;
     for (size_t i = 0; i < pri.size(); ++i) {
