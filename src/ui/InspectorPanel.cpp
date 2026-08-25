@@ -1080,8 +1080,8 @@ void DrawInspectorPanel() {
                 short bx = mfBtn[i].x, bw = mfBtn[i].w;
                 Rect btn2 = { y2, bx, static_cast<short>(y2+18), static_cast<short>(bx+bw) };
                 bool active2 = (i < 3) ? (static_cast<UInt8>(lf2->layoutMode) == i)
-                                       : (lf2->layoutMode != LayoutMode::None && lf2->layoutWrap);
-                bool dimmed2 = (i == 3 && lf2->layoutMode == LayoutMode::None);
+                                       : (lf2->layoutMode == LayoutMode::Horizontal && lf2->layoutWrap);
+                bool dimmed2 = (i == 3 && lf2->layoutMode != LayoutMode::Horizontal);
                 if (active2)       { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
                 else if (dimmed2)  { RGBColor bg={0xEEEE,0xEEEE,0xEEEE}; RGBForeColor(&bg); }
                 else               { RGBColor bg={0xDDDD,0xDDDD,0xDDDD}; RGBForeColor(&bg); }
@@ -1681,8 +1681,10 @@ void DrawInspectorPanel() {
                 if (i < 3) {
                     active = (static_cast<UInt8>(lf->layoutMode) == i);
                 } else {
-                    active = (lf->layoutMode != LayoutMode::None && lf->layoutWrap);
-                    dimmed = (lf->layoutMode == LayoutMode::None);
+                    // Wrap only exists for Horizontal layout — dim (and disable, see
+                    // HandleInspectorClick) for None or Vertical.
+                    active = (lf->layoutMode == LayoutMode::Horizontal && lf->layoutWrap);
+                    dimmed = (lf->layoutMode != LayoutMode::Horizontal);
                 }
 
                 if      (active)  { RGBColor bg={0x3333,0x6666,0xCCCC}; RGBForeColor(&bg); }
@@ -3068,11 +3070,19 @@ void HandleInspectorClick(Point localPt) {
                         f->heightSizing = SizingMode::Hug;
                     }
                 };
+                // Wrap only exists for Horizontal layout (a vertical "wrap" would mean
+                // starting a new column, which this app doesn't support) — clear it
+                // whenever switching to Vertical (or None) so a frame can't be left in
+                // an unreachable Vertical+Wrap state.
                 if (isMultiFrame) {
-                    for (Frame* f : gSelectedFrames) { enable(f); f->layoutMode = nm; }
+                    for (Frame* f : gSelectedFrames) {
+                        enable(f); f->layoutMode = nm;
+                        if (nm != LayoutMode::Horizontal) f->layoutWrap = false;
+                    }
                 } else {
                     enable(lf);
                     lf->layoutMode = nm;
+                    if (nm != LayoutMode::Horizontal) lf->layoutWrap = false;
                 }
                 InvalidateInspector();
                 if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
@@ -3080,8 +3090,8 @@ void HandleInspectorClick(Point localPt) {
             }
         }
 
-        // Wrap toggle (only active when H or V layout is on)
-        if (PtInRect(localPt, &sWrapRect) && lf->layoutMode != LayoutMode::None) {
+        // Wrap toggle (Horizontal layout only — a Vertical "wrap" isn't supported)
+        if (PtInRect(localPt, &sWrapRect) && lf->layoutMode == LayoutMode::Horizontal) {
             PushUndo();
             bool nw = !lf->layoutWrap;
             if (isMultiFrame) { for (Frame* f : gSelectedFrames) f->layoutWrap = nw; }

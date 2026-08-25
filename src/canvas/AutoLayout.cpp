@@ -355,7 +355,13 @@ static void RunFrameLayout(Frame* f) {
     };
 
     // ---- Wrap layout ----
-    if (f->layoutWrap) {
+    // Horizontal only: Vertical "wrap" (starting a new column) isn't a
+    // supported combination — the Inspector's Wrap toggle is disabled outside
+    // Horizontal and clears layoutWrap on switching away from it, but this
+    // guard also protects against stale data (an old save, or state set
+    // before that guard existed) still carrying layoutWrap=true on a
+    // Vertical frame — falls back to plain (non-wrap) Vertical layout below.
+    if (f->layoutWrap && isHoriz) {
         struct WrapLine { std::vector<int> indices; SInt32 crossMax = 0; };
 
         bool hugPri = isHoriz ? (f->widthSizing  == SizingMode::Hug)
@@ -722,9 +728,14 @@ static void GatherLayoutItemSizes(const Frame* f, bool isHoriz,
 }
 
 bool ComputeFrameHugSize(const Frame* f, SInt32& outW, SInt32& outH) {
-    if (f->layoutMode == LayoutMode::None || f->layoutWrap) return false;
-
+    if (f->layoutMode == LayoutMode::None) return false;
     bool isHoriz = (f->layoutMode == LayoutMode::Horizontal);
+    // Wrap only actually takes effect for Horizontal (see RunFrameLayout's own
+    // "f->layoutWrap && isHoriz" gate) — a Vertical frame with a stale
+    // layoutWrap=true (old save, or state set before the Inspector guarded
+    // against it) is really just plain non-wrap Vertical, so still compute a
+    // single Hug size for it here rather than refusing.
+    if (f->layoutWrap && isHoriz) return false;
     SInt32 padPri1 = isHoriz ? f->paddingLeft   : f->paddingTop;
     SInt32 padPri2 = isHoriz ? f->paddingRight  : f->paddingBottom;
     SInt32 padSec1 = isHoriz ? f->paddingTop    : f->paddingLeft;
@@ -761,9 +772,10 @@ bool ComputeFrameHugSize(const Frame* f, SInt32& outW, SInt32& outH) {
 
 bool ComputeWrapBreakpoints(const Frame* f, std::vector<SInt32>& outBreaks) {
     outBreaks.clear();
-    if (f->layoutMode == LayoutMode::None || !f->layoutWrap) return false;
-
     bool isHoriz = (f->layoutMode == LayoutMode::Horizontal);
+    // Wrap only actually takes effect for Horizontal — see the comment in
+    // ComputeFrameHugSize above and RunFrameLayout's own gate.
+    if (f->layoutMode == LayoutMode::None || !f->layoutWrap || !isHoriz) return false;
     SInt32 padPri1 = isHoriz ? f->paddingLeft : f->paddingTop;
     SInt32 padPri2 = isHoriz ? f->paddingRight : f->paddingBottom;
     SInt32 gap     = static_cast<SInt32>(f->layoutGap);
