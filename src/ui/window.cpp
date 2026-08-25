@@ -3638,6 +3638,7 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     // release distance past it.
     SInt32 prevRawW = origB.w, prevRawH = origB.h;
     bool   hugLockedW = false, hugLockedH = false;
+    SInt32 hugLockValueW = 0, hugLockValueH = 0;
 
     // Same dirty-rect clipping HandleRotateDrag already uses, adapted for
     // resize: unlike rotation the object's on-screen footprint isn't a
@@ -3852,64 +3853,73 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                 gActiveGuides.clear();
             }
 
-            // "Reached my own Hug size" guide: manually shrinking/growing a
+            // "Reached a layout breakpoint" guide: manually resizing a
             // Fixed-size Auto Layout frame shows a guide (and holds there,
-            // like a magnetic snap) at the width/height it would naturally
-            // Hug to given its current children/padding/gap — feedback for
-            // exactly where content stops being clipped, without hard-
-            // blocking further dragging past it. Appended on top of any
-            // sibling guide from above (not exclusive with it); non-wrap
-            // frames only (Wrap's multi-line hug math isn't duplicated in
-            // ComputeFrameHugSize).
+            // like a magnetic snap) at each width/height that means something
+            // to its layout — for a non-wrap frame, the single size it would
+            // naturally Hug to given its current children/padding/gap; for a
+            // Wrap frame, EVERY size at which the number of items fitting on
+            // one line changes (one breakpoint per item — see
+            // ComputeWrapBreakpoints). Feedback for exactly where content
+            // stops fitting/starts reflowing, without hard-blocking further
+            // dragging past it. Wrap breakpoints only apply to the wrap's own
+            // flow axis (width for Horizontal, height for Vertical) — the
+            // cross axis has no stepped "breakpoint" the same way and isn't
+            // guided here.
             //
             // Uses crossing-detection (did the RAW, pre-clamp width/height
-            // move from one side of hugW/hugH to the other since last tick?)
-            // rather than a narrow "within N px this tick" window — a plain
-            // tolerance window is trivially skippable by ordinary mouse-drag
-            // polling, which routinely moves more than a few px between two
-            // consecutive GetMouse() reads. Once locked, holds until dragged
-            // `releaseAt` further past hugW/hugH, giving the same "stops
-            // there, but I can continue if I want" feel as the aspect-ratio
-            // snap other apps use, instead of relying on the user's mouse
-            // happening to land in a tiny window on some single tick.
-            if (gSmartGuidesEnabled && cf && cf->layoutMode != LayoutMode::None && !cf->layoutWrap) {
-                SInt32 hugW = 0, hugH = 0;
-                if (ComputeFrameHugSize(cf, hugW, hugH)) {
-                    const SInt32 releaseAt = std::max<SInt32>(4, SInt32(14) * 100 / gCanvasZoom);
-
-                    if (bL[hi] || bR[hi]) {
-                        SInt32 rawW = b->w;
-                        bool crossed = (prevRawW <= hugW && rawW >= hugW) ||
-                                       (prevRawW >= hugW && rawW <= hugW);
-                        if (!hugLockedW && crossed) hugLockedW = true;
-                        if (hugLockedW) {
-                            SInt32 ad = rawW >= hugW ? rawW - hugW : hugW - rawW;
-                            if (ad >= releaseAt) hugLockedW = false;
-                        }
-                        if (hugLockedW) {
-                            if (bL[hi]) { SInt32 R = b->x + b->w; b->w = hugW; b->x = R - hugW; }
-                            else        { b->w = hugW; }
-                            gActiveGuides.push_back({ true, bL[hi] ? b->x : (b->x + b->w), b->y, b->y + b->h });
-                        }
-                        prevRawW = rawW;
-                    }
-                    if (bT[hi] || bB[hi]) {
-                        SInt32 rawH = b->h;
-                        bool crossed = (prevRawH <= hugH && rawH >= hugH) ||
-                                       (prevRawH >= hugH && rawH <= hugH);
-                        if (!hugLockedH && crossed) hugLockedH = true;
-                        if (hugLockedH) {
-                            SInt32 ad = rawH >= hugH ? rawH - hugH : hugH - rawH;
-                            if (ad >= releaseAt) hugLockedH = false;
-                        }
-                        if (hugLockedH) {
-                            if (bT[hi]) { SInt32 Bo = b->y + b->h; b->h = hugH; b->y = Bo - hugH; }
-                            else        { b->h = hugH; }
-                            gActiveGuides.push_back({ false, bT[hi] ? b->y : (b->y + b->h), b->x, b->x + b->w });
-                        }
-                        prevRawH = rawH;
-                    }
+            // move from one side of a candidate value to the other since last
+            // tick?) rather than a narrow "within N px this tick" window — a
+            // plain tolerance window is trivially skippable by ordinary
+            // mouse-drag polling, which routinely moves more than a few px
+            // between two consecutive GetMouse() reads. Once locked, holds
+            // until dragged `releaseAt` further past the locked value, giving
+            // the same "stops there, but I can continue if I want" feel as
+            // the aspect-ratio snap other apps use, instead of relying on the
+            // user's mouse happening to land in a tiny window on some tick.
+            if (gSmartGuidesEnabled && cf && cf->layoutMode != LayoutMode::None) {
+                bool isHorizLayout = (cf->layoutMode == LayoutMode::Horizontal);
+                std::vector<SInt32> candW, candH;
+                if (cf->layoutWrap) {
+                    if (isHorizLayout) ComputeWrapBreakpoints(cf, candW);
+                    else                ComputeWrapBreakpoints(cf, candH);
+                } else {
+                    SInt32 hugW = 0, hugH = 0;
+                    if (ComputeFrameHugSize(cf, hugW, hugH)) { candW.push_back(hugW); candH.push_back(hugH); }
                 }
+
+                const SInt32 releaseAt = std::max<SInt32>(4, SInt32(14) * 100 / gCanvasZoom);
+
+                auto tryAxis = [&](bool active, SInt32 raw, SInt32& prevRaw, bool& locked, SInt32& lockedVal,
+                                    const std::vector<SInt32>& cands, bool isW) {
+                    if (!active) return;
+                    if (!cands.empty()) {
+                        if (!locked) {
+                            for (SInt32 bp : cands) {
+                                bool crossed = (prevRaw <= bp && raw >= bp) || (prevRaw >= bp && raw <= bp);
+                                if (crossed) { locked = true; lockedVal = bp; break; }
+                            }
+                        }
+                        if (locked) {
+                            SInt32 ad = raw >= lockedVal ? raw - lockedVal : lockedVal - raw;
+                            if (ad >= releaseAt) locked = false;
+                        }
+                        if (locked) {
+                            if (isW) {
+                                if (bL[hi]) { SInt32 R = b->x + b->w; b->w = lockedVal; b->x = R - lockedVal; }
+                                else        { b->w = lockedVal; }
+                                gActiveGuides.push_back({ true, bL[hi] ? b->x : (b->x + b->w), b->y, b->y + b->h });
+                            } else {
+                                if (bT[hi]) { SInt32 Bo = b->y + b->h; b->h = lockedVal; b->y = Bo - lockedVal; }
+                                else        { b->h = lockedVal; }
+                                gActiveGuides.push_back({ false, bT[hi] ? b->y : (b->y + b->h), b->x, b->x + b->w });
+                            }
+                        }
+                    }
+                    prevRaw = raw;
+                };
+                tryAxis(bL[hi] || bR[hi], b->w, prevRawW, hugLockedW, hugLockValueW, candW, true);
+                tryAxis(bT[hi] || bB[hi], b->h, prevRawH, hugLockedH, hugLockValueH, candH, false);
             }
 
             // AutoHeight text needs its height re-derived from the wrap

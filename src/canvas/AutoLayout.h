@@ -21,7 +21,16 @@ void InferAutoLayoutSpacing(Frame* f, LayoutMode newMode);
 // Non-mutating: the width/height Frame f WOULD hug to right now, given its
 // CURRENT children's sizes, padding, and gap — without touching f's own
 // bounds or sizing mode. Used by the resize-drag "reached my Hug size" guide
-// in window.cpp. Returns false (no meaningful hug size) for a frame with no
-// Auto Layout or with Wrap enabled — Wrap's multi-line hug math isn't
-// duplicated here, that guide is simply skipped for a Wrap frame.
+// in window.cpp. Returns false (no meaningful single hug size) for a frame
+// with no Auto Layout or with Wrap enabled — a Wrap frame's equivalent guide
+// is ComputeWrapBreakpoints below instead (a wrap frame has no single
+// "natural size", just per-item-count breakpoints).
 bool ComputeFrameHugSize(const Frame* f, SInt32& outW, SInt32& outH);
+
+// Non-mutating, Wrap-frame counterpart to ComputeFrameHugSize: the set of
+// primary-axis (width if Horizontal, height if Vertical) sizes at which the
+// number of items greedily fitting on the first line changes — i.e. every
+// size where shrinking further wraps the line's last item onto a new line.
+// Used by the resize-drag "reached a wrap point" guide in window.cpp.
+// Returns false for a non-wrap or unlayouted frame.
+bool ComputeWrapBreakpoints(const Frame* f, std::vector<SInt32>& outBreaks);

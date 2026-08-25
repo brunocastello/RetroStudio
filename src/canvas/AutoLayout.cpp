@@ -671,15 +671,14 @@ void InferAutoLayoutSpacing(Frame* f, LayoutMode newMode) {
     }
 }
 
-bool ComputeFrameHugSize(const Frame* f, SInt32& outW, SInt32& outH) {
-    if (f->layoutMode == LayoutMode::None || f->layoutWrap) return false;
-
-    bool isHoriz = (f->layoutMode == LayoutMode::Horizontal);
-    SInt32 padPri1 = isHoriz ? f->paddingLeft   : f->paddingTop;
-    SInt32 padPri2 = isHoriz ? f->paddingRight  : f->paddingBottom;
-    SInt32 padSec1 = isHoriz ? f->paddingTop    : f->paddingLeft;
-    SInt32 padSec2 = isHoriz ? f->paddingBottom : f->paddingRight;
-    SInt32 gap     = static_cast<SInt32>(f->layoutGap);
+// Shared by ComputeFrameHugSize and ComputeWrapBreakpoints: each visible,
+// non-absolute child's own primary-axis size (+ stroke extra), IN CHILD
+// ORDER, and the max secondary-axis size seen. Rotated shapes contribute
+// their AABB extent — same measurement RunFrameLayout's own Pass 1 uses.
+static void GatherLayoutItemSizes(const Frame* f, bool isHoriz,
+                                   std::vector<SInt32>& outPri, SInt32& outSecMax) {
+    outPri.clear();
+    outSecMax = 0;
 
     auto computeXtra = [&](bool hasStroke, UInt16 sw, UInt8 align, SInt32& xw, SInt32& xh) {
         xw = xh = 0;
@@ -688,19 +687,12 @@ bool ComputeFrameHugSize(const Frame* f, SInt32& outW, SInt32& outH) {
         if      (align == 0) { xw = s;     xh = s;     }
         else if (align == 2) { xw = s * 2; xh = s * 2; }
     };
-
-    // Each item's contribution uses its CURRENT bounds.w/h — including a Fill-
-    // sizing item's currently-resolved size, and a rotated item's AABB extent —
-    // so the guide always reflects what's actually on screen right now, live
-    // during a drag, same spirit as the real Hug pass in RunFrameLayout above.
-    SInt32 priSum = 0, secMax = 0, count = 0;
     auto addItem = [&](SInt32 w, SInt32 h, bool hasStroke, UInt16 sw, UInt8 align) {
         SInt32 xw, xh; computeXtra(hasStroke, sw, align, xw, xh);
         SInt32 pri = (isHoriz ? w : h) + (isHoriz ? xw : xh);
         SInt32 sec = (isHoriz ? h : w) + (isHoriz ? xh : xw);
-        priSum += pri;
-        if (sec > secMax) secMax = sec;
-        ++count;
+        outPri.push_back(pri);
+        if (sec > outSecMax) outSecMax = sec;
     };
     auto addShape = [&](const Shape* s) {
         if (!s->visible || s->isAbsolutePosition) return;
@@ -727,13 +719,34 @@ bool ComputeFrameHugSize(const Frame* f, SInt32& outW, SInt32& outH) {
         for (auto& s : f->children)     addShape(s.get());
         for (auto& cf : f->childFrames) addFrame(cf.get());
     }
+}
+
+bool ComputeFrameHugSize(const Frame* f, SInt32& outW, SInt32& outH) {
+    if (f->layoutMode == LayoutMode::None || f->layoutWrap) return false;
+
+    bool isHoriz = (f->layoutMode == LayoutMode::Horizontal);
+    SInt32 padPri1 = isHoriz ? f->paddingLeft   : f->paddingTop;
+    SInt32 padPri2 = isHoriz ? f->paddingRight  : f->paddingBottom;
+    SInt32 padSec1 = isHoriz ? f->paddingTop    : f->paddingLeft;
+    SInt32 padSec2 = isHoriz ? f->paddingBottom : f->paddingRight;
+    SInt32 gap     = static_cast<SInt32>(f->layoutGap);
+
+    // Each item's contribution uses its CURRENT bounds.w/h — including a Fill-
+    // sizing item's currently-resolved size — so the guide always reflects
+    // what's actually on screen right now, live during a drag, same spirit
+    // as the real Hug pass in RunFrameLayout above.
+    std::vector<SInt32> pri;
+    SInt32 secMax = 0;
+    GatherLayoutItemSizes(f, isHoriz, pri, secMax);
 
     SInt32 priTotal, secTotal;
-    if (count == 0) {
+    if (pri.empty()) {
         priTotal = padPri1 + padPri2;
         secTotal = padSec1 + padSec2;
     } else {
-        priTotal = priSum + gap * (count - 1) + padPri1 + padPri2;
+        SInt32 sum = 0;
+        for (SInt32 p : pri) sum += p;
+        priTotal = sum + gap * (static_cast<SInt32>(pri.size()) - 1) + padPri1 + padPri2;
         secTotal = secMax + padSec1 + padSec2;
     }
     if (priTotal < 1) priTotal = 1;
@@ -743,5 +756,42 @@ bool ComputeFrameHugSize(const Frame* f, SInt32& outW, SInt32& outH) {
     outH = isHoriz ? secTotal : priTotal;
     outW = ClampDim(outW, f->minWidth,  f->maxWidth);
     outH = ClampDim(outH, f->minHeight, f->maxHeight);
+    return true;
+}
+
+bool ComputeWrapBreakpoints(const Frame* f, std::vector<SInt32>& outBreaks) {
+    outBreaks.clear();
+    if (f->layoutMode == LayoutMode::None || !f->layoutWrap) return false;
+
+    bool isHoriz = (f->layoutMode == LayoutMode::Horizontal);
+    SInt32 padPri1 = isHoriz ? f->paddingLeft : f->paddingTop;
+    SInt32 padPri2 = isHoriz ? f->paddingRight : f->paddingBottom;
+    SInt32 gap     = static_cast<SInt32>(f->layoutGap);
+
+    std::vector<SInt32> pri;
+    SInt32 secMax = 0;
+    GatherLayoutItemSizes(f, isHoriz, pri, secMax);
+    if (pri.empty()) return false;
+
+    SInt32 minDim = isHoriz ? f->minWidth  : f->minHeight;
+    SInt32 maxDim = isHoriz ? f->maxWidth  : f->maxHeight;
+
+    // One breakpoint per item, in order: the primary-axis size at which
+    // exactly that many items fit greedily on the first line — dragging
+    // narrower than this drops the last one onto a new line. Exact for a
+    // uniform-size grid (the common case, e.g. a same-size card grid);
+    // later lines reflow using the same available width so in practice
+    // they share these same breakpoints for a uniform grid too. For a
+    // genuinely mixed-size wrap layout this is an approximation (later
+    // lines' own breakpoints aren't separately modeled) — acceptable scope
+    // cut for a drag-feel guide, not a layout-correctness computation.
+    SInt32 cum = 0;
+    for (size_t i = 0; i < pri.size(); ++i) {
+        if (i > 0) cum += gap;
+        cum += pri[i];
+        SInt32 bp = cum + padPri1 + padPri2;
+        if (bp < 1) bp = 1;
+        outBreaks.push_back(ClampDim(bp, minDim, maxDim));
+    }
     return true;
 }
