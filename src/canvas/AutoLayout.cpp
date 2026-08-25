@@ -775,7 +775,6 @@ bool ComputeLayoutBreakpoints(const Frame* f, std::vector<SInt32>& outBreaks) {
     if (f->layoutMode == LayoutMode::None) return false;
     bool isHoriz = (f->layoutMode == LayoutMode::Horizontal);
     SInt32 padPri1 = isHoriz ? f->paddingLeft : f->paddingTop;
-    SInt32 padPri2 = isHoriz ? f->paddingRight : f->paddingBottom;
     SInt32 gap     = static_cast<SInt32>(f->layoutGap);
 
     std::vector<SInt32> pri;
@@ -786,24 +785,33 @@ bool ComputeLayoutBreakpoints(const Frame* f, std::vector<SInt32>& outBreaks) {
     SInt32 minDim = isHoriz ? f->minWidth  : f->minHeight;
     SInt32 maxDim = isHoriz ? f->maxWidth  : f->maxHeight;
 
-    // One breakpoint per item, in order: the primary-axis size at which
-    // exactly that many items fit — padding + that many items' own sizes +
-    // the gaps between them. Same value regardless of whether Wrap is on;
-    // only the CONSEQUENCE of shrinking past one differs (a Wrap frame
-    // reflows the next item to a new line, a non-Wrap frame starts clipping
-    // it) — matches Figma's Auto Layout resize feel either way: the frame
-    // edge "catches" on each item's own trailing edge as it passes. Exact
-    // for a uniform-size row/column (the common case); for Wrap specifically
-    // with genuinely mixed item sizes this is an approximation since later
-    // lines' own breakpoints aren't separately modeled — acceptable scope
-    // cut for a drag-feel guide, not a layout-correctness computation.
+    // Two breakpoints per item boundary, NOT one: the trailing padding
+    // (padPri2, deliberately excluded from this whole function — see below)
+    // is just empty space, so shrinking through it produces no visual
+    // change at all and isn't a real "catch" point. The genuinely visible
+    // moments, from largest to smallest as the frame shrinks, are:
+    //   - objEdge_k = padPri1 + (items 1..k) + (k-1 gaps): item k's own
+    //     trailing edge sits exactly at the frame boundary — shrink past
+    //     this and item k starts actually being clipped (or, Wrap mode,
+    //     item k+1 reflows to a new line).
+    //   - gapEdge_k = objEdge_k + gap: the gap AFTER item k is also fully
+    //     visible, with item k+1 not yet appearing at all — only meaningful
+    //     between two items, so skipped after the last one.
+    // padPri1 alone (never padPri2) is what belongs in both, since only the
+    // LEADING padding is actually "spent" by the time item k is reached —
+    // the trailing padding is a separate, single value already covered by
+    // ComputeFrameHugSize (the caller adds that on top of this list).
     SInt32 cum = 0;
     for (size_t i = 0; i < pri.size(); ++i) {
         if (i > 0) cum += gap;
         cum += pri[i];
-        SInt32 bp = cum + padPri1 + padPri2;
-        if (bp < 1) bp = 1;
-        outBreaks.push_back(ClampDim(bp, minDim, maxDim));
+        SInt32 objEdge = cum + padPri1;
+        if (objEdge < 1) objEdge = 1;
+        outBreaks.push_back(ClampDim(objEdge, minDim, maxDim));
+        if (i + 1 < pri.size()) {
+            SInt32 gapEdge = objEdge + gap;
+            outBreaks.push_back(ClampDim(gapEdge, minDim, maxDim));
+        }
     }
     return true;
 }

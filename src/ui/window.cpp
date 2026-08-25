@@ -3921,9 +3921,18 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                 std::vector<SInt32> candW, candH;
                 ComputeLayoutBreakpoints(cf, isHorizLayout ? candW : candH);
                 if (!cf->layoutWrap) {
+                    // ComputeLayoutBreakpoints deliberately excludes trailing
+                    // padding from every value it returns (see its own
+                    // comment), so the ONE true full-Hug size (leading +
+                    // trailing padding + all content) needs adding back on
+                    // top, for BOTH axes — the primary axis lost its own top
+                    // "everything fits with full padding" stop when that
+                    // trailing-padding exclusion was added, not just the
+                    // cross axis (which never had one from this function).
                     SInt32 hugW = 0, hugH = 0;
                     if (ComputeFrameHugSize(cf, hugW, hugH)) {
-                        if (isHorizLayout) candH.push_back(hugH); else candW.push_back(hugW);
+                        candW.push_back(hugW);
+                        candH.push_back(hugH);
                     }
                 }
 

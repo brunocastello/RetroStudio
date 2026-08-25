@@ -28,10 +28,15 @@ void InferAutoLayoutSpacing(Frame* f, LayoutMode newMode);
 bool ComputeFrameHugSize(const Frame* f, SInt32& outW, SInt32& outH);
 
 // Non-mutating: the set of primary-axis (width if Horizontal, height if
-// Vertical) sizes at which the number of items fitting changes — one
-// breakpoint per item, built from padding + gaps + each item's own size.
-// Same values whether Wrap is on or off (only the consequence of crossing
-// one differs — reflow vs. clipping); used for the resize-drag "stop at
-// paddings, gaps, and item edges" guide in window.cpp, Figma-style. Returns
-// false for a frame with no Auto Layout or with no children.
+// Vertical) sizes at which something visually changes as the frame shrinks —
+// TWO breakpoints per item boundary (see the .cpp for why): the item's own
+// trailing edge, and the gap after it before the next item appears. Uses
+// only the LEADING padding, never the trailing one — trailing padding is
+// just empty space, so shrinking through it alone is never a visible
+// "catch" point; the caller adds the one true padding+content Hug size (via
+// ComputeFrameHugSize) on top of this list separately for that. Same
+// breakpoint values whether Wrap is on or off (only the consequence of
+// crossing one differs — reflow vs. clipping); used for the resize-drag
+// "stop at paddings, gaps, and item edges" guide in window.cpp, Figma-style.
+// Returns false for a frame with no Auto Layout or with no children.
 bool ComputeLayoutBreakpoints(const Frame* f, std::vector<SInt32>& outBreaks);
