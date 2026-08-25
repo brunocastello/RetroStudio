@@ -3648,17 +3648,6 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     bool prevShiftHeld = false;
     double shiftLockW = origB.w, shiftLockH = origB.h;
 
-    // "Reached my own Hug size" guide state (see the hug-limit block below):
-    // tracked across ticks so a normal-speed mouse drag can't just skip past
-    // a narrow per-tick tolerance window between two polled positions —
-    // instead we detect the RAW (pre-clamp) width/height crossing hugW/hugH
-    // between consecutive ticks, which catches it regardless of step size,
-    // then holds ("locks") there with hysteresis until dragged a further
-    // release distance past it.
-    SInt32 prevRawW = origB.w, prevRawH = origB.h;
-    bool   hugLockedW = false, hugLockedH = false;
-    SInt32 hugLockValueW = 0, hugLockValueH = 0;
-
     // Same dirty-rect clipping HandleRotateDrag already uses, adapted for
     // resize: unlike rotation the object's on-screen footprint isn't a
     // fixed radius (it's changing every frame by definition), so recompute
@@ -3897,16 +3886,22 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
             // cross-axis natural size needs summing per-row/column extents,
             // out of scope here, so no cross-axis guide for a Wrap frame).
             //
-            // Uses crossing-detection (did the RAW, pre-clamp width/height
-            // move from one side of a candidate value to the other since last
-            // tick?) rather than a narrow "within N px this tick" window — a
-            // plain tolerance window is trivially skippable by ordinary
-            // mouse-drag polling, which routinely moves more than a few px
-            // between two consecutive GetMouse() reads. Once locked, holds
-            // until dragged `releaseAt` further past the locked value, giving
-            // the same "stops there, but I can continue if I want" feel as
-            // the aspect-ratio snap other apps use, instead of relying on the
-            // user's mouse happening to land in a tiny window on some tick.
+            // Deliberately STATELESS: each tick just finds whichever candidate
+            // is nearest the CURRENT raw width/height and snaps to it if
+            // within `tol`, re-decided fresh every tick from absolute position
+            // alone — no locked/prevRaw history carried between ticks. An
+            // earlier crossing-detection + hysteresis version (tracking
+            // whether a candidate was passed between two ticks, to survive a
+            // single tick's mouse movement spanning more than one candidate)
+            // went through three rounds of real bugs and still failed to
+            // catch anything past the first candidate in real testing — not
+            // worth a fourth attempt at that complexity. This version can in
+            // principle miss a candidate if one tick's raw movement jumps
+            // clean over its whole `tol` window without ever landing inside
+            // it, but that needs a single-tick jump bigger than 2*tol to
+            // happen, which is a taller bar than routine mouse-poll
+            // coarseness — and it's trivially correct by inspection, unlike
+            // the stateful version.
             if (gSmartGuidesEnabled && cf && cf->layoutMode != LayoutMode::None) {
                 bool isHorizLayout = (cf->layoutMode == LayoutMode::Horizontal);
                 std::vector<SInt32> candW, candH;
@@ -3918,7 +3913,7 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                     }
                 }
 
-                const SInt32 releaseAt = std::max<SInt32>(4, SInt32(14) * 100 / gCanvasZoom);
+                const SInt32 tol = std::max<SInt32>(3, SInt32(12) * 100 / gCanvasZoom);
 
                 // Draw this guide the full height/width of the visible window,
                 // ruler-style (matches Figma), instead of stopping at the
@@ -3932,62 +3927,27 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                 SInt32 fullLeft   = (SInt32(winPr.left)   - gCanvasOffsetX) * 100 / gCanvasZoom;
                 SInt32 fullRight  = (SInt32(winPr.right)  - gCanvasOffsetX) * 100 / gCanvasZoom;
 
-                auto tryAxis = [&](bool active, SInt32 raw, SInt32& prevRaw, bool& locked, SInt32& lockedVal,
-                                    const std::vector<SInt32>& cands, bool isW) {
-                    if (!active) return;
-                    if (!cands.empty()) {
-                        // Release check runs FIRST, before the crossing scan —
-                        // not after. With the release check last, the exact
-                        // tick a lock released would skip the crossing scan
-                        // entirely (it only runs `if (!locked)`, and locked was
-                        // still true on entry), so that tick's (prevRaw, raw)
-                        // span was never tested against the remaining
-                        // candidates before prevRaw jumped straight past them.
-                        // Every breakpoint except the very first one reached
-                        // gets approached starting from a just-released tick,
-                        // so this ordering silently ate every candidate after
-                        // the first — release-then-scan lets a release and a
-                        // fresh lock-acquisition happen in the same tick.
-                        if (locked) {
-                            SInt32 ad = raw >= lockedVal ? raw - lockedVal : lockedVal - raw;
-                            if (ad >= releaseAt) locked = false;
-                        }
-                        if (!locked) {
-                            // A single tick can span several candidates at once
-                            // (coarse mouse-event polling routinely jumps more
-                            // than one breakpoint's spacing) — pick whichever
-                            // crossed candidate is CLOSEST to prevRaw, i.e. the
-                            // first one a slower, continuous drag would have
-                            // reached, not just the first one in list order.
-                            // Picking list order instead silently skips every
-                            // larger breakpoint whenever a tick spans more than
-                            // one, since the list is built smallest-to-largest.
-                            bool shrinking = (raw < prevRaw);
-                            bool haveBest = false;
-                            for (SInt32 bp : cands) {
-                                bool crossed = (prevRaw <= bp && raw >= bp) || (prevRaw >= bp && raw <= bp);
-                                if (!crossed) continue;
-                                if (!haveBest) { lockedVal = bp; haveBest = true; }
-                                else if (shrinking ? (bp > lockedVal) : (bp < lockedVal)) lockedVal = bp;
-                            }
-                            if (haveBest) locked = true;
-                        }
-                        if (locked) {
-                            if (isW) {
-                                if (bL[hi]) { SInt32 R = b->x + b->w; b->w = lockedVal; b->x = R - lockedVal; }
-                                else        { b->w = lockedVal; }
-                                gActiveGuides.push_back({ true, bL[hi] ? b->x : (b->x + b->w), fullTop, fullBottom });
-                            } else {
-                                if (bT[hi]) { SInt32 Bo = b->y + b->h; b->h = lockedVal; b->y = Bo - lockedVal; }
-                                else        { b->h = lockedVal; }
-                                gActiveGuides.push_back({ false, bT[hi] ? b->y : (b->y + b->h), fullLeft, fullRight });
-                            }
-                        }
+                auto snapAxis = [&](bool active, const std::vector<SInt32>& cands, bool isW) {
+                    if (!active || cands.empty()) return;
+                    SInt32 cur = isW ? b->w : b->h;
+                    SInt32 best = 0, bestDist = -1;
+                    for (SInt32 bp : cands) {
+                        SInt32 d = (cur >= bp) ? (cur - bp) : (bp - cur);
+                        if (bestDist < 0 || d < bestDist) { bestDist = d; best = bp; }
                     }
-                    prevRaw = raw;
+                    if (bestDist < 0 || bestDist > tol) return;
+                    if (isW) {
+                        if (bL[hi]) { SInt32 R = b->x + b->w; b->w = best; b->x = R - best; }
+                        else        { b->w = best; }
+                        gActiveGuides.push_back({ true, bL[hi] ? b->x : (b->x + b->w), fullTop, fullBottom });
+                    } else {
+                        if (bT[hi]) { SInt32 Bo = b->y + b->h; b->h = best; b->y = Bo - best; }
+                        else        { b->h = best; }
+                        gActiveGuides.push_back({ false, bT[hi] ? b->y : (b->y + b->h), fullLeft, fullRight });
+                    }
                 };
-                tryAxis(bL[hi] || bR[hi], b->w, prevRawW, hugLockedW, hugLockValueW, candW, true);
-                tryAxis(bT[hi] || bB[hi], b->h, prevRawH, hugLockedH, hugLockValueH, candH, false);
+                snapAxis(bL[hi] || bR[hi], candW, true);
+                snapAxis(bT[hi] || bB[hi], candH, false);
             }
 
             // AutoHeight text needs its height re-derived from the wrap
