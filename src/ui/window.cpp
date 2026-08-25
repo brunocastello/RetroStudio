@@ -3913,7 +3913,7 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                     }
                 }
 
-                const SInt32 tol = std::max<SInt32>(2, SInt32(5) * 100 / gCanvasZoom);
+                const SInt32 tol = std::max<SInt32>(3, SInt32(12) * 100 / gCanvasZoom);
 
                 // Draw this guide the full height/width of the visible window,
                 // ruler-style (matches Figma), instead of stopping at the
