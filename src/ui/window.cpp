@@ -3648,12 +3648,16 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     bool prevShiftHeld = false;
     double shiftLockW = origB.w, shiftLockH = origB.h;
 
-    // Layout-breakpoint guide state (see the block below): just the previous
-    // tick's raw (pre-snap) width/height, unconditionally overwritten every
-    // tick — not a lock/release flag, so there is no ordering between "did we
-    // just release" and "should we scan" left to get wrong the way the
-    // earlier lock-based attempts did.
+    // Layout-breakpoint guide state (see the block below). prevRawW/H is the
+    // previous tick's raw (pre-snap) width/height, unconditionally
+    // overwritten every tick. lockedW/H + lockedValW/H make the snap HOLD
+    // once caught (like the padding floor already does) instead of only
+    // correcting the value for the single tick it engages on — diagnostic
+    // testing proved the snap itself fires correctly, but released again on
+    // the very next tick, too brief to register as a felt pause.
     SInt32 prevRawW = origB.w, prevRawH = origB.h;
+    bool   lockedW = false, lockedH = false;
+    SInt32 lockedValW = 0, lockedValH = 0;
 
     // Same dirty-rect clipping HandleRotateDrag already uses, adapted for
     // resize: unlike rotation the object's on-screen footprint isn't a
@@ -3923,7 +3927,8 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                     }
                 }
 
-                const SInt32 tol = std::max<SInt32>(3, SInt32(12) * 100 / gCanvasZoom);
+                const SInt32 tol       = std::max<SInt32>(3, SInt32(12) * 100 / gCanvasZoom);
+                const SInt32 releaseAt = std::max<SInt32>(8, SInt32(40) * 100 / gCanvasZoom);
 
                 // Draw this guide the full height/width of the visible window,
                 // ruler-style (matches Figma), instead of stopping at the
@@ -3937,39 +3942,60 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                 SInt32 fullLeft   = (SInt32(winPr.left)   - gCanvasOffsetX) * 100 / gCanvasZoom;
                 SInt32 fullRight  = (SInt32(winPr.right)  - gCanvasOffsetX) * 100 / gCanvasZoom;
 
+                // Diagnostic testing (see the memory note on this feature)
+                // proved the snap itself engages correctly, but released
+                // again on the very next tick — too brief a correction to
+                // register as a felt pause, unlike the padding floor which
+                // holds indefinitely. This adds that same holding behavior:
+                // once caught (locked), stays at the candidate value through
+                // continued mouse movement until dragged `releaseAt` — a
+                // notably WIDER margin than the `tol` used to engage in the
+                // first place — past it. Engagement itself still uses the
+                // segment (prevRaw -> raw) crossing test proven necessary
+                // earlier (a single tick's movement can be large enough to
+                // jump clean over a plain proximity check), with a plain
+                // proximity fallback for a slow drag that doesn't cross
+                // anything in one tick. The release check runs BEFORE the
+                // (re)acquisition scan, not after — the earlier lock/release
+                // attempt's real bug was checking release last, which meant
+                // the exact tick a lock released never got scanned for a
+                // fresh candidate, silently eating every breakpoint after
+                // the first one ever caught.
                 auto snapAxis = [&](bool active, SInt32 raw, SInt32& prevRaw,
+                                     bool& locked, SInt32& lockedVal,
                                      const std::vector<SInt32>& cands, bool isW, bool& snappedFlag) {
                     if (!active) return;
                     if (!cands.empty()) {
-                        SInt32 lo = std::min(prevRaw, raw), hi2 = std::max(prevRaw, raw);
-                        SInt32 best = 0, bestDist = 0; bool haveBest = false;
-                        // Prefer a candidate this tick's segment actually
-                        // passed through, picking whichever is nearest the
-                        // segment's END (closest to "where the drag is now").
-                        for (SInt32 bp : cands) {
-                            if (bp < lo || bp > hi2) continue;
-                            SInt32 d = (raw >= bp) ? (raw - bp) : (bp - raw);
-                            if (!haveBest || d < bestDist) { best = bp; bestDist = d; haveBest = true; }
+                        if (locked) {
+                            SInt32 ad = raw >= lockedVal ? raw - lockedVal : lockedVal - raw;
+                            if (ad >= releaseAt) locked = false;
                         }
-                        if (!haveBest) {
-                            // Segment didn't cross anything (typical for a slow,
-                            // fine-grained drag) — fall back to plain proximity
-                            // to the current position.
+                        if (!locked) {
+                            SInt32 lo = std::min(prevRaw, raw), hi2 = std::max(prevRaw, raw);
+                            SInt32 best = 0, bestDist = 0; bool haveBest = false;
                             for (SInt32 bp : cands) {
+                                if (bp < lo || bp > hi2) continue;
                                 SInt32 d = (raw >= bp) ? (raw - bp) : (bp - raw);
                                 if (!haveBest || d < bestDist) { best = bp; bestDist = d; haveBest = true; }
                             }
-                            if (haveBest && bestDist > tol) haveBest = false;
+                            if (!haveBest) {
+                                for (SInt32 bp : cands) {
+                                    SInt32 d = (raw >= bp) ? (raw - bp) : (bp - raw);
+                                    if (!haveBest || d < bestDist) { best = bp; bestDist = d; haveBest = true; }
+                                }
+                                if (haveBest && bestDist > tol) haveBest = false;
+                            }
+                            if (haveBest) { locked = true; lockedVal = best; }
                         }
-                        if (haveBest) {
+                        if (locked) {
                             snappedFlag = true;
                             if (isW) {
-                                if (bL[hi]) { SInt32 R = b->x + b->w; b->w = best; b->x = R - best; }
-                                else        { b->w = best; }
+                                if (bL[hi]) { SInt32 R = b->x + b->w; b->w = lockedVal; b->x = R - lockedVal; }
+                                else        { b->w = lockedVal; }
                                 gActiveGuides.push_back({ true, bL[hi] ? b->x : (b->x + b->w), fullTop, fullBottom });
                             } else {
-                                if (bT[hi]) { SInt32 Bo = b->y + b->h; b->h = best; b->y = Bo - best; }
-                                else        { b->h = best; }
+                                if (bT[hi]) { SInt32 Bo = b->y + b->h; b->h = lockedVal; b->y = Bo - lockedVal; }
+                                else        { b->h = lockedVal; }
                                 gActiveGuides.push_back({ false, bT[hi] ? b->y : (b->y + b->h), fullLeft, fullRight });
                             }
                         }
@@ -3978,15 +4004,13 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                 };
                 SInt32 rawWDiag = b->w, rawHDiag = b->h;
                 bool snappedW = false, snappedH = false;
-                snapAxis(bL[hi] || bR[hi], b->w, prevRawW, candW, true, snappedW);
-                snapAxis(bT[hi] || bB[hi], b->h, prevRawH, candH, false, snappedH);
+                snapAxis(bL[hi] || bR[hi], b->w, prevRawW, lockedW, lockedValW, candW, true, snappedW);
+                snapAxis(bT[hi] || bB[hi], b->h, prevRawH, lockedH, lockedValH, candH, false, snappedH);
 
-                // TEMPORARY DIAGNOSTIC — remove once the "no item-edge stop"
-                // bug is actually found. Shows raw (pre-snap) vs final
-                // (post-snap) values and whether a snap actually fired this
-                // tick, live in the window title, so we can see directly
-                // whether the snap logic runs at all when the drag passes
-                // through a candidate instead of continuing to guess.
+                // TEMPORARY DIAGNOSTIC — remove once this is confirmed
+                // holding correctly in real testing. Shows raw (pre-snap) vs
+                // final (post-snap) values and whether a snap is active this
+                // tick, live in the window title.
                 {
                     bool wActive = bL[hi] || bR[hi];
                     bool hActive = bT[hi] || bB[hi];
