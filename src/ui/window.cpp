@@ -3937,10 +3937,24 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                     if (!active) return;
                     if (!cands.empty()) {
                         if (!locked) {
+                            // A single tick can span several candidates at once
+                            // (coarse mouse-event polling routinely jumps more
+                            // than one breakpoint's spacing) — pick whichever
+                            // crossed candidate is CLOSEST to prevRaw, i.e. the
+                            // first one a slower, continuous drag would have
+                            // reached, not just the first one in list order.
+                            // Picking list order instead silently skips every
+                            // larger breakpoint whenever a tick spans more than
+                            // one, since the list is built smallest-to-largest.
+                            bool shrinking = (raw < prevRaw);
+                            bool haveBest = false;
                             for (SInt32 bp : cands) {
                                 bool crossed = (prevRaw <= bp && raw >= bp) || (prevRaw >= bp && raw <= bp);
-                                if (crossed) { locked = true; lockedVal = bp; break; }
+                                if (!crossed) continue;
+                                if (!haveBest) { lockedVal = bp; haveBest = true; }
+                                else if (shrinking ? (bp > lockedVal) : (bp < lockedVal)) lockedVal = bp;
                             }
+                            if (haveBest) locked = true;
                         }
                         if (locked) {
                             SInt32 ad = raw >= lockedVal ? raw - lockedVal : lockedVal - raw;
