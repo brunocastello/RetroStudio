@@ -3611,6 +3611,17 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
     SInt32 selMaxW = cs ? cs->maxWidth  : (cf ? cf->maxWidth  : -1);
     SInt32 selMinH = cs ? cs->minHeight : (cf ? cf->minHeight : -1);
     SInt32 selMaxH = cs ? cs->maxHeight : (cf ? cf->maxHeight : -1);
+    // An Auto Layout frame's own padding is an implicit minimum too — matches
+    // Figma: the two padding edges can meet (content area shrinks to zero)
+    // but never cross, so a padded layout frame never flips through itself
+    // the way a plain shape/frame can. Only a floor when padding > 0 on that
+    // axis; a zero-padding frame is free to flip same as any other object.
+    if (cf && cf->layoutMode != LayoutMode::None) {
+        SInt32 padFloorW = static_cast<SInt32>(cf->paddingLeft) + static_cast<SInt32>(cf->paddingRight);
+        SInt32 padFloorH = static_cast<SInt32>(cf->paddingTop)  + static_cast<SInt32>(cf->paddingBottom);
+        if (padFloorW > 0) selMinW = (selMinW >= 0) ? std::max(selMinW, padFloorW) : padFloorW;
+        if (padFloorH > 0) selMinH = (selMinH >= 0) ? std::max(selMinH, padFloorH) : padFloorH;
+    }
     auto clampMag = [](double v, SInt32 mn, SInt32 mx) -> double {
         double mag = std::abs(v);
         if (mn >= 0 && mag < mn) mag = mn;
@@ -4047,10 +4058,21 @@ static void HandleMultiResizeDrag(WindowRef win, int hi, Point startPt) {
                            s->minWidth, s->maxWidth, s->minHeight, s->maxHeight });
     }
     for (Frame* f : gSelectedFrames)
-        if (!hasSelectedAncestor(f))
+        if (!hasSelectedAncestor(f)) {
+            // Same padding-as-implicit-minimum rule as single-item resize
+            // (see HandleResizeDrag) — an Auto Layout frame's own padding
+            // edges can meet but never cross.
+            SInt32 minW = f->minWidth, minH = f->minHeight;
+            if (f->layoutMode != LayoutMode::None) {
+                SInt32 padFloorW = static_cast<SInt32>(f->paddingLeft) + static_cast<SInt32>(f->paddingRight);
+                SInt32 padFloorH = static_cast<SInt32>(f->paddingTop)  + static_cast<SInt32>(f->paddingBottom);
+                if (padFloorW > 0) minW = (minW >= 0) ? std::max(minW, padFloorW) : padFloorW;
+                if (padFloorH > 0) minH = (minH >= 0) ? std::max(minH, padFloorH) : padFloorH;
+            }
             items.push_back({ nullptr, f, f->bounds, f->cornerTL, f->cornerTR, f->cornerBR, f->cornerBL,
                                false, false,
-                               f->minWidth, f->maxWidth, f->minHeight, f->maxHeight });
+                               minW, f->maxWidth, minH, f->maxHeight });
+        }
     if (items.empty()) return;
 
     static const SInt32 kMin = 10;
