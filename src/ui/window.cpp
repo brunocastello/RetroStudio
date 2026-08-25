@@ -3935,6 +3935,23 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                 if (liveTs->textSizing == TextSizing::AutoHeight) UpdateTextShapeBounds(*liveTs);
             }
 
+            // Same fix, same reason, for a Frame whose OTHER axis is Hug in an
+            // Auto Layout: e.g. dragging width on a Vertical+Wrap frame with
+            // heightSizing=Hug changes how many columns fit, which changes
+            // the number of rows, which changes the frame's own Hug'd HEIGHT
+            // — a resize this tick can grow (or shrink) the frame on an axis
+            // the user never touched. Re-run layout now, before the dirty
+            // rect below is computed from *b, so it's built from THIS tick's
+            // post-reflow bounds instead of last tick's — otherwise the
+            // erase/repaint doesn't reach the frame's new extent and the
+            // previous column/row arrangement's pixels never get cleared out
+            // from under the new one, showing up as overlapping/ghosted
+            // content until the drag ends and a full redraw catches up.
+            if (cf && cf->layoutMode != LayoutMode::None &&
+                (cf->widthSizing == SizingMode::Hug || cf->heightSizing == SizingMode::Hug)) {
+                RunDocumentLayout(gDocument);
+            }
+
             Rect newReach = ComputeReachRect(*b);
             Rect dirtyRect = {
                 std::min(prevReach.top,  newReach.top),
