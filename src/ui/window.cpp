@@ -3923,31 +3923,6 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                     }
                 }
 
-                // TEMPORARY DIAGNOSTIC — remove once the "no item-edge stop"
-                // bug is actually found. Four rounds of code-reading + fixes
-                // haven't converged on the real cause, so print what this
-                // tick's candidate list ACTUALLY contains, live, in the
-                // window title, instead of continuing to guess from theory.
-                {
-                    bool wActive = bL[hi] || bR[hi];
-                    bool hActive = bT[hi] || bB[hi];
-                    std::string diag;
-                    auto appendAxis = [&](const char* label, SInt32 cur, const std::vector<SInt32>& cands) {
-                        diag += label; diag += "="; diag += istr(static_cast<int>(cur));
-                        diag += " n"; diag += istr(static_cast<int>(cands.size())); diag += ":[";
-                        for (size_t i = 0; i < cands.size() && i < 6; ++i) {
-                            if (i) diag += ",";
-                            diag += istr(static_cast<int>(cands[i]));
-                        }
-                        diag += "] ";
-                    };
-                    if (wActive) appendAxis("W", b->w, candW);
-                    if (hActive) appendAxis("H", b->h, candH);
-                    if (!wActive && !hActive) diag = "no-axis-active";
-                    Str255 diagPt; ToPStr(diag, diagPt);
-                    SetWTitle(win, diagPt);
-                }
-
                 const SInt32 tol = std::max<SInt32>(3, SInt32(12) * 100 / gCanvasZoom);
 
                 // Draw this guide the full height/width of the visible window,
@@ -3963,7 +3938,7 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                 SInt32 fullRight  = (SInt32(winPr.right)  - gCanvasOffsetX) * 100 / gCanvasZoom;
 
                 auto snapAxis = [&](bool active, SInt32 raw, SInt32& prevRaw,
-                                     const std::vector<SInt32>& cands, bool isW) {
+                                     const std::vector<SInt32>& cands, bool isW, bool& snappedFlag) {
                     if (!active) return;
                     if (!cands.empty()) {
                         SInt32 lo = std::min(prevRaw, raw), hi2 = std::max(prevRaw, raw);
@@ -3987,6 +3962,7 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                             if (haveBest && bestDist > tol) haveBest = false;
                         }
                         if (haveBest) {
+                            snappedFlag = true;
                             if (isW) {
                                 if (bL[hi]) { SInt32 R = b->x + b->w; b->w = best; b->x = R - best; }
                                 else        { b->w = best; }
@@ -4000,8 +3976,39 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                     }
                     prevRaw = raw;
                 };
-                snapAxis(bL[hi] || bR[hi], b->w, prevRawW, candW, true);
-                snapAxis(bT[hi] || bB[hi], b->h, prevRawH, candH, false);
+                SInt32 rawWDiag = b->w, rawHDiag = b->h;
+                bool snappedW = false, snappedH = false;
+                snapAxis(bL[hi] || bR[hi], b->w, prevRawW, candW, true, snappedW);
+                snapAxis(bT[hi] || bB[hi], b->h, prevRawH, candH, false, snappedH);
+
+                // TEMPORARY DIAGNOSTIC — remove once the "no item-edge stop"
+                // bug is actually found. Shows raw (pre-snap) vs final
+                // (post-snap) values and whether a snap actually fired this
+                // tick, live in the window title, so we can see directly
+                // whether the snap logic runs at all when the drag passes
+                // through a candidate instead of continuing to guess.
+                {
+                    bool wActive = bL[hi] || bR[hi];
+                    bool hActive = bT[hi] || bB[hi];
+                    std::string diag;
+                    auto appendAxis = [&](const char* label, SInt32 raw, SInt32 fin, bool snapped,
+                                           const std::vector<SInt32>& cands) {
+                        diag += label; diag += " raw="; diag += istr(static_cast<int>(raw));
+                        diag += " fin="; diag += istr(static_cast<int>(fin));
+                        diag += snapped ? " SNAP" : " -";
+                        diag += " n"; diag += istr(static_cast<int>(cands.size())); diag += ":[";
+                        for (size_t i = 0; i < cands.size() && i < 6; ++i) {
+                            if (i) diag += ",";
+                            diag += istr(static_cast<int>(cands[i]));
+                        }
+                        diag += "] ";
+                    };
+                    if (wActive) appendAxis("W", rawWDiag, b->w, snappedW, candW);
+                    if (hActive) appendAxis("H", rawHDiag, b->h, snappedH, candH);
+                    if (!wActive && !hActive) diag = "no-axis-active";
+                    Str255 diagPt; ToPStr(diag, diagPt);
+                    SetWTitle(win, diagPt);
+                }
             }
 
             // AutoHeight text needs its height re-derived from the wrap
