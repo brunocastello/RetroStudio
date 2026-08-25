@@ -3936,6 +3936,22 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                                     const std::vector<SInt32>& cands, bool isW) {
                     if (!active) return;
                     if (!cands.empty()) {
+                        // Release check runs FIRST, before the crossing scan —
+                        // not after. With the release check last, the exact
+                        // tick a lock released would skip the crossing scan
+                        // entirely (it only runs `if (!locked)`, and locked was
+                        // still true on entry), so that tick's (prevRaw, raw)
+                        // span was never tested against the remaining
+                        // candidates before prevRaw jumped straight past them.
+                        // Every breakpoint except the very first one reached
+                        // gets approached starting from a just-released tick,
+                        // so this ordering silently ate every candidate after
+                        // the first — release-then-scan lets a release and a
+                        // fresh lock-acquisition happen in the same tick.
+                        if (locked) {
+                            SInt32 ad = raw >= lockedVal ? raw - lockedVal : lockedVal - raw;
+                            if (ad >= releaseAt) locked = false;
+                        }
                         if (!locked) {
                             // A single tick can span several candidates at once
                             // (coarse mouse-event polling routinely jumps more
@@ -3955,10 +3971,6 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                                 else if (shrinking ? (bp > lockedVal) : (bp < lockedVal)) lockedVal = bp;
                             }
                             if (haveBest) locked = true;
-                        }
-                        if (locked) {
-                            SInt32 ad = raw >= lockedVal ? raw - lockedVal : lockedVal - raw;
-                            if (ad >= releaseAt) locked = false;
                         }
                         if (locked) {
                             if (isW) {
