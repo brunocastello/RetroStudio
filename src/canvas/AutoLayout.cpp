@@ -670,3 +670,78 @@ void InferAutoLayoutSpacing(Frame* f, LayoutMode newMode) {
         f->layoutGap = kDefaultAutoLayoutSpacing;
     }
 }
+
+bool ComputeFrameHugSize(const Frame* f, SInt32& outW, SInt32& outH) {
+    if (f->layoutMode == LayoutMode::None || f->layoutWrap) return false;
+
+    bool isHoriz = (f->layoutMode == LayoutMode::Horizontal);
+    SInt32 padPri1 = isHoriz ? f->paddingLeft   : f->paddingTop;
+    SInt32 padPri2 = isHoriz ? f->paddingRight  : f->paddingBottom;
+    SInt32 padSec1 = isHoriz ? f->paddingTop    : f->paddingLeft;
+    SInt32 padSec2 = isHoriz ? f->paddingBottom : f->paddingRight;
+    SInt32 gap     = static_cast<SInt32>(f->layoutGap);
+
+    auto computeXtra = [&](bool hasStroke, UInt16 sw, UInt8 align, SInt32& xw, SInt32& xh) {
+        xw = xh = 0;
+        if (!f->strokesInLayout || !hasStroke) return;
+        SInt32 s = static_cast<SInt32>(sw);
+        if      (align == 0) { xw = s;     xh = s;     }
+        else if (align == 2) { xw = s * 2; xh = s * 2; }
+    };
+
+    // Each item's contribution uses its CURRENT bounds.w/h — including a Fill-
+    // sizing item's currently-resolved size, and a rotated item's AABB extent —
+    // so the guide always reflects what's actually on screen right now, live
+    // during a drag, same spirit as the real Hug pass in RunFrameLayout above.
+    SInt32 priSum = 0, secMax = 0, count = 0;
+    auto addItem = [&](SInt32 w, SInt32 h, bool hasStroke, UInt16 sw, UInt8 align) {
+        SInt32 xw, xh; computeXtra(hasStroke, sw, align, xw, xh);
+        SInt32 pri = (isHoriz ? w : h) + (isHoriz ? xw : xh);
+        SInt32 sec = (isHoriz ? h : w) + (isHoriz ? xh : xw);
+        priSum += pri;
+        if (sec > secMax) secMax = sec;
+        ++count;
+    };
+    auto addShape = [&](const Shape* s) {
+        if (!s->visible || s->isAbsolutePosition) return;
+        SInt32 w = s->bounds.w, h = s->bounds.h;
+        if (s->rotation != 0) {
+            double rad  = s->rotation * 3.14159265358979323846 / 180.0;
+            double cosA = std::abs(std::cos(rad)), sinA = std::abs(std::sin(rad));
+            w = static_cast<SInt32>(s->bounds.w * cosA + s->bounds.h * sinA + 0.5);
+            h = static_cast<SInt32>(s->bounds.w * sinA + s->bounds.h * cosA + 0.5);
+        }
+        addItem(w, h, s->hasStroke, s->strokeWidth, s->strokeAlign);
+    };
+    auto addFrame = [&](const Frame* cf) {
+        if (!cf->visible || cf->isAbsolutePosition) return;
+        addItem(cf->bounds.w, cf->bounds.h, cf->hasStroke, cf->strokeWidth, cf->strokeAlign);
+    };
+
+    if (!f->childOrder.empty()) {
+        for (const auto& cr : f->childOrder) {
+            if (cr.isFrame) addFrame(f->childFrames[cr.idx].get());
+            else            addShape(f->children[cr.idx].get());
+        }
+    } else {
+        for (auto& s : f->children)     addShape(s.get());
+        for (auto& cf : f->childFrames) addFrame(cf.get());
+    }
+
+    SInt32 priTotal, secTotal;
+    if (count == 0) {
+        priTotal = padPri1 + padPri2;
+        secTotal = padSec1 + padSec2;
+    } else {
+        priTotal = priSum + gap * (count - 1) + padPri1 + padPri2;
+        secTotal = secMax + padSec1 + padSec2;
+    }
+    if (priTotal < 1) priTotal = 1;
+    if (secTotal < 1) secTotal = 1;
+
+    outW = isHoriz ? priTotal : secTotal;
+    outH = isHoriz ? secTotal : priTotal;
+    outW = ClampDim(outW, f->minWidth,  f->maxWidth);
+    outH = ClampDim(outH, f->minHeight, f->maxHeight);
+    return true;
+}

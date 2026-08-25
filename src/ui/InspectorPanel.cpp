@@ -1027,24 +1027,41 @@ void DrawInspectorPanel() {
             y2 = static_cast<short>(y2 + 22);
         }
 
-        // SIZE — shows "Mixed" when selected frames differ; typing a value sets it on all
+        // SIZE — shows "Mixed" when selected frames differ; typing a value, or
+        // picking a Fixed/Hug/Fill mode, sets it on every selected frame.
         y2 = DrawSectionHeader(y2, "SIZE", portRect);
         y2 = static_cast<short>(y2 + 5);
-        RGBForeColor(&labelClr2); TextSize(9);
-        PStrC("W", ps2); MoveTo(6,  static_cast<short>(y2+12)); DrawString(ps2);
-        if (MixedW(gSelectedFrames))
-            DrawStrField(20, static_cast<short>(y2+12), 56, kFieldW, "Mixed", sFieldWRect);
-        else
-            DrawNumField(20, static_cast<short>(y2+12), 56, kFieldW,
-                         gSelectedFrame->bounds.w, sFieldWRect);
-        PStrC("H", ps2); MoveTo(86, static_cast<short>(y2+12)); DrawString(ps2);
-        if (MixedH(gSelectedFrames))
-            DrawStrField(100, static_cast<short>(y2+12), static_cast<short>(cRight - 104), kFieldH,
-                         "Mixed", sFieldHRect);
-        else
-            DrawNumField(100, static_cast<short>(y2+12), static_cast<short>(cRight - 104), kFieldH,
-                         gSelectedFrame->bounds.h, sFieldHRect);
-        y2 = static_cast<short>(y2 + 22);
+        {
+            short popW = 54;
+            short popX = static_cast<short>(cRight - popW - 4);
+            short valW = static_cast<short>(popX - 20 - 4);
+
+            RGBForeColor(&labelClr2); TextSize(9);
+            PStrC("W", ps2); MoveTo(6, static_cast<short>(y2+12)); DrawString(ps2);
+            TextSize(11);
+            if (MixedW(gSelectedFrames))
+                DrawStrField(20, static_cast<short>(y2+12), valW, kFieldW, "Mixed", sFieldWRect);
+            else
+                DrawNumField(20, static_cast<short>(y2+12), valW, kFieldW,
+                             gSelectedFrame->bounds.w, sFieldWRect);
+            const char* wSizName2 = (gSelectedFrame->widthSizing == SizingMode::Hug)  ? "Hug"
+                                  : (gSelectedFrame->widthSizing == SizingMode::Fill) ? "Fill" : "Fixed";
+            DrawPlatinumBtn(popX, y2, popW, 18, wSizName2, sWidthSizingPopupRect);
+            y2 = static_cast<short>(y2 + 22);
+
+            RGBForeColor(&labelClr2); TextSize(9);
+            PStrC("H", ps2); MoveTo(6, static_cast<short>(y2+12)); DrawString(ps2);
+            TextSize(11);
+            if (MixedH(gSelectedFrames))
+                DrawStrField(20, static_cast<short>(y2+12), valW, kFieldH, "Mixed", sFieldHRect);
+            else
+                DrawNumField(20, static_cast<short>(y2+12), valW, kFieldH,
+                             gSelectedFrame->bounds.h, sFieldHRect);
+            const char* hSizName2 = (gSelectedFrame->heightSizing == SizingMode::Hug)  ? "Hug"
+                                  : (gSelectedFrame->heightSizing == SizingMode::Fill) ? "Fill" : "Fixed";
+            DrawPlatinumBtn(popX, y2, popW, 18, hSizName2, sHeightSizingPopupRect);
+            y2 = static_cast<short>(y2 + 22);
+        }
 
         y2 = DrawMinMaxSizeRows(y2, cRight, labelClr2,
                                  gSelectedFrame->minWidth, gSelectedFrame->maxWidth,
@@ -2295,6 +2312,39 @@ bool HandleInspectorKey(char key, UInt16 modifiers) {
         return true;
     }
 
+    // Arrow Up/Down: nudge W/H/Min/Max by +-1 (+-10 with Shift), Figma's numeric-
+    // field nudge convention. Commits immediately through the normal ApplyInspectorEdit
+    // path (so Fixed-size-switch/multi-select/aspect-lock behave exactly as a typed
+    // Enter would), then re-opens the same field so repeated taps keep working.
+    if ((key == 0x1E || key == 0x1F) &&
+        (sActiveField == kFieldW || sActiveField == kFieldH ||
+         sActiveField == kFieldMinW || sActiveField == kFieldMaxW ||
+         sActiveField == kFieldMinH || sActiveField == kFieldMaxH)) {
+        bool isMinMax = (sActiveField == kFieldMinW || sActiveField == kFieldMaxW ||
+                         sActiveField == kFieldMinH || sActiveField == kFieldMaxH);
+        SInt32 cur;
+        if (sEditLen == 0) {
+            cur = isMinMax ? -1 : 0;
+        } else {
+            cur = 0; int ii = 0; bool neg = false;
+            if (sEditBuf[0] == '-') { neg = true; ii = 1; }
+            for (; ii < sEditLen; ++ii)
+                if (sEditBuf[ii] >= '0' && sEditBuf[ii] <= '9') cur = cur * 10 + (sEditBuf[ii] - '0');
+            if (neg) cur = -cur;
+        }
+        SInt32 step = (modifiers & shiftKey) ? 10 : 1;
+        SInt32 nv = cur + (key == 0x1E ? step : -step);
+        if (isMinMax) { if (nv < 0) nv = 0; } else { if (nv < 1) nv = 1; }
+        EditField field = sActiveField;
+        std::string s = numStr(nv);
+        sEditLen = 0;
+        for (int ii = 0; ii < (int)s.size() && ii < 11; ++ii) sEditBuf[sEditLen++] = s[ii];
+        sEditBuf[sEditLen] = '\0';
+        ApplyInspectorEdit();
+        StartEditForField(field);
+        return true;
+    }
+
     // Allow comma separator in compact padding fields ("a, b" format)
     if (key == ',' && (sActiveField == kFieldPadH || sActiveField == kFieldPadV) && sEditLen < 9) {
         bool hasComma = false;
@@ -3128,26 +3178,30 @@ void HandleInspectorClick(Point localPt) {
         if (PtInRect(localPt, &sPadBottomRect)){ StartEdit(kFieldPadBottom, lf->paddingBottom); return; }
         if (PtInRect(localPt, &sPadLeftRect))  { StartEdit(kFieldPadLeft,   lf->paddingLeft);   return; }
 
-        // Width sizing popup
+        // Width sizing popup — applies to every selected frame when multi-selecting
         if (PtInRect(localPt, &sWidthSizingPopupRect)) {
             bool hasFill = (lf->parent && lf->parent->layoutMode != LayoutMode::None);
             Rect wSzR = sWidthSizingPopupRect; wSzR.top -= gInspectorScrollY; wSzR.bottom -= gInspectorScrollY;
             SizingMode nm = ShowSizingPopup(wSzR, lf->widthSizing, hasFill);
             if (nm != lf->widthSizing) {
-                PushUndo(); lf->widthSizing = nm;
+                PushUndo();
+                if (isMultiFrame) { for (Frame* f : gSelectedFrames) f->widthSizing = nm; }
+                else              { lf->widthSizing = nm; }
                 InvalidateInspector();
                 if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
             }
             return;
         }
 
-        // Height sizing popup
+        // Height sizing popup — applies to every selected frame when multi-selecting
         if (PtInRect(localPt, &sHeightSizingPopupRect)) {
             bool hasFill = (lf->parent && lf->parent->layoutMode != LayoutMode::None);
             Rect hSzR = sHeightSizingPopupRect; hSzR.top -= gInspectorScrollY; hSzR.bottom -= gInspectorScrollY;
             SizingMode nm = ShowSizingPopup(hSzR, lf->heightSizing, hasFill);
             if (nm != lf->heightSizing) {
-                PushUndo(); lf->heightSizing = nm;
+                PushUndo();
+                if (isMultiFrame) { for (Frame* f : gSelectedFrames) f->heightSizing = nm; }
+                else              { lf->heightSizing = nm; }
                 InvalidateInspector();
                 if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
             }
@@ -3155,16 +3209,29 @@ void HandleInspectorClick(Point localPt) {
         }
     }
 
-    // Shape W/H sizing buttons (Fixed / Fill within a layout frame)
+    // Shape W/H sizing buttons (Fixed / Fill within a layout frame). Applies to
+    // every selected shape when multi-selecting, not just the representative —
+    // matches the "set all" convention every other multi-apply field uses.
     if (gSelectedShape) {
-        auto setShapeSizing = [&](UInt8& field, UInt8 val) {
-            if (field != val) { PushUndo(); field = val; InvalidateInspector();
-                if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow,&r); InvalWindowRect(gMainWindow,&r); } }
+        auto setShapeSizing = [&](UInt8 Shape::* field, UInt8 val) {
+            if (isMulti) {
+                bool any = false;
+                for (Shape* s : gSelectedShapes) if (s->*field != val) { any = true; break; }
+                if (!any) return;
+                PushUndo();
+                for (Shape* s : gSelectedShapes) s->*field = val;
+            } else {
+                if (gSelectedShape->*field == val) return;
+                PushUndo();
+                gSelectedShape->*field = val;
+            }
+            InvalidateInspector();
+            if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow,&r); InvalWindowRect(gMainWindow,&r); }
         };
-        if (PtInRect(localPt, &sShapeWFxRect)) { setShapeSizing(gSelectedShape->wSizing, 0); return; }
-        if (PtInRect(localPt, &sShapeWFlRect)) { setShapeSizing(gSelectedShape->wSizing, 2); return; }
-        if (PtInRect(localPt, &sShapeHFxRect)) { setShapeSizing(gSelectedShape->hSizing, 0); return; }
-        if (PtInRect(localPt, &sShapeHFlRect)) { setShapeSizing(gSelectedShape->hSizing, 2); return; }
+        if (PtInRect(localPt, &sShapeWFxRect)) { setShapeSizing(&Shape::wSizing, 0); return; }
+        if (PtInRect(localPt, &sShapeWFlRect)) { setShapeSizing(&Shape::wSizing, 2); return; }
+        if (PtInRect(localPt, &sShapeHFxRect)) { setShapeSizing(&Shape::hSizing, 0); return; }
+        if (PtInRect(localPt, &sShapeHFlRect)) { setShapeSizing(&Shape::hSizing, 2); return; }
     }
 
     // Aspect ratio lock toggle

@@ -3842,6 +3842,33 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                 gActiveGuides.clear();
             }
 
+            // "Reached my own Hug size" guide: manually shrinking/growing a
+            // Fixed-size Auto Layout frame shows a guide (and snaps within the
+            // usual tolerance) at the width/height it would naturally Hug to
+            // given its current children/padding/gap — feedback for exactly
+            // where content stops being clipped, without hard-blocking further
+            // dragging past it. Appended on top of any sibling guide from
+            // above (not exclusive with it); non-wrap frames only (Wrap's
+            // multi-line hug math isn't duplicated in ComputeFrameHugSize).
+            if (gSmartGuidesEnabled && cf && cf->layoutMode != LayoutMode::None && !cf->layoutWrap) {
+                SInt32 hugW = 0, hugH = 0;
+                if (ComputeFrameHugSize(cf, hugW, hugH)) {
+                    const SInt32 tol = std::max<SInt32>(1, SInt32(4) * 100 / gCanvasZoom);
+                    if ((bL[hi] || bR[hi]) &&
+                        (b->w >= hugW ? b->w - hugW : hugW - b->w) <= tol) {
+                        if (bL[hi]) { SInt32 R = b->x + b->w; b->w = hugW; b->x = R - hugW; }
+                        else        { b->w = hugW; }
+                        gActiveGuides.push_back({ true, bL[hi] ? b->x : (b->x + b->w), b->y, b->y + b->h });
+                    }
+                    if ((bT[hi] || bB[hi]) &&
+                        (b->h >= hugH ? b->h - hugH : hugH - b->h) <= tol) {
+                        if (bT[hi]) { SInt32 Bo = b->y + b->h; b->h = hugH; b->y = Bo - hugH; }
+                        else        { b->h = hugH; }
+                        gActiveGuides.push_back({ false, bT[hi] ? b->y : (b->y + b->h), b->x, b->x + b->w });
+                    }
+                }
+            }
+
             // AutoHeight text needs its height re-derived from the wrap
             // state at the NEW b->w right now, before the reach/dirty-rect
             // below is computed from *b — otherwise the dirty rect is built
