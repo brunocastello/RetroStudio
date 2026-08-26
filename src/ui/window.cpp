@@ -5,10 +5,16 @@
 #include "../export/DocumentSerializer.h"
 #include "../export/PreferencesSerializer.h"
 #include "../canvas/AutoLayout.h"
+#include <Navigation.h>
 #include <algorithm>
 #include <cstring>
 #include <cmath>
 #include <map>
+
+// NavGetDefaultDialogOptions is in libCarbonLib.a but absent from the
+// Multiversal Navigation.h -- same forward-declare DocumentSerializer.cpp
+// already needs for the same reason.
+extern "C" OSErr NavGetDefaultDialogOptions(NavDialogOptions* outOptions);
 
 WindowRef  gMainWindow    = nullptr;
 WindowRef  gAboutWindow   = nullptr;
@@ -45,6 +51,7 @@ int        gCanvasZoom    = 100;
 int        gNextRectNum    = 1;
 int        gNextEllipseNum = 1;
 int        gNextTextNum    = 1;
+int        gNextImageNum   = 1;
 
 // Non-null while a text shape is being edited in place (EditTextInPlace) —
 // DrawShape skips rendering it normally so the live TextEdit overlay shows
@@ -197,6 +204,7 @@ struct DocCtx {
     int nextRectNum    = 1;
     int nextEllipseNum = 1;
     int nextTextNum    = 1;
+    int nextImageNum   = 1;
     SInt32 offsetX = 0, offsetY = 0;
     int zoom = 100;
     std::vector<std::unique_ptr<Document>> undoStack;
@@ -222,8 +230,9 @@ static const short kFileSaveAs        = 9;
 static const short kFileSaveCopy      = 10;
 // item 11 = separator
 static const short kFilePrint         = 12;
-// item 13 = separator
-static const short kFileQuit          = 14;
+static const short kFilePlaceImage    = 13;
+// item 14 = separator
+static const short kFileQuit          = 15;
 static const int   kMaxRecentFiles    = 5;
 static const short kViewZoomIn  = 1;
 static const short kViewZoomOut = 2;
@@ -383,6 +392,7 @@ static void SaveGlobalsToCtx(DocCtx& ctx) {
     ctx.nextRectNum    = gNextRectNum;
     ctx.nextEllipseNum = gNextEllipseNum;
     ctx.nextTextNum    = gNextTextNum;
+    ctx.nextImageNum   = gNextImageNum;
     ctx.offsetX        = gCanvasOffsetX;
     ctx.offsetY        = gCanvasOffsetY;
     ctx.zoom           = gCanvasZoom;
@@ -401,6 +411,7 @@ static void LoadGlobalsFromCtx(DocCtx& ctx) {
     gNextRectNum     = ctx.nextRectNum;
     gNextEllipseNum  = ctx.nextEllipseNum;
     gNextTextNum     = ctx.nextTextNum;
+    gNextImageNum    = ctx.nextImageNum;
     gCanvasOffsetX   = ctx.offsetX;
     gCanvasOffsetY   = ctx.offsetY;
     gCanvasZoom      = ctx.zoom;
@@ -473,6 +484,7 @@ static void UpdateMenuState() {
         if (hasFile) { EnableMenuItem(fm, kFileSave); EnableMenuItem(fm, kFileRevert); }
         else         { DisableMenuItem(fm, kFileSave); DisableMenuItem(fm, kFileRevert); }
         DisableMenuItem(fm, kFilePrint);  // placeholder: no Print Manager integration yet
+        if (has) EnableMenuItem(fm, kFilePlaceImage); else DisableMenuItem(fm, kFilePlaceImage);
         if (!sRecentFiles.empty()) EnableMenuItem(fm, kFileOpenRecent);
         else                       DisableMenuItem(fm, kFileOpenRecent);
     }
@@ -817,6 +829,7 @@ void SetupMenus() {
     AppendMenu(fileMenu, "\p-");
     AppendMenu(fileMenu, "\pPrint\311");
     SetItemCmd(fileMenu, kFilePrint, 'P');
+    AppendMenu(fileMenu, "\pPlace Image\311");
     AppendMenu(fileMenu, "\p-");
     AppendMenu(fileMenu, "\pQuit");
     SetItemCmd(fileMenu, kFileQuit, 'Q');
@@ -2176,6 +2189,17 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
             RGBColor wh = {0xFFFF,0xFFFF,0xFFFF}; RGBBackColor(&wh);
             break;
         }
+        case Shape::kImage: {
+            const auto& img = static_cast<const ImageShape&>(shape);
+            if (!img.pictData.empty()) {
+                Handle h = nullptr;
+                if (PtrToHand(img.pictData.data(), &h, static_cast<long>(img.pictData.size())) == noErr && h) {
+                    DrawPicture(reinterpret_cast<PicHandle>(h), &r);
+                    DisposeHandle(h);
+                }
+            }
+            break;
+        }
         default: break;
     }
     if (shapeOp) PenNormal();
@@ -2287,6 +2311,7 @@ static void DrawShapeNameLabel(const Shape& shape) {
     if (label.empty()) {
         if      (shape.GetType() == Shape::kEllipse) label = "Ellipse";
         else if (shape.GetType() == Shape::kText)     label = "Text";
+        else if (shape.GetType() == Shape::kImage)    label = "Image";
         else                                           label = "Rectangle";
     }
     Str255 pn; ToPStr(label, pn);
@@ -4446,6 +4471,7 @@ static Shape* HitTestShapeLabel(const Frame* f, Point pt) {
         if (label.empty()) {
             if      (s->GetType() == Shape::kEllipse) label = "Ellipse";
             else if (s->GetType() == Shape::kText)    label = "Text";
+            else if (s->GetType() == Shape::kImage)   label = "Image";
             else                                      label = "Rectangle";
         }
         Str255 pn; ToPStr(label, pn);
@@ -4493,6 +4519,7 @@ static ShapeLabelHit HitTestShapeLabelInFrame(Frame* f, Point pt) {
         if (lbl.empty()) {
             if      (s->GetType() == Shape::kEllipse) lbl = "Ellipse";
             else if (s->GetType() == Shape::kText)    lbl = "Text";
+            else if (s->GetType() == Shape::kImage)   lbl = "Image";
             else                                      lbl = "Rectangle";
         }
         Str255 pn; ToPStr(lbl, pn);
@@ -4766,6 +4793,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
             if (lbl.empty()) {
                 if      (s->GetType() == Shape::kEllipse) lbl = "Ellipse";
                 else if (s->GetType() == Shape::kText)    lbl = "Text";
+                else if (s->GetType() == Shape::kImage)   lbl = "Image";
                 else                                      lbl = "Rectangle";
             }
             Str255 pn; ToPStr(lbl, pn);
@@ -6859,6 +6887,101 @@ void DeleteSelected() {
     }
 }
 
+// Nav Services event callback for the Place Image dialog -- a no-op, same
+// as DocumentSerializer.cpp's Nav*EventProc pattern. Built via NewNavEventUPP
+// (not a bare cast) since CarbonLib dispatches through CallUniversalProc,
+// which needs a real RoutineDescriptor -- see CLAUDE.md's UPP section.
+static pascal void NavPlaceImageEventProc(NavEventCallbackMessage, NavCBRecPtr, void*) {}
+
+// File > Place Image...: imports a classic PICT file as a new ImageShape,
+// centered in the current viewport (inside the deepest frame under that
+// point, same target-resolution as a drag-created shape in
+// HandleCanvasCreate). Rendered later via DrawPicture -- no GWorld, no
+// CopyBits (see project memory: CopyBits screen corruption).
+static void PlaceImage() {
+    if (!gDocument || !gMainWindow) return;
+
+    NavDialogOptions options = {};
+    NavGetDefaultDialogOptions(&options);
+    options.version = 0;
+    ToPStr("Place Image", options.windowTitle);
+    ToPStr("RetroStudio",  options.clientName);
+
+    NavEventUPP openUPP = NewNavEventUPP(NavPlaceImageEventProc);
+    NavReplyRecord reply = {};
+    OSErr err = NavGetFile(nullptr, &reply, &options, openUPP, nullptr, nullptr, nullptr, nullptr);
+    DisposeNavEventUPP(openUPP);
+    if (err != noErr || !reply.validRecord) { NavDisposeReply(&reply); return; }
+
+    FSSpec spec;
+    AEKeyword keyword; DescType typeCode; SInt32 actualSize = 0;
+    err = AEGetNthPtr(&reply.selection, 1, typeFSS, &keyword, &typeCode,
+                       &spec, static_cast<SInt32>(sizeof(FSSpec)), &actualSize);
+    NavDisposeReply(&reply);
+    if (err != noErr) return;
+
+    short refNum;
+    if (FSpOpenDF(&spec, fsRdPerm, &refNum) != noErr) return;
+    long eof = 0;
+    GetEOF(refNum, &eof);
+    // Classic PICT files reserve a 512-byte header (historically print-info,
+    // usually zero) before the actual picture opcodes begin.
+    const long kPictFileHeader = 512;
+    if (eof <= kPictFileHeader + 10) { FSClose(refNum); return; }  // too small to be a real PICT
+
+    if (SetFPos(refNum, fsFromStart, kPictFileHeader) != noErr) { FSClose(refNum); return; }
+    long dataLen = eof - kPictFileHeader;
+    std::vector<UInt8> data(static_cast<size_t>(dataLen));
+    long cnt = dataLen;
+    OSErr rerr = FSRead(refNum, &cnt, data.data());
+    FSClose(refNum);
+    if (rerr != noErr || cnt != dataLen) return;
+
+    // picFrame (the picture's own bounding box) sits at bytes [2,10) of the
+    // picture data, right after the 2-byte legacy picSize field.
+    short pTop    = static_cast<short>((data[2] << 8) | data[3]);
+    short pLeft   = static_cast<short>((data[4] << 8) | data[5]);
+    short pBottom = static_cast<short>((data[6] << 8) | data[7]);
+    short pRight  = static_cast<short>((data[8] << 8) | data[9]);
+    SInt32 picW = pRight - pLeft, picH = pBottom - pTop;
+    if (picW <= 0 || picH <= 0 || picW > 4000 || picH > 4000) { picW = 200; picH = 150; }
+
+    PushUndo();
+
+    Rect winBounds = CurrentPortBounds();
+    Point centerLocal;
+    centerLocal.h = static_cast<short>((winBounds.left + winBounds.right) / 2);
+    centerLocal.v = static_cast<short>((winBounds.top + winBounds.bottom) / 2);
+    Frame* target = DeepestFrameAt(centerLocal);
+    Point centerCanvas = ScreenToCanvas(centerLocal);
+
+    auto img       = std::make_unique<ImageShape>();
+    img->name      = "Image " + istr(gNextImageNum++);
+    img->pictData  = std::move(data);
+    img->bounds.w  = picW;
+    img->bounds.h  = picH;
+    img->bounds.x  = centerCanvas.h - picW / 2;
+    img->bounds.y  = centerCanvas.v - picH / 2;
+    img->hasFill   = false;
+    img->hasStroke = false;
+
+    gSelectedShapes.clear(); gSelectedFrames.clear();
+    gSelectedShape = img.get();
+    gSelectedFrame = target;
+
+    if (target) {
+        target->childOrder.push_back({ false, static_cast<int>(target->children.size()) });
+        target->children.push_back(std::move(img));
+    } else {
+        RootOrderInsert(0, false, static_cast<int>(gDocument->rootShapes.size()));
+        gDocument->rootShapes.push_back(std::move(img));
+    }
+
+    RefreshLayersPanel();
+    RefreshInspector();
+    Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
+}
+
 void HandleMenuCommand(long menuResult) {
     short menuID   = static_cast<short>(menuResult >> 16);
     short menuItem = static_cast<short>(menuResult & 0xFFFF);
@@ -6915,6 +7038,9 @@ void HandleMenuCommand(long menuResult) {
                 break;
             case kFilePrint:
                 break;  // disabled placeholder -- no Print Manager integration yet
+            case kFilePlaceImage:
+                PlaceImage();
+                break;
             case kFileQuit:
                 AttemptQuit();
                 break;

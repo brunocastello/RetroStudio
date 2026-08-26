@@ -1523,6 +1523,7 @@ void DrawInspectorPanel() {
         if (objName.empty()) {
             if      (gSelectedShape->GetType() == Shape::kEllipse) objName = "Ellipse";
             else if (gSelectedShape->GetType() == Shape::kText)    objName = "Text";
+            else if (gSelectedShape->GetType() == Shape::kImage)   objName = "Image";
             else                                                    objName = "Rectangle";
         }
     } else {

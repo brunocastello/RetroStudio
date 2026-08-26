@@ -27,7 +27,7 @@ static pascal void NavOpenEventProc(NavEventCallbackMessage, NavCBRecPtr, void*)
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
 static const UInt32 kMagic   = 0x52535444;  // 'RSTD'
-static const UInt16 kVersion = 21;
+static const UInt16 kVersion = 22;  // v22: ImageShape (kImage)
 
 // Folder Manager constants — defined here because Retro68 Carbon headers
 // don't always expose <Folders.h> constants via <Carbon.h>.
@@ -129,6 +129,10 @@ static void WriteShape(Writer& w, const Shape& s) {
         w.w8(static_cast<UInt8>(ts.textSizing));
         w.w8(ts.flippedH ? 1 : 0);
         w.w8(ts.flippedV ? 1 : 0);
+    } else if (s.GetType() == Shape::kImage) {
+        const auto& is = static_cast<const ImageShape&>(s);
+        w.w32(static_cast<SInt32>(is.pictData.size()));
+        if (!is.pictData.empty()) w.write(is.pictData.data(), static_cast<long>(is.pictData.size()));
     }
     w.wStr(s.name);
 }
@@ -188,6 +192,16 @@ static std::unique_ptr<Shape> ReadShape(Reader& r, UInt16 ver) {
             ts->flippedV = r.r8() != 0;
         }
         shape = std::move(ts);
+    } else if (type == Shape::kImage) {
+        // No ver gate needed: type==kImage can only occur in a file written
+        // by a v22+ serializer, since that byte value didn't exist before.
+        auto is = std::make_unique<ImageShape>();
+        SInt32 len = r.r32();
+        if (len > 0 && r.ok) {
+            is->pictData.resize(static_cast<size_t>(len));
+            r.read(is->pictData.data(), len);
+        }
+        shape = std::move(is);
     } else {
         shape = std::make_unique<EllipseShape>();
     }
