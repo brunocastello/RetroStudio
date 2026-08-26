@@ -14,6 +14,7 @@
 #include "../canvas/AutoLayout.h"
 #include <string>
 #include <algorithm>
+#include <cmath>
 
 WindowRef gInspectorWindow = nullptr;
 
@@ -87,7 +88,9 @@ static Rect sMinHRect                 = {0,0,0,0};
 static Rect sMaxHRect                 = {0,0,0,0};
 // Align row: Left, Center-H, Right, Top, Middle-V, Bottom
 static Rect sAlignBtnRect[6]          = {};
-// Distribute row: horizontal spacing, vertical spacing (3+ eligible items)
+// Arrange row: Tidy Up (2+ eligible items), Distribute horizontal/vertical
+// spacing (3+ eligible items)
+static Rect sTidyUpRect               = {0,0,0,0};
 static Rect sDistributeHRect          = {0,0,0,0};
 static Rect sDistributeVRect          = {0,0,0,0};
 // Absolute position toggle + Constraints dropdowns (H then V)
@@ -734,8 +737,54 @@ static void ApplyAlign(int kind) {
 }
 
 // --------------------------------------------------------------------------
-// Distribute (Figma-style even spacing for 3+ free/absolute items)
+// Tidy Up + Distribute (Figma-style arrange row for free/absolute items)
 // --------------------------------------------------------------------------
+
+// Fills `items` with the current selection's free/absolute-positioned
+// Bounds2 pointers — same "opted out of Auto Layout flow, or has no
+// layout-managing parent" eligibility rule as AnyAlignableSelected, shared
+// by Tidy Up and Distribute (they differ only in the minimum count needed).
+static void GatherEligibleItems(std::vector<Bounds2*>& items) {
+    items.clear();
+    if (gSelectedFrames.size() > 1) {
+        for (Frame* f : gSelectedFrames) {
+            if (f->parent && f->parent->layoutMode != LayoutMode::None && !f->isAbsolutePosition) continue;
+            items.push_back(&f->bounds);
+        }
+    } else if (gSelectedShapes.size() > 1) {
+        for (Shape* s : gSelectedShapes) {
+            Frame* p = FindShapeParent(s);
+            if (p && p->layoutMode != LayoutMode::None && !s->isAbsolutePosition) continue;
+            items.push_back(&s->bounds);
+        }
+    }
+}
+
+static int CountEligibleSelected() {
+    std::vector<Bounds2*> items;
+    GatherEligibleItems(items);
+    return static_cast<int>(items.size());
+}
+
+// Simple 2x2 grid-of-squares glyph symbolizing "arrange into a tidy grid".
+static void DrawTidyUpIcon(const Rect& btn, bool enabled) {
+    RGBColor fg;
+    if (enabled) { fg.red = 0x3333; fg.green = 0x3333; fg.blue = 0x3333; }
+    else         { fg.red = 0xBBBB; fg.green = 0xBBBB; fg.blue = 0xBBBB; }
+    RGBForeColor(&fg);
+
+    short l = static_cast<short>(btn.left + 3),  r = static_cast<short>(btn.right - 3);
+    short t = static_cast<short>(btn.top + 3),   b = static_cast<short>(btn.bottom - 3);
+    short midX = static_cast<short>((l + r) / 2 - 1);
+    short midY = static_cast<short>((t + b) / 2 - 1);
+    Rect cells[4] = {
+        { t,                        l,                        midY, midX },
+        { t,                        static_cast<short>(midX + 2), midY, r },
+        { static_cast<short>(midY + 2), l,                        b,    midX },
+        { static_cast<short>(midY + 2), static_cast<short>(midX + 2), b,    r },
+    };
+    for (int i = 0; i < 4; ++i) PaintRect(&cells[i]);
+}
 
 // Simple 3-bar glyph symbolizing "equal gaps between 3+ objects": horizontal
 // draws 3 vertical bars side by side, vertical draws 3 horizontal bars
@@ -766,78 +815,62 @@ static void DrawDistributeIcon(const Rect& btn, bool horizontal, bool enabled) {
     }
 }
 
-// Draws the 2-button Distribute row (horizontal spacing, vertical spacing)
-// and populates sDistributeHRect/sDistributeVRect. Same enabled/dimmed
-// convention as DrawAlignRow.
-static short DrawDistributeRow(short y, bool enabled) {
+// Draws the 3-button arrange row (Tidy Up, then Distribute horizontal/
+// vertical spacing) and populates sTidyUpRect/sDistributeHRect/
+// sDistributeVRect. Same enabled/dimmed convention as DrawAlignRow; Tidy Up
+// and Distribute are enabled independently since they have different
+// minimum-count thresholds.
+static short DrawArrangeRow(short y, bool tidyEnabled, bool distributeEnabled) {
     const short btnW = 22, btnH = 18, gap = 2;
     short x = 6;
+
+    {
+        Rect btn = { y, x, static_cast<short>(y + btnH), static_cast<short>(x + btnW) };
+        RGBColor bg; RGBColor bd;
+        if (tidyEnabled) { bg = {0xDDDD,0xDDDD,0xDDDD}; bd = {0x7777,0x7777,0x7777}; }
+        else             { bg = {0xF2F2,0xF2F2,0xF2F2}; bd = {0xCCCC,0xCCCC,0xCCCC}; }
+        RGBForeColor(&bg); PaintRect(&btn);
+        RGBForeColor(&bd); FrameRect(&btn);
+        DrawTidyUpIcon(btn, tidyEnabled);
+        sTidyUpRect = tidyEnabled ? btn : Rect{0,0,0,0};
+        x = static_cast<short>(x + btnW + gap + 4);
+    }
+
     Rect* rects[2] = { &sDistributeHRect, &sDistributeVRect };
     for (int i = 0; i < 2; ++i) {
         Rect btn = { y, x, static_cast<short>(y + btnH), static_cast<short>(x + btnW) };
         RGBColor bg; RGBColor bd;
-        if (enabled) { bg = {0xDDDD,0xDDDD,0xDDDD}; bd = {0x7777,0x7777,0x7777}; }
-        else         { bg = {0xF2F2,0xF2F2,0xF2F2}; bd = {0xCCCC,0xCCCC,0xCCCC}; }
+        if (distributeEnabled) { bg = {0xDDDD,0xDDDD,0xDDDD}; bd = {0x7777,0x7777,0x7777}; }
+        else                   { bg = {0xF2F2,0xF2F2,0xF2F2}; bd = {0xCCCC,0xCCCC,0xCCCC}; }
         RGBForeColor(&bg); PaintRect(&btn);
         RGBForeColor(&bd); FrameRect(&btn);
-        DrawDistributeIcon(btn, i == 0, enabled);
-        *rects[i] = enabled ? btn : Rect{0,0,0,0};
+        DrawDistributeIcon(btn, i == 0, distributeEnabled);
+        *rects[i] = distributeEnabled ? btn : Rect{0,0,0,0};
         x = static_cast<short>(x + btnW + gap);
     }
     RGBColor black = {0,0,0}; RGBForeColor(&black);
     return static_cast<short>(y + btnH + 6);
 }
 
+// True when 2+ eligible items are selected — Tidy Up (unlike Distribute)
+// is meaningful even for just two items, matching Figma.
+static bool AnyTidyUpSelected() { return CountEligibleSelected() >= 2; }
+
 // True when 3+ items in the current selection are eligible to be
-// distributed — same "free or absolute-positioned" eligibility rule as
-// AnyAlignableSelected, just requiring a count of 3 or more (fewer than
-// that, there's nothing meaningful to distribute). Only ever true for a
-// multi-select, same as Figma (Distribute needs 3+ objects, so a single
-// selection or a 2-item one never qualifies).
-static bool AnyDistributableSelected() {
-    if (gSelectedFrames.size() > 1) {
-        int n = 0;
-        for (Frame* f : gSelectedFrames)
-            if (!f->parent || f->parent->layoutMode == LayoutMode::None || f->isAbsolutePosition) ++n;
-        return n >= 3;
-    }
-    if (gSelectedShapes.size() > 1) {
-        int n = 0;
-        for (Shape* s : gSelectedShapes) {
-            Frame* p = FindShapeParent(s);
-            if (!p || p->layoutMode == LayoutMode::None || s->isAbsolutePosition) ++n;
-        }
-        return n >= 3;
-    }
-    return false;
-}
+// distributed — fewer than that, there's nothing meaningful to distribute
+// (matches Figma: Distribute needs 3+ objects).
+static bool AnyDistributableSelected() { return CountEligibleSelected() >= 3; }
 
 // horizontal: true = distribute horizontal spacing (even gaps left-to-right
 // along x), false = distribute vertical spacing (even gaps top-to-bottom
 // along y). Matches Figma: the leftmost/topmost and rightmost/bottommost
 // items stay exactly where they are; every item in between is repositioned
 // so the gap between each adjacent pair (sorted along the target axis)
-// comes out identical. Only ever a multi-frame or multi-shape operation
-// (same eligibility rule as Align — layout-managed items are skipped unless
-// they've opted out via Absolute Position).
+// comes out identical.
 static void ApplyDistribute(bool horizontal) {
     if (!gDocument) return;
-    const bool isMultiFrame = (gSelectedFrames.size() > 1);
-    const bool isMulti      = (gSelectedShapes.size() > 1);
-
     std::vector<Bounds2*> items;
-    if (isMultiFrame) {
-        for (Frame* f : gSelectedFrames) {
-            if (f->parent && f->parent->layoutMode != LayoutMode::None && !f->isAbsolutePosition) continue;
-            items.push_back(&f->bounds);
-        }
-    } else if (isMulti) {
-        for (Shape* s : gSelectedShapes) {
-            Frame* p = FindShapeParent(s);
-            if (p && p->layoutMode != LayoutMode::None && !s->isAbsolutePosition) continue;
-            items.push_back(&s->bounds);
-        }
-    }
+    GatherEligibleItems(items);
     if (items.size() < 3) return;
 
     std::sort(items.begin(), items.end(), [&](Bounds2* a, Bounds2* b) {
@@ -865,6 +898,80 @@ static void ApplyDistribute(bool horizontal) {
             if (b->y != cursor) { if (!changed) PushUndo(); b->y = cursor; changed = true; }
         }
         cursor += sz + gapEach;
+    }
+
+    if (changed) {
+        InvalidateInspector();
+        if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
+    }
+}
+
+// Infers a flat gap value from the selection's existing spacing (smallest
+// positive horizontal gap between two items sorted by x), falling back to
+// Figma's own Tidy Up default of 20 when nothing sensible can be inferred
+// (items overlapping, or all sharing the same x). Same "infer, else factory
+// default" spirit as AutoLayout.cpp's InferAutoLayoutSpacing.
+static SInt32 InferTidyGap(const std::vector<Bounds2*>& items) {
+    std::vector<Bounds2*> sx = items;
+    std::sort(sx.begin(), sx.end(), [](Bounds2* a, Bounds2* b) { return a->x < b->x; });
+    SInt32 best = -1;
+    for (size_t i = 1; i < sx.size(); ++i) {
+        SInt32 g = sx[i]->x - (sx[i - 1]->x + sx[i - 1]->w);
+        if (g > 0 && (best < 0 || g < best)) best = g;
+    }
+    return (best > 0) ? best : 20;
+}
+
+// Arranges 2+ free/absolute items into a tidy grid — one-click only, no
+// interactive spacing handles (deliberately scoped, real Figma also offers
+// live drag-to-adjust after arranging). Column count is chosen to keep the
+// resulting grid roughly the same aspect ratio as the selection's own
+// original bounding box (Figma's own heuristic); cell size is the max item
+// width/height so nothing overlaps; gap comes from InferTidyGap. Items are
+// placed in reading order (top-to-bottom, then left-to-right) into the
+// grid, row-major.
+static void ApplyTidyUp() {
+    if (!gDocument) return;
+    std::vector<Bounds2*> items;
+    GatherEligibleItems(items);
+    SInt32 n = static_cast<SInt32>(items.size());
+    if (n < 2) return;
+
+    SInt32 bx0 = items[0]->x, by0 = items[0]->y;
+    SInt32 bx1 = items[0]->x + items[0]->w, by1 = items[0]->y + items[0]->h;
+    SInt32 maxW = items[0]->w, maxH = items[0]->h;
+    for (Bounds2* b : items) {
+        bx0 = std::min(bx0, b->x); by0 = std::min(by0, b->y);
+        bx1 = std::max(bx1, b->x + b->w); by1 = std::max(by1, b->y + b->h);
+        maxW = std::max(maxW, b->w); maxH = std::max(maxH, b->h);
+    }
+    double aspect = (by1 > by0) ? double(bx1 - bx0) / double(by1 - by0) : 1.0;
+    if (aspect <= 0.0) aspect = 1.0;
+
+    SInt32 cols = static_cast<SInt32>(std::lround(std::sqrt(double(n) * aspect)));
+    if (cols < 1) cols = 1;
+    if (cols > n) cols = n;
+
+    SInt32 gap = InferTidyGap(items);
+
+    std::vector<Bounds2*> ordered = items;
+    std::sort(ordered.begin(), ordered.end(), [](Bounds2* a, Bounds2* b) {
+        if (a->y != b->y) return a->y < b->y;
+        return a->x < b->x;
+    });
+
+    bool changed = false;
+    for (SInt32 i = 0; i < n; ++i) {
+        SInt32 col = i % cols;
+        SInt32 row = i / cols;
+        SInt32 nx = bx0 + col * (maxW + gap);
+        SInt32 ny = by0 + row * (maxH + gap);
+        Bounds2* b = ordered[static_cast<size_t>(i)];
+        if (b->x != nx || b->y != ny) {
+            if (!changed) PushUndo();
+            b->x = nx; b->y = ny;
+            changed = true;
+        }
     }
 
     if (changed) {
@@ -1010,7 +1117,7 @@ void DrawInspectorPanel() {
     sCornerIndividualBtnRect = sOpacityRect = sRotationRect = {0,0,0,0};
     sMinWRect = sMaxWRect = sMinHRect = sMaxHRect = {0,0,0,0};
     for (int i=0;i<6;++i) sAlignBtnRect[i]={0,0,0,0};
-    sDistributeHRect = sDistributeVRect = {0,0,0,0};
+    sTidyUpRect = sDistributeHRect = sDistributeVRect = {0,0,0,0};
     sAbsolutePositionRect = {0,0,0,0};
     sConstraintHRect = sConstraintVRect = {0,0,0,0};
 
@@ -1113,7 +1220,7 @@ void DrawInspectorPanel() {
         y2 = DrawSectionHeader(y2, "POSITION", portRect);
         y2 = static_cast<short>(y2 + 5);
         y2 = DrawAlignRow(y2, AnyAlignableSelected());
-        y2 = DrawDistributeRow(y2, AnyDistributableSelected());
+        y2 = DrawArrangeRow(y2, AnyTidyUpSelected(), AnyDistributableSelected());
         RGBForeColor(&labelClr2); TextSize(9);
         PStrC("X", ps2); MoveTo(6,  static_cast<short>(y2+12)); DrawString(ps2);
         DrawNumField(20, static_cast<short>(y2+12), 64, kFieldX,
@@ -2065,7 +2172,7 @@ void DrawInspectorPanel() {
 
     y = DrawSubLabel(y, "Alignment");
     y = DrawAlignRow(y, AnyAlignableSelected());
-    y = DrawDistributeRow(y, AnyDistributableSelected());
+    y = DrawArrangeRow(y, AnyTidyUpSelected(), AnyDistributableSelected());
     y = static_cast<short>(y + 4);
 
     y = DrawSubLabel(y, "Position");
@@ -2957,7 +3064,8 @@ void HandleInspectorClick(Point localPt) {
         }
     }
 
-    // Distribute buttons
+    // Tidy Up / Distribute buttons
+    if (PtInRect(localPt, &sTidyUpRect))      { ApplyTidyUp();          return; }
     if (PtInRect(localPt, &sDistributeHRect)) { ApplyDistribute(true);  return; }
     if (PtInRect(localPt, &sDistributeVRect)) { ApplyDistribute(false); return; }
 
