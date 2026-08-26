@@ -6924,13 +6924,34 @@ static void PlaceImage() {
     if (FSpOpenDF(&spec, fsRdPerm, &refNum) != noErr) return;
     long eof = 0;
     GetEOF(refNum, &eof);
-    // Classic PICT files reserve a 512-byte header (historically print-info,
-    // usually zero) before the actual picture opcodes begin.
-    const long kPictFileHeader = 512;
-    if (eof <= kPictFileHeader + 10) { FSClose(refNum); return; }  // too small to be a real PICT
 
-    if (SetFPos(refNum, fsFromStart, kPictFileHeader) != noErr) { FSClose(refNum); return; }
-    long dataLen = eof - kPictFileHeader;
+    // Classic PICT files traditionally reserve a 512-byte header (historically
+    // print-info, usually zero) before the actual picture opcodes begin -- but
+    // this is only ever a convention, never enforced, and several real-world
+    // PICT files (some Desktop Pictures included) omit it entirely. Blindly
+    // skipping 512 bytes on a headerless file misaligns every opcode after
+    // it, which can render blank, render garbled, or hand QuickDraw's picture
+    // interpreter a bogus opcode stream that crashes outright -- exactly the
+    // three symptoms seen in testing. Detect which layout this file actually
+    // uses by looking for PICT v2's version-opcode signature (bytes 0x00 0x11
+    // 0x02 0xFF, right after the 2-byte picSize + 8-byte picFrame) at both
+    // candidate offsets, and refuse the file outright if neither matches
+    // rather than guessing and risking the same crash.
+    auto probeVersion = [&](long offset) -> bool {
+        if (offset + 14 > eof) return false;
+        if (SetFPos(refNum, fsFromStart, offset) != noErr) return false;
+        unsigned char probe[14];
+        long pcnt = 14;
+        if (FSRead(refNum, &pcnt, probe) != noErr || pcnt != 14) return false;
+        return probe[10] == 0x00 && probe[11] == 0x11 && probe[12] == 0x02 && probe[13] == 0xFF;
+    };
+    long headerLen;
+    if      (probeVersion(512)) headerLen = 512;
+    else if (probeVersion(0))   headerLen = 0;
+    else { FSClose(refNum); return; }  // not a PICT v2 opcode stream at either offset
+
+    if (SetFPos(refNum, fsFromStart, headerLen) != noErr) { FSClose(refNum); return; }
+    long dataLen = eof - headerLen;
     std::vector<UInt8> data(static_cast<size_t>(dataLen));
     long cnt = dataLen;
     OSErr rerr = FSRead(refNum, &cnt, data.data());
