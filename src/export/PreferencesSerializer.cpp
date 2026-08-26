@@ -7,6 +7,7 @@
 // already works around for the Desktop folder type).
 static const short  kRsdOnSystemDisk          = static_cast<short>(-32768); // kOnSystemDisk
 static const OSType kRsdPreferencesFolderType = 'pref';
+static const long   kRsdFsRtParID             = 1L;  // fsRtParID: root dir's own "parent" sentinel
 
 static const OSType kCreator  = 'RSTD';
 static const OSType kPrefType = 'pref';
@@ -25,7 +26,7 @@ static bool FSSpecToFullPath(const FSSpec& spec, std::string& outPath) {
     for (int i = 1; i <= spec.name[0]; ++i) path += static_cast<char>(spec.name[i]);
 
     long dirID = spec.parID;
-    while (dirID != fsRtParID) {
+    while (dirID != kRsdFsRtParID) {
         CInfoPBRec pb;
         memset(&pb, 0, sizeof(pb));
         Str255 dirName;
