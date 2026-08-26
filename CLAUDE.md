@@ -75,7 +75,8 @@ RetroStudio/
 │   │   ├── AutoLayout.cpp/h           # Fixed/Hug/Fill layout engine; RunFrameLayout
 │   │   └── Rasterizer.cpp/h
 │   ├── export/
-│   │   └── DocumentSerializer.cpp/h   # Binary .rsd v13; Nav Services Save/Open dialogs
+│   │   ├── DocumentSerializer.cpp/h   # Binary .rsd (current v22); Nav Services Save/Open dialogs
+│   │   └── PreferencesSerializer.cpp/h # App prefs file (Preferences folder); Recent Files persistence
 │   └── ui/
 │       ├── window.cpp/h               # Main canvas window, event dispatch, undo/redo
 │       ├── InspectorPanel.cpp/h       # Inspector: Fill, Stroke, Layout, multi-frame
@@ -262,6 +263,14 @@ These are **absent** from Retro68's import libraries and must be worked around:
 | `IsWindowVisible` | Track visibility manually with a `bool` alongside `ShowWindow`/`HideWindow` |
 | `StandardPutFile` / `StandardGetFile` | Use Nav Services (`NavPutFile` / `NavGetFile`) — the only file dialog option |
 | `GetQDGlobalsBlack` | `memset(&pat, 0xFF, sizeof(Pattern))` |
+| `CountMItems` | Track submenu item counts manually with a `short` alongside `AppendMenu`/`DeleteMenuItem` |
+| `EnableItem` / `DisableItem` | Use `EnableMenuItem`/`DisableMenuItem` (checkbox-style marks: `SetItemMark` + checkmark glyph `0x12`, not `CheckItem`) |
+| `SInt64` | Use standard `int64_t` via `<cstdint>` |
+| `MenuItemIndex` | Use plain `short` |
+| `fsRtParID` (File Manager root-parent sentinel, value `1`) | Redeclare locally as a `static const long` — the closely-related `PBGetCatInfoSync`/`CInfoPBRec`/`FSMakeFSSpec` all compile and link fine, only the manifest constant itself is missing |
+| Folder Manager constants (`kOnSystemDisk`, `kPreferencesFolderType`, `kDesktopFolderType`, etc.) | Redeclare locally with their documented raw values — not exposed via `<Carbon.h>` even though `FindFolder` itself works |
+
+General pattern: manifest **constants** go missing far more often than the **routines** that consume them. When adding a new Folder/File Manager constant, assume it needs a local redeclaration until proven otherwise — don't assume it's safe just because the function that takes it as a parameter compiles.
 
 ### 7.4 Classic API Type Notes
 
