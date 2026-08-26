@@ -825,9 +825,10 @@ bool ComputeCrossAxisBreakpoints(const Frame* f, std::vector<SInt32>& outBreaks)
     outBreaks.clear();
     if (f->layoutMode == LayoutMode::None) return false;
     bool isHoriz = (f->layoutMode == LayoutMode::Horizontal);
-    // Cross axis: height's own leading padding for Horizontal, width's own
-    // leading padding for Vertical.
-    SInt32 padSec1 = isHoriz ? f->paddingTop : f->paddingLeft;
+    // Cross axis: height's own paddings for Horizontal, width's own for
+    // Vertical.
+    SInt32 padSec1 = isHoriz ? f->paddingTop    : f->paddingLeft;
+    SInt32 padSec2 = isHoriz ? f->paddingBottom : f->paddingRight;
 
     std::vector<SInt32> pri, sec;
     SInt32 secMax = 0;
@@ -841,12 +842,27 @@ bool ComputeCrossAxisBreakpoints(const Frame* f, std::vector<SInt32>& outBreaks)
     // primary axis, cross-axis items don't stack sequentially (they're each
     // independently sized/positioned within the cross dimension), so there's
     // no cumulative sum or gap concept here, just each item's own edge.
-    // Assumes Start cross-alignment (the item sits flush against padSec1);
-    // Center/End alignment would need a different formula and isn't modeled
-    // yet. Duplicate values (same-size items) are harmless — they just add
-    // a redundant candidate at the same position.
+    // Duplicate values (same-size items) are harmless — they just add a
+    // redundant candidate at the same position.
+    //
+    // The threshold DEPENDS on crossAlign, since that's what RunFrameLayout
+    // itself uses to place the item within the cross dimension:
+    //   - Start:  item sits flush against padSec1 (the leading padding) —
+    //     only that padding is ever "spent", so only it counts here.
+    //   - End:    item sits flush against padSec2 (the trailing padding) —
+    //     clipping starts once the frame is too small for BOTH paddings
+    //     plus the item, so both count.
+    //   - Center: item is equidistant from both edges — clipping starts
+    //     once the frame is too small for the item plus twice whichever
+    //     padding is larger (the binding constraint on the tighter side).
+    SInt32 padForAlign;
+    switch (f->crossAlign) {
+        case CrossAlign::End:    padForAlign = padSec1 + padSec2;                    break;
+        case CrossAlign::Center: padForAlign = 2 * std::max(padSec1, padSec2);       break;
+        default:                 padForAlign = padSec1;                             break; // Start
+    }
     for (SInt32 s : sec) {
-        SInt32 bp = s + padSec1;
+        SInt32 bp = s + padForAlign;
         if (bp < 1) bp = 1;
         outBreaks.push_back(ClampDim(bp, minDim, maxDim));
     }

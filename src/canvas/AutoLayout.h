@@ -43,8 +43,9 @@ bool ComputeLayoutBreakpoints(const Frame* f, std::vector<SInt32>& outBreaks);
 
 // Non-mutating: the CROSS-axis (height if Horizontal, width if Vertical)
 // counterpart — one breakpoint per item, at that item's own cross-axis size
-// plus the cross axis's leading padding (no cumulative sum or gap, since
-// cross-axis items aren't sequential the way primary-axis ones are). Assumes
-// Start cross-alignment; Center/End alignment isn't modeled here yet.
-// Returns false for a frame with no Auto Layout or with no children.
+// plus whichever padding(s) its crossAlign actually spends (Start: leading
+// only; End: both; Center: twice whichever padding is larger) — no
+// cumulative sum or gap, since cross-axis items aren't sequential the way
+// primary-axis ones are. Returns false for a frame with no Auto Layout or
+// with no children.
 bool ComputeCrossAxisBreakpoints(const Frame* f, std::vector<SInt32>& outBreaks);
