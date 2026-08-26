@@ -3976,7 +3976,7 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                 // the first one ever caught.
                 auto snapAxis = [&](bool active, SInt32 raw, SInt32& prevRaw,
                                      bool& locked, SInt32& lockedVal,
-                                     const std::vector<SInt32>& cands, bool isW, bool& snappedFlag) {
+                                     const std::vector<SInt32>& cands, bool isW) {
                     if (!active) return;
                     if (!cands.empty()) {
                         SInt32 lo = std::min(prevRaw, raw), hi2 = std::max(prevRaw, raw);
@@ -4023,7 +4023,6 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                             if (haveBest && bestDist <= tol) { locked = true; lockedVal = best; }
                         }
                         if (locked) {
-                            snappedFlag = true;
                             if (isW) {
                                 if (bL[hi]) { SInt32 R = b->x + b->w; b->w = lockedVal; b->x = R - lockedVal; }
                                 else        { b->w = lockedVal; }
@@ -4037,37 +4036,8 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                     }
                     prevRaw = raw;
                 };
-                SInt32 rawWDiag = b->w, rawHDiag = b->h;
-                bool snappedW = false, snappedH = false;
-                snapAxis(bL[hi] || bR[hi], b->w, prevRawW, lockedW, lockedValW, candW, true, snappedW);
-                snapAxis(bT[hi] || bB[hi], b->h, prevRawH, lockedH, lockedValH, candH, false, snappedH);
-
-                // TEMPORARY DIAGNOSTIC — remove once this is confirmed
-                // holding correctly in real testing. Shows raw (pre-snap) vs
-                // final (post-snap) values and whether a snap is active this
-                // tick, live in the window title.
-                {
-                    bool wActive = bL[hi] || bR[hi];
-                    bool hActive = bT[hi] || bB[hi];
-                    std::string diag;
-                    auto appendAxis = [&](const char* label, SInt32 raw, SInt32 fin, bool snapped,
-                                           const std::vector<SInt32>& cands) {
-                        diag += label; diag += " raw="; diag += istr(static_cast<int>(raw));
-                        diag += " fin="; diag += istr(static_cast<int>(fin));
-                        diag += snapped ? " SNAP" : " -";
-                        diag += " n"; diag += istr(static_cast<int>(cands.size())); diag += ":[";
-                        for (size_t i = 0; i < cands.size() && i < 6; ++i) {
-                            if (i) diag += ",";
-                            diag += istr(static_cast<int>(cands[i]));
-                        }
-                        diag += "] ";
-                    };
-                    if (wActive) appendAxis("W", rawWDiag, b->w, snappedW, candW);
-                    if (hActive) appendAxis("H", rawHDiag, b->h, snappedH, candH);
-                    if (!wActive && !hActive) diag = "no-axis-active";
-                    Str255 diagPt; ToPStr(diag, diagPt);
-                    SetWTitle(win, diagPt);
-                }
+                snapAxis(bL[hi] || bR[hi], b->w, prevRawW, lockedW, lockedValW, candW, true);
+                snapAxis(bT[hi] || bB[hi], b->h, prevRawH, lockedH, lockedValH, candH, false);
             }
 
             // AutoHeight text needs its height re-derived from the wrap
