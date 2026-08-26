@@ -3,6 +3,7 @@
 #include "InspectorPanel.h"
 #include "RenameDialog.h"
 #include "../export/DocumentSerializer.h"
+#include "../export/PreferencesSerializer.h"
 #include "../canvas/AutoLayout.h"
 #include <algorithm>
 #include <cstring>
@@ -179,9 +180,9 @@ static const int kMaxUndo = 50;
 static std::vector<std::unique_ptr<Document>> sUndoStack;
 static std::vector<std::unique_ptr<Document>> sRedoStack;
 
-// Open Recent Files — session-only (resets on quit): this app has no
-// preferences-file infrastructure yet to persist it across launches.
-// Revisit later per project memory (project_recent_files_persistence).
+// Open Recent Files — persisted across launches via PreferencesSerializer
+// (loaded in SetupWindow, saved in AttemptQuit). In-memory list during the
+// session; the prefs file is just its serialized form on disk.
 static std::vector<FSSpec> sRecentFiles;
 
 // Per-window document context — stores state for inactive windows
@@ -517,9 +518,9 @@ static void RebuildRecentFilesMenu() {
     sRecentMenuItemCount = static_cast<short>(sRecentFiles.size());
 }
 
-// Adds/moves spec to the front of the session-only recent-files list
-// (see project_recent_files_persistence memory -- this resets on quit,
-// deliberately, until this app has real preferences-file infrastructure).
+// Adds/moves spec to the front of the recent-files list. Persisted to disk
+// on quit (AttemptQuit), not on every call -- matches how the doc itself
+// only hits disk on an explicit Save, not on every edit.
 static void AddRecentFile(const FSSpec& spec) {
     for (auto it = sRecentFiles.begin(); it != sRecentFiles.end(); ) {
         if (SameFSSpec(*it, spec)) it = sRecentFiles.erase(it);
@@ -775,6 +776,16 @@ static bool CloseAllDocumentWindows() {
     return true;
 }
 
+// Shared by File > Quit and the kAEQuitApplication handler -- the only two
+// paths that set gQuitFlag. Persists Recent Files here, not on every
+// AddRecentFile call, so a normal edit session never touches the prefs file.
+static void AttemptQuit() {
+    if (CloseAllDocumentWindows()) {
+        SaveRecentFilesPrefs(sRecentFiles);
+        gQuitFlag = true;
+    }
+}
+
 // --------------------------------------------------------------------------
 // Menus
 // --------------------------------------------------------------------------
@@ -859,7 +870,7 @@ extern "C" OSErr NavLoad();
 // Apple Event handlers — installed during init so tools like A-Dock can quit us
 static pascal OSErr AEHandleOpenApp(const AppleEvent*, AppleEvent*, long) { return noErr; }
 static pascal OSErr AEHandleQuit   (const AppleEvent*, AppleEvent*, long) {
-    if (CloseAllDocumentWindows()) gQuitFlag = true;
+    AttemptQuit();
     return noErr;
 }
 
@@ -883,6 +894,13 @@ void SetupWindow() {
 
     // Load Navigation Services before first dialog call (required on some Mac OS 9 configs)
     NavLoad();
+
+    // Recent Files persists across launches -- load it now that SetupMenus
+    // (called before SetupWindow, see main.cpp) has already created the
+    // hierarchical submenu RebuildRecentFilesMenu populates.
+    LoadRecentFilesPrefs(sRecentFiles);
+    RebuildRecentFilesMenu();
+    UpdateMenuState();
 
     // Register Apple Event handlers so the Finder, A-Dock, etc. can quit us
     AEInstallEventHandler(kCoreEventClass, kAEOpenApplication,
@@ -6898,7 +6916,7 @@ void HandleMenuCommand(long menuResult) {
             case kFilePrint:
                 break;  // disabled placeholder -- no Print Manager integration yet
             case kFileQuit:
-                if (CloseAllDocumentWindows()) gQuitFlag = true;
+                AttemptQuit();
                 break;
         }
     } else if (menuID == kRecentFilesMenuID) {
