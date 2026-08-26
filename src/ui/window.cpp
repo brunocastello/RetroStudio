@@ -3920,6 +3920,10 @@ static void HandleResizeDrag(WindowRef win, int hi, Point startPt, UInt16 startM
                 bool isHorizLayout = (cf->layoutMode == LayoutMode::Horizontal);
                 std::vector<SInt32> candW, candH;
                 ComputeLayoutBreakpoints(cf, isHorizLayout ? candW : candH);
+                // Cross axis (width for Vertical, height for Horizontal) gets
+                // its own per-item stops too — one per item's own cross-size,
+                // Start-alignment only for now (see ComputeCrossAxisBreakpoints).
+                ComputeCrossAxisBreakpoints(cf, isHorizLayout ? candH : candW);
                 if (!cf->layoutWrap) {
                     // ComputeLayoutBreakpoints deliberately excludes trailing
                     // padding from every value it returns (see its own

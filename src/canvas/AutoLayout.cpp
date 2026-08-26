@@ -677,14 +677,18 @@ void InferAutoLayoutSpacing(Frame* f, LayoutMode newMode) {
     }
 }
 
-// Shared by ComputeFrameHugSize and ComputeLayoutBreakpoints: each visible,
-// non-absolute child's own primary-axis size (+ stroke extra), IN CHILD
-// ORDER, and the max secondary-axis size seen. Rotated shapes contribute
-// their AABB extent — same measurement RunFrameLayout's own Pass 1 uses.
+// Shared by ComputeFrameHugSize, ComputeLayoutBreakpoints, and
+// ComputeCrossAxisBreakpoints: each visible, non-absolute child's own
+// primary-axis size (+ stroke extra), IN CHILD ORDER, the max secondary-axis
+// size seen, and (when outSecList is non-null) each item's own secondary
+// size too, same order. Rotated shapes contribute their AABB extent — same
+// measurement RunFrameLayout's own Pass 1 uses.
 static void GatherLayoutItemSizes(const Frame* f, bool isHoriz,
-                                   std::vector<SInt32>& outPri, SInt32& outSecMax) {
+                                   std::vector<SInt32>& outPri, SInt32& outSecMax,
+                                   std::vector<SInt32>* outSecList = nullptr) {
     outPri.clear();
     outSecMax = 0;
+    if (outSecList) outSecList->clear();
 
     auto computeXtra = [&](bool hasStroke, UInt16 sw, UInt8 align, SInt32& xw, SInt32& xh) {
         xw = xh = 0;
@@ -699,6 +703,7 @@ static void GatherLayoutItemSizes(const Frame* f, bool isHoriz,
         SInt32 sec = (isHoriz ? h : w) + (isHoriz ? xh : xw);
         outPri.push_back(pri);
         if (sec > outSecMax) outSecMax = sec;
+        if (outSecList) outSecList->push_back(sec);
     };
     auto addShape = [&](const Shape* s) {
         if (!s->visible || s->isAbsolutePosition) return;
@@ -812,6 +817,38 @@ bool ComputeLayoutBreakpoints(const Frame* f, std::vector<SInt32>& outBreaks) {
             SInt32 gapEdge = objEdge + gap;
             outBreaks.push_back(ClampDim(gapEdge, minDim, maxDim));
         }
+    }
+    return true;
+}
+
+bool ComputeCrossAxisBreakpoints(const Frame* f, std::vector<SInt32>& outBreaks) {
+    outBreaks.clear();
+    if (f->layoutMode == LayoutMode::None) return false;
+    bool isHoriz = (f->layoutMode == LayoutMode::Horizontal);
+    // Cross axis: height's own leading padding for Horizontal, width's own
+    // leading padding for Vertical.
+    SInt32 padSec1 = isHoriz ? f->paddingTop : f->paddingLeft;
+
+    std::vector<SInt32> pri, sec;
+    SInt32 secMax = 0;
+    GatherLayoutItemSizes(f, isHoriz, pri, secMax, &sec);
+    if (sec.empty()) return false;
+
+    SInt32 minDim = isHoriz ? f->minHeight : f->minWidth;
+    SInt32 maxDim = isHoriz ? f->maxHeight : f->maxWidth;
+
+    // One breakpoint per item, at its OWN cross-axis size — unlike the
+    // primary axis, cross-axis items don't stack sequentially (they're each
+    // independently sized/positioned within the cross dimension), so there's
+    // no cumulative sum or gap concept here, just each item's own edge.
+    // Assumes Start cross-alignment (the item sits flush against padSec1);
+    // Center/End alignment would need a different formula and isn't modeled
+    // yet. Duplicate values (same-size items) are harmless — they just add
+    // a redundant candidate at the same position.
+    for (SInt32 s : sec) {
+        SInt32 bp = s + padSec1;
+        if (bp < 1) bp = 1;
+        outBreaks.push_back(ClampDim(bp, minDim, maxDim));
     }
     return true;
 }
