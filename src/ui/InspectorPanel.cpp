@@ -13,6 +13,7 @@
 #include "../core/Shape.h"
 #include "../canvas/AutoLayout.h"
 #include <string>
+#include <algorithm>
 
 WindowRef gInspectorWindow = nullptr;
 
@@ -86,6 +87,9 @@ static Rect sMinHRect                 = {0,0,0,0};
 static Rect sMaxHRect                 = {0,0,0,0};
 // Align row: Left, Center-H, Right, Top, Middle-V, Bottom
 static Rect sAlignBtnRect[6]          = {};
+// Distribute row: horizontal spacing, vertical spacing (3+ eligible items)
+static Rect sDistributeHRect          = {0,0,0,0};
+static Rect sDistributeVRect          = {0,0,0,0};
 // Absolute position toggle + Constraints dropdowns (H then V)
 static Rect sAbsolutePositionRect     = {0,0,0,0};
 static Rect sConstraintHRect          = {0,0,0,0};
@@ -729,6 +733,146 @@ static void ApplyAlign(int kind) {
     }
 }
 
+// --------------------------------------------------------------------------
+// Distribute (Figma-style even spacing for 3+ free/absolute items)
+// --------------------------------------------------------------------------
+
+// Simple 3-bar glyph symbolizing "equal gaps between 3+ objects": horizontal
+// draws 3 vertical bars side by side, vertical draws 3 horizontal bars
+// stacked — same hand-drawn style as DrawAlignIcon.
+static void DrawDistributeIcon(const Rect& btn, bool horizontal, bool enabled) {
+    RGBColor fg;
+    if (enabled) { fg.red = 0x3333; fg.green = 0x3333; fg.blue = 0x3333; }
+    else         { fg.red = 0xBBBB; fg.green = 0xBBBB; fg.blue = 0xBBBB; }
+    RGBForeColor(&fg);
+
+    short l = static_cast<short>(btn.left + 3),  r = static_cast<short>(btn.right - 3);
+    short t = static_cast<short>(btn.top + 3),   b = static_cast<short>(btn.bottom - 3);
+
+    if (horizontal) {
+        short barW = 3;
+        short xs[3] = { l, static_cast<short>((l + r) / 2 - barW / 2), static_cast<short>(r - barW) };
+        for (int i = 0; i < 3; ++i) {
+            Rect bar = { t, xs[i], b, static_cast<short>(xs[i] + barW) };
+            PaintRect(&bar);
+        }
+    } else {
+        short barH = 3;
+        short ys[3] = { t, static_cast<short>((t + b) / 2 - barH / 2), static_cast<short>(b - barH) };
+        for (int i = 0; i < 3; ++i) {
+            Rect bar = { ys[i], l, static_cast<short>(ys[i] + barH), r };
+            PaintRect(&bar);
+        }
+    }
+}
+
+// Draws the 2-button Distribute row (horizontal spacing, vertical spacing)
+// and populates sDistributeHRect/sDistributeVRect. Same enabled/dimmed
+// convention as DrawAlignRow.
+static short DrawDistributeRow(short y, bool enabled) {
+    const short btnW = 22, btnH = 18, gap = 2;
+    short x = 6;
+    Rect* rects[2] = { &sDistributeHRect, &sDistributeVRect };
+    for (int i = 0; i < 2; ++i) {
+        Rect btn = { y, x, static_cast<short>(y + btnH), static_cast<short>(x + btnW) };
+        RGBColor bg; RGBColor bd;
+        if (enabled) { bg = {0xDDDD,0xDDDD,0xDDDD}; bd = {0x7777,0x7777,0x7777}; }
+        else         { bg = {0xF2F2,0xF2F2,0xF2F2}; bd = {0xCCCC,0xCCCC,0xCCCC}; }
+        RGBForeColor(&bg); PaintRect(&btn);
+        RGBForeColor(&bd); FrameRect(&btn);
+        DrawDistributeIcon(btn, i == 0, enabled);
+        *rects[i] = enabled ? btn : Rect{0,0,0,0};
+        x = static_cast<short>(x + btnW + gap);
+    }
+    RGBColor black = {0,0,0}; RGBForeColor(&black);
+    return static_cast<short>(y + btnH + 6);
+}
+
+// True when 3+ items in the current selection are eligible to be
+// distributed — same "free or absolute-positioned" eligibility rule as
+// AnyAlignableSelected, just requiring a count of 3 or more (fewer than
+// that, there's nothing meaningful to distribute). Only ever true for a
+// multi-select, same as Figma (Distribute needs 3+ objects, so a single
+// selection or a 2-item one never qualifies).
+static bool AnyDistributableSelected() {
+    if (gSelectedFrames.size() > 1) {
+        int n = 0;
+        for (Frame* f : gSelectedFrames)
+            if (!f->parent || f->parent->layoutMode == LayoutMode::None || f->isAbsolutePosition) ++n;
+        return n >= 3;
+    }
+    if (gSelectedShapes.size() > 1) {
+        int n = 0;
+        for (Shape* s : gSelectedShapes) {
+            Frame* p = FindShapeParent(s);
+            if (!p || p->layoutMode == LayoutMode::None || s->isAbsolutePosition) ++n;
+        }
+        return n >= 3;
+    }
+    return false;
+}
+
+// horizontal: true = distribute horizontal spacing (even gaps left-to-right
+// along x), false = distribute vertical spacing (even gaps top-to-bottom
+// along y). Matches Figma: the leftmost/topmost and rightmost/bottommost
+// items stay exactly where they are; every item in between is repositioned
+// so the gap between each adjacent pair (sorted along the target axis)
+// comes out identical. Only ever a multi-frame or multi-shape operation
+// (same eligibility rule as Align — layout-managed items are skipped unless
+// they've opted out via Absolute Position).
+static void ApplyDistribute(bool horizontal) {
+    if (!gDocument) return;
+    const bool isMultiFrame = (gSelectedFrames.size() > 1);
+    const bool isMulti      = (gSelectedShapes.size() > 1);
+
+    std::vector<Bounds2*> items;
+    if (isMultiFrame) {
+        for (Frame* f : gSelectedFrames) {
+            if (f->parent && f->parent->layoutMode != LayoutMode::None && !f->isAbsolutePosition) continue;
+            items.push_back(&f->bounds);
+        }
+    } else if (isMulti) {
+        for (Shape* s : gSelectedShapes) {
+            Frame* p = FindShapeParent(s);
+            if (p && p->layoutMode != LayoutMode::None && !s->isAbsolutePosition) continue;
+            items.push_back(&s->bounds);
+        }
+    }
+    if (items.size() < 3) return;
+
+    std::sort(items.begin(), items.end(), [&](Bounds2* a, Bounds2* b) {
+        return horizontal ? (a->x < b->x) : (a->y < b->y);
+    });
+
+    SInt32 spanStart = horizontal ? items.front()->x : items.front()->y;
+    SInt32 spanEnd   = horizontal ? (items.back()->x + items.back()->w)
+                                  : (items.back()->y + items.back()->h);
+    SInt32 sumSizes = 0;
+    for (Bounds2* b : items) sumSizes += horizontal ? b->w : b->h;
+
+    SInt32 n = static_cast<SInt32>(items.size());
+    SInt32 totalGap = (spanEnd - spanStart) - sumSizes;
+    SInt32 gapEach  = (n > 1) ? totalGap / (n - 1) : 0;
+
+    bool changed = false;
+    SInt32 cursor = spanStart + (horizontal ? items.front()->w : items.front()->h) + gapEach;
+    for (SInt32 i = 1; i < n - 1; ++i) {
+        Bounds2* b  = items[static_cast<size_t>(i)];
+        SInt32   sz = horizontal ? b->w : b->h;
+        if (horizontal) {
+            if (b->x != cursor) { if (!changed) PushUndo(); b->x = cursor; changed = true; }
+        } else {
+            if (b->y != cursor) { if (!changed) PushUndo(); b->y = cursor; changed = true; }
+        }
+        cursor += sz + gapEach;
+    }
+
+    if (changed) {
+        InvalidateInspector();
+        if (gMainWindow) { Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r); }
+    }
+}
+
 // Small gray caption used to group controls within one section (Figma's
 // "Alignment" / "Position" / "Constraints" / "Rotation" sub-labels inside
 // its single Position panel) — no divider bar, unlike DrawSectionHeader.
@@ -866,6 +1010,7 @@ void DrawInspectorPanel() {
     sCornerIndividualBtnRect = sOpacityRect = sRotationRect = {0,0,0,0};
     sMinWRect = sMaxWRect = sMinHRect = sMaxHRect = {0,0,0,0};
     for (int i=0;i<6;++i) sAlignBtnRect[i]={0,0,0,0};
+    sDistributeHRect = sDistributeVRect = {0,0,0,0};
     sAbsolutePositionRect = {0,0,0,0};
     sConstraintHRect = sConstraintVRect = {0,0,0,0};
 
@@ -968,6 +1113,7 @@ void DrawInspectorPanel() {
         y2 = DrawSectionHeader(y2, "POSITION", portRect);
         y2 = static_cast<short>(y2 + 5);
         y2 = DrawAlignRow(y2, AnyAlignableSelected());
+        y2 = DrawDistributeRow(y2, AnyDistributableSelected());
         RGBForeColor(&labelClr2); TextSize(9);
         PStrC("X", ps2); MoveTo(6,  static_cast<short>(y2+12)); DrawString(ps2);
         DrawNumField(20, static_cast<short>(y2+12), 64, kFieldX,
@@ -1919,6 +2065,7 @@ void DrawInspectorPanel() {
 
     y = DrawSubLabel(y, "Alignment");
     y = DrawAlignRow(y, AnyAlignableSelected());
+    y = DrawDistributeRow(y, AnyDistributableSelected());
     y = static_cast<short>(y + 4);
 
     y = DrawSubLabel(y, "Position");
@@ -2809,6 +2956,10 @@ void HandleInspectorClick(Point localPt) {
             return;
         }
     }
+
+    // Distribute buttons
+    if (PtInRect(localPt, &sDistributeHRect)) { ApplyDistribute(true);  return; }
+    if (PtInRect(localPt, &sDistributeVRect)) { ApplyDistribute(false); return; }
 
     // Absolute position toggle
     if (PtInRect(localPt, &sAbsolutePositionRect)) {
