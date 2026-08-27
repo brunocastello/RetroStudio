@@ -1511,6 +1511,20 @@ static std::vector<std::string> WrapTextLines(const std::string& text, short max
 // writes because the OS software cursor's own save/restore desyncs
 // against raw FastPixelWriter writes otherwise (same fix already needed
 // for live rotated-text pixel writes).
+//
+// Unlike every other draw call in this file, FastPixelWriter bypasses
+// QuickDraw entirely, so it does NOT automatically respect the window's
+// actual visible region (visRgn) -- the region the OS shrinks whenever
+// another window overlaps this one. A real (not theoretical) bug this
+// caused: place an image, switch to another app whose window overlaps
+// where it was drawn, and RetroStudio's own background updateEvt redraw
+// (processing the invalidation from placing the image) would write
+// straight over that other app's on-screen pixels with zero awareness
+// anything was covering the area. Fixed by checking each pixel against
+// the port's real visRgn (read directly off the CGrafPort struct, same
+// direct-field-access pattern GetFastPixelWriter already uses) -- with a
+// fast path that skips all per-pixel testing in the overwhelmingly common
+// case where nothing is covering this window at all.
 static void DrawRawImagePixels(const ImageShape& img, const Rect& r) {
     short destW = static_cast<short>(r.right - r.left);
     short destH = static_cast<short>(r.bottom - r.top);
@@ -1519,6 +1533,17 @@ static void DrawRawImagePixels(const ImageShape& img, const Rect& r) {
     FastPixelWriter fw = GetFastPixelWriter();
     if (!fw.Ready()) return;
 
+    GrafPtr gp; GetPort(&gp);
+    CGrafPort* cgp = reinterpret_cast<CGrafPort*>(gp);
+    RgnHandle visRgn = cgp->visRgn;
+    // A rectangular region's record is exactly 10 bytes (just the rgnSize
+    // header + bbox, no boundary run data) -- the standard "IsRectRgn"
+    // check every QuickDraw program uses. If true, nothing is cutting
+    // into this window's visible area, so per-pixel PtInRgn testing below
+    // can be skipped entirely (FastPixelWriter::Set already bounds-checks
+    // against the pixmap's own rect, which is enough on its own here).
+    bool needsPerPixelClip = !(visRgn && *visRgn && (*visRgn)->rgnSize == 10);
+
     HideCursor();
     for (short dy = 0; dy < destH; ++dy) {
         SInt32 sy = static_cast<SInt32>(dy) * img.pixelH / destH;
@@ -1526,6 +1551,11 @@ static void DrawRawImagePixels(const ImageShape& img, const Rect& r) {
         const UInt8* srcRow = img.pixelDataRGBA.data() + static_cast<size_t>(sy) * img.pixelW * 4;
         short py = static_cast<short>(r.top + dy);
         for (short dx = 0; dx < destW; ++dx) {
+            short screenX = static_cast<short>(r.left + dx);
+            if (needsPerPixelClip) {
+                Point pt; pt.h = screenX; pt.v = py;
+                if (!PtInRgn(pt, visRgn)) continue;
+            }
             SInt32 sx = static_cast<SInt32>(dx) * img.pixelW / destW;
             if (sx >= img.pixelW) sx = img.pixelW - 1;
             const UInt8* px = srcRow + static_cast<size_t>(sx) * 4;
@@ -1533,7 +1563,7 @@ static void DrawRawImagePixels(const ImageShape& img, const Rect& r) {
             c.red   = static_cast<UInt16>((px[0] << 8) | px[0]);
             c.green = static_cast<UInt16>((px[1] << 8) | px[1]);
             c.blue  = static_cast<UInt16>((px[2] << 8) | px[2]);
-            fw.Set(static_cast<short>(r.left + dx), py, c);
+            fw.Set(screenX, py, c);
         }
     }
     ShowCursor();
