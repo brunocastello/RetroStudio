@@ -6494,6 +6494,17 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
 
     Point prevPt = startPt, currPt = startPt;
 
+    // Resolved once, at drag start, and held fixed for the whole gesture
+    // (matches how the frame you're drawing into doesn't change mid-drag
+    // even if the cursor strays outside it) -- used only to tilt the live
+    // rubber-band preview so it matches the shape you'll actually get when
+    // drawing inside a rotated frame. The final bounds computation below
+    // resolves its own target frame independently (from the completed
+    // rect's center, unchanged) -- in the ordinary case (a shape drawn
+    // without crossing frame boundaries) both agree anyway.
+    Frame* previewParent = DeepestFrameAt(startPt);
+    RotChain previewAmbient = AncestorChainFor(previewParent);
+
     // Holding Shift constrains the new shape/frame to a square (1:1), same
     // as Figma -- polled live each frame so it engages/disengages in real
     // time as Shift is held/released, not just when down at drag start.
@@ -6517,13 +6528,43 @@ void HandleCanvasCreate(WindowRef win, Point startGlobal) {
         if (currPt.h != prevPt.h || currPt.v != prevPt.v) {
             DrawWindowContent(win);
             Point dispPt = effectiveEnd(currPt);
-            Rect rb = {
-                sMin(startPt.v, dispPt.v), sMin(startPt.h, dispPt.h),
-                sMax(startPt.v, dispPt.v), sMax(startPt.h, dispPt.h)
-            };
-            if (rb.right > rb.left && rb.bottom > rb.top) {
-                RGBColor blue = { 0x1177, 0x55AA, 0xFFFF };
-                RGBForeColor(&blue); PenSize(1,1); FrameRect(&rb); PenNormal();
+
+            if (previewAmbient.empty()) {
+                Rect rb = {
+                    sMin(startPt.v, dispPt.v), sMin(startPt.h, dispPt.h),
+                    sMax(startPt.v, dispPt.v), sMax(startPt.h, dispPt.h)
+                };
+                if (rb.right > rb.left && rb.bottom > rb.top) {
+                    RGBColor blue = { 0x1177, 0x55AA, 0xFFFF };
+                    RGBForeColor(&blue); PenSize(1,1); FrameRect(&rb); PenNormal();
+                }
+            } else {
+                // Tilted preview: un-rotate the two drag corners into the
+                // target frame's local space (same technique the final
+                // bounds computation below uses), then re-rotate that
+                // local rect's own four corners back to screen space --
+                // guarantees the preview always matches the shape that
+                // will actually be created, instead of showing a plain
+                // axis-aligned box that doesn't match the tilted result
+                // (the "squeezed shape" bug this fixes).
+                double lx0, ly0, lx1, ly1;
+                ApplyRotChainInverse(previewAmbient, startPt.h, startPt.v, lx0, ly0);
+                ApplyRotChainInverse(previewAmbient, dispPt.h,  dispPt.v,  lx1, ly1);
+                double localLeft = std::min(lx0, lx1), localRight = std::max(lx0, lx1);
+                double localTop  = std::min(ly0, ly1), localBottom = std::max(ly0, ly1);
+                if (localRight > localLeft && localBottom > localTop) {
+                    double fx, fy;
+                    Point p0, p1, p2, p3;
+                    ApplyRotChain(previewAmbient, localLeft,  localTop,    fx, fy); p0 = ToQDPoint(fx, fy);
+                    ApplyRotChain(previewAmbient, localRight, localTop,    fx, fy); p1 = ToQDPoint(fx, fy);
+                    ApplyRotChain(previewAmbient, localRight, localBottom, fx, fy); p2 = ToQDPoint(fx, fy);
+                    ApplyRotChain(previewAmbient, localLeft,  localBottom, fx, fy); p3 = ToQDPoint(fx, fy);
+                    RGBColor blue = { 0x1177, 0x55AA, 0xFFFF };
+                    RGBForeColor(&blue); PenSize(1,1);
+                    MoveTo(p0.h, p0.v); LineTo(p1.h, p1.v); LineTo(p2.h, p2.v);
+                    LineTo(p3.h, p3.v); LineTo(p0.h, p0.v);
+                    PenNormal();
+                }
             }
             prevPt = currPt;
         }
