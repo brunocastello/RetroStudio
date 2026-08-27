@@ -1258,6 +1258,14 @@ struct FastPixelWriter {
     short pixelSize = 0;
     Rect bounds = {0, 0, 0, 0};
     bool Ready() const { return base != nullptr && (pixelSize == 32 || pixelSize == 16); }
+    // Same range check Set()/Get() each already do internally -- exposed so
+    // a caller can test before calling Get() specifically, which (unlike
+    // Set()) has no bounds check of its own and will read out-of-range
+    // memory if called on a point outside the pixmap.
+    bool InBounds(short h, short v) const {
+        SInt32 lx = h - bounds.left, ly = v - bounds.top;
+        return lx >= 0 && ly >= 0 && lx < (bounds.right - bounds.left) && ly < (bounds.bottom - bounds.top);
+    }
     void Set(short h, short v, const RGBColor& c) const {
         SInt32 lx = h - bounds.left, ly = v - bounds.top;
         if (lx < 0 || ly < 0 || lx >= (bounds.right - bounds.left) || ly >= (bounds.bottom - bounds.top)) return;
@@ -1510,7 +1518,11 @@ static std::vector<std::string> WrapTextLines(const std::string& text, short max
 // memory: CopyBits screen corruption). HideCursor/ShowCursor brackets the
 // writes because the OS software cursor's own save/restore desyncs
 // against raw FastPixelWriter writes otherwise (same fix already needed
-// for live rotated-text pixel writes).
+// for live rotated-text pixel writes). Alpha-blends against whatever is
+// already drawn underneath (FastPixelWriter::Get) rather than ignoring
+// the alpha channel -- a PNG with a transparent background otherwise
+// renders whatever RGB its transparent pixels happen to store (often
+// black) as if it were opaque.
 //
 // Unlike every other draw call in this file, FastPixelWriter bypasses
 // QuickDraw entirely, so it does NOT automatically respect the window's
@@ -1559,10 +1571,33 @@ static void DrawRawImagePixels(const ImageShape& img, const Rect& r) {
             SInt32 sx = static_cast<SInt32>(dx) * img.pixelW / destW;
             if (sx >= img.pixelW) sx = img.pixelW - 1;
             const UInt8* px = srcRow + static_cast<size_t>(sx) * 4;
+
+            // PNG transparency: stb_image always hands back 4 channels
+            // (req_comp=4), synthesizing alpha=255 for formats with no
+            // alpha of their own (JPEG, RGB-only PNG) -- so this only ever
+            // does real work for a PNG that actually has an alpha
+            // channel. a==0 skips the pixel entirely, leaving whatever's
+            // already drawn showing through; partial alpha (antialiased
+            // edges) blends against it via FastPixelWriter::Get (bounds-
+            // checked first -- unlike Set, Get has no clamp of its own).
+            UInt8 a = px[3];
+            if (a == 0) continue;
+            UInt8 outR = px[0], outG = px[1], outB = px[2];
+            if (a < 255) {
+                if (!fw.InBounds(screenX, py)) continue;  // Set() would no-op anyway
+                RGBColor bg = fw.Get(screenX, py);
+                UInt8 bgR = static_cast<UInt8>(bg.red   >> 8);
+                UInt8 bgG = static_cast<UInt8>(bg.green >> 8);
+                UInt8 bgB = static_cast<UInt8>(bg.blue  >> 8);
+                UInt8 inv = static_cast<UInt8>(255 - a);
+                outR = static_cast<UInt8>((static_cast<UInt16>(outR) * a + static_cast<UInt16>(bgR) * inv) / 255);
+                outG = static_cast<UInt8>((static_cast<UInt16>(outG) * a + static_cast<UInt16>(bgG) * inv) / 255);
+                outB = static_cast<UInt8>((static_cast<UInt16>(outB) * a + static_cast<UInt16>(bgB) * inv) / 255);
+            }
             RGBColor c;
-            c.red   = static_cast<UInt16>((px[0] << 8) | px[0]);
-            c.green = static_cast<UInt16>((px[1] << 8) | px[1]);
-            c.blue  = static_cast<UInt16>((px[2] << 8) | px[2]);
+            c.red   = static_cast<UInt16>((outR << 8) | outR);
+            c.green = static_cast<UInt16>((outG << 8) | outG);
+            c.blue  = static_cast<UInt16>((outB << 8) | outB);
             fw.Set(screenX, py, c);
         }
     }
