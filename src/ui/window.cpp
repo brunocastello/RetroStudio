@@ -7,6 +7,7 @@
 #include "../canvas/AutoLayout.h"
 #include "../canvas/ImageDecode.h"
 #include <Navigation.h>
+#include <Drag.h>
 #include <algorithm>
 #include <cstring>
 #include <cmath>
@@ -420,6 +421,11 @@ static void LoadGlobalsFromCtx(DocCtx& ctx) {
     sRedoStack       = std::move(ctx.redoStack);
 }
 
+// Registers win as a Finder drag-and-drop target (dropping an image file
+// onto the canvas places it, same as File > Place Image...). Defined near
+// PlaceImage()/LoadImageShapeFromSpec() further down, which it depends on.
+static void InstallImageDragHandlers(WindowRef win);
+
 static WindowRef CreateDocumentWindow(Document* doc) {
     static short sWinOff = 0;
     short off = static_cast<short>((sWinOff % 8) * 22);
@@ -427,7 +433,9 @@ static WindowRef CreateDocumentWindow(Document* doc) {
     Rect bounds = { static_cast<short>(50 + off), static_cast<short>(80 + off),
                     static_cast<short>(580 + off), static_cast<short>(720 + off) };
     Str255 title; ToPStr(doc->name, title);
-    return NewCWindow(nullptr, &bounds, title, true, kZoomDocProc, (WindowRef)-1L, true, 0);
+    WindowRef win = NewCWindow(nullptr, &bounds, title, true, kZoomDocProc, (WindowRef)-1L, true, 0);
+    InstallImageDragHandlers(win);
+    return win;
 }
 
 // About window — non-modal document window, SimpleText-style.
@@ -6998,48 +7006,29 @@ void DeleteSelected() {
 // which needs a real RoutineDescriptor -- see CLAUDE.md's UPP section.
 static pascal void NavPlaceImageEventProc(NavEventCallbackMessage, NavCBRecPtr, void*) {}
 
-// File > Place Image...: imports a classic PICT file as a new ImageShape,
-// centered in the current viewport (inside the deepest frame under that
-// point, same target-resolution as a drag-created shape in
-// HandleCanvasCreate). Rendered later via DrawPicture -- no GWorld, no
-// CopyBits (see project memory: CopyBits screen corruption).
-static void PlaceImage() {
-    if (!gDocument || !gMainWindow) return;
-
-    NavDialogOptions options = {};
-    NavGetDefaultDialogOptions(&options);
-    options.version = 0;
-    ToPStr("Place Image", options.windowTitle);
-    ToPStr("RetroStudio",  options.clientName);
-
-    NavEventUPP openUPP = NewNavEventUPP(NavPlaceImageEventProc);
-    NavReplyRecord reply = {};
-    OSErr err = NavGetFile(nullptr, &reply, &options, openUPP, nullptr, nullptr, nullptr, nullptr);
-    DisposeNavEventUPP(openUPP);
-    if (err != noErr || !reply.validRecord) { NavDisposeReply(&reply); return; }
-
-    FSSpec spec;
-    AEKeyword keyword; DescType typeCode; SInt32 actualSize = 0;
-    err = AEGetNthPtr(&reply.selection, 1, typeFSS, &keyword, &typeCode,
-                       &spec, static_cast<SInt32>(sizeof(FSSpec)), &actualSize);
-    NavDisposeReply(&reply);
-    if (err != noErr) return;
-
+// Reads spec's file and builds an ImageShape (pictData, or pixelDataRGBA
+// + pixelW/pixelH, plus bounds.w/h) -- everything except its final
+// position, which the caller sets. Returns nullptr if the file can't be
+// read or isn't a format this app understands. Shared by File > Place
+// Image... and Finder drag-and-drop, which differ only in how they obtain
+// the FSSpec and where the dropped/opened image ends up positioned.
+static std::unique_ptr<ImageShape> LoadImageShapeFromSpec(const FSSpec& spec) {
+    FSSpec s = spec;  // FSpOpenDF wants a non-const FSSpecPtr in this toolchain
     short refNum;
-    if (FSpOpenDF(&spec, fsRdPerm, &refNum) != noErr) return;
+    if (FSpOpenDF(&s, fsRdPerm, &refNum) != noErr) return nullptr;
     long eof = 0;
     GetEOF(refNum, &eof);
-    if (eof <= 0) { FSClose(refNum); return; }
+    if (eof <= 0) { FSClose(refNum); return nullptr; }
 
-    // Read the whole file into memory up front -- PNG/JPEG detection just
-    // needs a magic-byte check at offset 0, and the PICT fallback below
-    // needs random access to probe two candidate header offsets anyway, so
-    // one full read is simpler than juggling seeks on the open file.
+    // Read the whole file into memory up front -- PNG/JPEG/GIF detection
+    // just needs a magic-byte check at offset 0, and the PICT fallback
+    // below needs random access to probe two candidate header offsets
+    // anyway, so one full read is simpler than juggling seeks.
     std::vector<UInt8> raw(static_cast<size_t>(eof));
     long cnt = eof;
     OSErr rerr = FSRead(refNum, &cnt, raw.data());
     FSClose(refNum);
-    if (rerr != noErr || cnt != eof) return;
+    if (rerr != noErr || cnt != eof) return nullptr;
 
     auto img = std::make_unique<ImageShape>();
     SInt32 imgW = 0, imgH = 0;
@@ -7057,7 +7046,7 @@ static void PlaceImage() {
 
     if (isPNG || isJPEG || isGIF) {
         std::vector<UInt8> rgba;
-        if (!DecodeImageBytes(raw, rgba, imgW, imgH)) return;  // couldn't decode -- refuse rather than guess
+        if (!DecodeImageBytes(raw, rgba, imgW, imgH)) return nullptr;  // couldn't decode -- refuse rather than guess
         img->pixelDataRGBA = std::move(rgba);
         img->pixelW = imgW;
         img->pixelH = imgH;
@@ -7083,7 +7072,7 @@ static void PlaceImage() {
         size_t headerLen;
         if      (probeVersion(512)) headerLen = 512;
         else if (probeVersion(0))   headerLen = 0;
-        else return;  // not a PICT v2 opcode stream, and not PNG/JPEG either
+        else return nullptr;  // not a PICT v2 opcode stream, and not PNG/JPEG/GIF either
 
         // picFrame (the picture's own bounding box) sits at bytes [2,10)
         // of the picture data, right after the 2-byte legacy picSize field.
@@ -7098,20 +7087,25 @@ static void PlaceImage() {
         img->pictData.assign(raw.begin() + static_cast<long>(headerLen), raw.end());
     }
 
+    img->bounds.w = imgW;
+    img->bounds.h = imgH;
+    return img;
+}
+
+// Finishes placing an already-built (unpositioned) image shape: pushes
+// undo, resolves the target frame from localPt the same way a drag-
+// created shape does (DeepestFrameAt), centers the shape on the
+// corresponding canvas point, inserts it, selects it, and refreshes.
+// gDocument/gMainWindow must already refer to the intended document.
+static void InsertNewImageShape(std::unique_ptr<ImageShape> img, Point localPt) {
     PushUndo();
 
-    Rect winBounds = CurrentPortBounds();
-    Point centerLocal;
-    centerLocal.h = static_cast<short>((winBounds.left + winBounds.right) / 2);
-    centerLocal.v = static_cast<short>((winBounds.top + winBounds.bottom) / 2);
-    Frame* target = DeepestFrameAt(centerLocal);
-    Point centerCanvas = ScreenToCanvas(centerLocal);
+    Frame* target = DeepestFrameAt(localPt);
+    Point canvasPt = ScreenToCanvas(localPt);
 
     img->name      = "Image " + istr(gNextImageNum++);
-    img->bounds.w  = imgW;
-    img->bounds.h  = imgH;
-    img->bounds.x  = centerCanvas.h - imgW / 2;
-    img->bounds.y  = centerCanvas.v - imgH / 2;
+    img->bounds.x  = canvasPt.h - img->bounds.w / 2;
+    img->bounds.y  = canvasPt.v - img->bounds.h / 2;
     img->hasFill   = false;
     img->hasStroke = false;
 
@@ -7130,6 +7124,84 @@ static void PlaceImage() {
     RefreshLayersPanel();
     RefreshInspector();
     Rect r; GetWindowPortBounds(gMainWindow, &r); InvalWindowRect(gMainWindow, &r);
+}
+
+// File > Place Image...: imports a PICT/PNG/JPEG/GIF file as a new
+// ImageShape, centered in the current viewport.
+static void PlaceImage() {
+    if (!gDocument || !gMainWindow) return;
+
+    NavDialogOptions options = {};
+    NavGetDefaultDialogOptions(&options);
+    options.version = 0;
+    ToPStr("Place Image", options.windowTitle);
+    ToPStr("RetroStudio",  options.clientName);
+
+    NavEventUPP openUPP = NewNavEventUPP(NavPlaceImageEventProc);
+    NavReplyRecord reply = {};
+    OSErr err = NavGetFile(nullptr, &reply, &options, openUPP, nullptr, nullptr, nullptr, nullptr);
+    DisposeNavEventUPP(openUPP);
+    if (err != noErr || !reply.validRecord) { NavDisposeReply(&reply); return; }
+
+    FSSpec spec;
+    AEKeyword keyword; DescType typeCode; SInt32 actualSize = 0;
+    err = AEGetNthPtr(&reply.selection, 1, typeFSS, &keyword, &typeCode,
+                       &spec, static_cast<SInt32>(sizeof(FSSpec)), &actualSize);
+    NavDisposeReply(&reply);
+    if (err != noErr) return;
+
+    auto img = LoadImageShapeFromSpec(spec);
+    if (!img) return;
+
+    Rect winBounds = CurrentPortBounds();
+    Point centerLocal;
+    centerLocal.h = static_cast<short>((winBounds.left + winBounds.right) / 2);
+    centerLocal.v = static_cast<short>((winBounds.top + winBounds.bottom) / 2);
+    InsertNewImageShape(std::move(img), centerLocal);
+}
+
+// Finder drag-and-drop receive handler: dropping an image file onto a
+// document window's canvas places it at the drop point, same result as
+// File > Place Image... but positioned under the cursor instead of
+// centered. Only handles a single dropped HFS (Finder file) item -- multi-
+// file drops and non-file flavors (e.g. dragged text/color swatches) are
+// left for a later pass. Basic support only, per explicit scope: dropping
+// ONTO an existing shape to set it as that shape's fill is a later-tier
+// feature blocked on this app's Fill system not supporting image fills yet.
+static pascal OSErr ImageDragReceiveHandler(WindowRef win, void* /*handlerRefCon*/, DragReference dragRef) {
+    if (!gDocument) return dragNotAcceptedErr;
+
+    UInt16 numItems = 0;
+    if (CountDragItems(dragRef, &numItems) != noErr || numItems < 1) return dragNotAcceptedErr;
+
+    DragItemRef itemRef;
+    if (GetDragItemReferenceNumber(dragRef, 1, &itemRef) != noErr) return dragNotAcceptedErr;
+
+    HFSFlavor hfs;
+    Size sz = sizeof(HFSFlavor);
+    if (GetFlavorData(dragRef, itemRef, flavorTypeHFS, &hfs, &sz, 0) != noErr) return dragNotAcceptedErr;
+
+    auto img = LoadImageShapeFromSpec(hfs.fileSpec);
+    if (!img) return dragNotAcceptedErr;
+
+    Point mouse;
+    GetDragMouse(dragRef, &mouse, nullptr);
+    SetPortWindowPort(win);
+    GlobalToLocal(&mouse);
+
+    // Switch the active document to whichever window was dropped on, same
+    // as clicking it -- InsertNewImageShape assumes gDocument/gMainWindow
+    // already refer to the drop target.
+    if (win != gMainWindow) SwitchActiveDocument(win);
+
+    InsertNewImageShape(std::move(img), mouse);
+    return noErr;
+}
+
+static void InstallImageDragHandlers(WindowRef win) {
+    static DragReceiveHandlerUPP sRecvUPP = nullptr;
+    if (!sRecvUPP) sRecvUPP = NewDragReceiveHandlerUPP(ImageDragReceiveHandler);
+    InstallReceiveHandler(sRecvUPP, win, nullptr);
 }
 
 void HandleMenuCommand(long menuResult) {
