@@ -2187,7 +2187,22 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                             SInt32 sxi = static_cast<SInt32>(std::floor(ox)) - paintSrcRect.left;
                             SInt32 syi = static_cast<SInt32>(std::floor(oy)) - paintSrcRect.top;
                             if (sxi >= 0 && sxi < paintSrcW && syi >= 0 && syi < paintSrcH) {
-                                size_t si = static_cast<size_t>(syi) * paintSrcW + sxi;
+                                // Mirrored + rotated text: remap the sampled
+                                // source index before reading, same reflection
+                                // the flip-only path below uses. Only valid
+                                // when the captured buffer spans the shape's
+                                // FULL box (the fitsWindow/cached branch,
+                                // where paintSrcW/H == srcW/H) -- the uncached
+                                // window-clipped-slice branch only ever
+                                // captures part of the box, so mirroring
+                                // within its narrower width/height would
+                                // sample the wrong pixels. That rare
+                                // combination (huge off-window text box, both
+                                // flipped and rotated) still falls back to
+                                // unmirrored, same as before this fix.
+                                SInt32 fxi = (fitsWindow && t.flippedH) ? (paintSrcW - 1 - sxi) : sxi;
+                                SInt32 fyi = (fitsWindow && t.flippedV) ? (paintSrcH - 1 - syi) : syi;
+                                size_t si = static_cast<size_t>(fyi) * paintSrcW + fxi;
                                 if (ink[si]) {
                                     short dh = static_cast<short>(minX+px), dv = static_cast<short>(minY+py);
                                     if (useFast) fastW.Set(dh, dv, glyph[si]);
@@ -2203,15 +2218,15 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                 }
             }
 
-            // Mirrored (flipped) text, no rotation involved: a pure axis
+            // Mirrored (flipped) text with NO rotation: a pure axis
             // reflection within the box's own rect, so — unlike the general
             // rotation technique above — no trig or inverse-mapping is
-            // needed, just capture-and-paint-back-reflected. Deliberately
-            // scoped to !anyRotation only; flip combined with rotation isn't
-            // attempted here (same "not yet supported together" restriction
-            // as every other rotated-context gap this session — falls
-            // through to the plain upright fallback below instead of
-            // guessing at a combined transform).
+            // needed, just capture-and-paint-back-reflected. Only reached
+            // when didPixelRotate is still false, i.e. anyRotation was
+            // false and the rotation branch above never ran; flip combined
+            // WITH rotation is now handled inside that branch's own sample
+            // step instead (see the fxi/fyi remap above), for the common
+            // fits-window case at least.
             if (!didPixelRotate && !anyRotation && (t.flippedH || t.flippedV) &&
                 !str.empty() && srcW > 0 && srcH > 0 &&
                 (SInt32)srcW * (SInt32)srcH <= 150000) {
