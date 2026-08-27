@@ -3525,11 +3525,13 @@ static bool IsShiftKeyDownNow() {
 // one that triggered the snap, so several siblings sharing the same aligned
 // edge all light up at once, same as Figma.
 //
-// Scope: only when both the dragged item and its parent are unrotated (rotated
-// alignment needs the same rotation-chain math HandleResizeDrag/HandleRotateDrag
-// use elsewhere in this file — not attempted here) and only when there's an
-// actual parent frame to align within (no canvas-viewport-relative guides for
-// root-level items).
+// Rotation (own or ambient) does NOT gate this at all -- confirmed against
+// real Figma: alignment guides compare each object's plain, stored
+// (rotation-invariant) bounds.x/y/w/h and draw as plain screen-vertical/
+// horizontal lines, same as the unrotated case, regardless of how tilted
+// the dragged object or its parent visually is. The only real restriction
+// left is needing an actual parent frame to align within (no canvas-
+// viewport-relative guides for root-level items).
 //
 // Shared by four callers: single-item move-drag (ComputeSmartGuides),
 // aggregate-bbox multi-select move-drag (ComputeSmartGuidesMulti), and
@@ -3553,9 +3555,6 @@ static void ComputeSmartGuidesCore(Bounds2& b, Frame* parent, unsigned xMask, un
     gActiveGuides.clear();
     if (!gSmartGuidesEnabled) return;
     if (!parent) return;
-    double ambientRotDeg = 0.0;
-    for (const auto& step : AncestorChainFor(parent)) ambientRotDeg += step.angleDeg;
-    if (ambientRotDeg != 0.0) return;
 
     const SInt32 tolerance = std::max<SInt32>(1, SInt32(4) * 100 / gCanvasZoom);
 
@@ -3649,10 +3648,13 @@ static void ComputeSmartGuidesCore(Bounds2& b, Frame* parent, unsigned xMask, un
 
 // Single-item move-drag: excludeShape/excludeFrame is whichever of the two
 // the dragged item itself is, so it doesn't trivially "align" with itself.
-// Rotated items are out of scope (see ComputeSmartGuidesCore's header comment).
+// selfRotation is no longer used to gate this (confirmed against real
+// Figma: guides work identically for a rotated dragged item) -- kept as a
+// parameter only because callers already have it on hand and removing it
+// would just be signature churn for no behavior change.
 static void ComputeSmartGuides(Bounds2& b, SInt16 selfRotation, Frame* parent,
                                 Shape* excludeShape, Frame* excludeFrame) {
-    if (selfRotation != 0) { gActiveGuides.clear(); return; }
+    (void)selfRotation;
     ComputeSmartGuidesCore(b, parent, kEdgeAll, kEdgeAll,
         [&](Shape* s) { return s == excludeShape; },
         [&](Frame* f) { return f == excludeFrame; });
@@ -3680,10 +3682,12 @@ static void ComputeSmartGuidesMulti(Bounds2& b, Frame* parent,
 // shape/frame's trial bounds after this tick's resize math; the core mutates
 // whichever of b.x/b.y snapped, which the caller then has to translate back
 // into a width/height adjustment (see HandleResizeDrag).
+// selfRotation is no longer used to gate this -- see ComputeSmartGuides's
+// comment, same reasoning applies here.
 static void ComputeSmartGuidesEdge(Bounds2& b, SInt16 selfRotation, Frame* parent,
                                     unsigned xMask, unsigned yMask,
                                     Shape* excludeShape, Frame* excludeFrame) {
-    if (selfRotation != 0) { gActiveGuides.clear(); return; }
+    (void)selfRotation;
     ComputeSmartGuidesCore(b, parent, xMask, yMask,
         [&](Shape* s) { return s == excludeShape; },
         [&](Frame* f) { return f == excludeFrame; });
