@@ -27,7 +27,7 @@ static pascal void NavOpenEventProc(NavEventCallbackMessage, NavCBRecPtr, void*)
 static const OSType kCreator = 'RSTD';
 static const OSType kDocType = 'RSD ';
 static const UInt32 kMagic   = 0x52535444;  // 'RSTD'
-static const UInt16 kVersion = 22;  // v22: ImageShape (kImage)
+static const UInt16 kVersion = 23;  // v23: ImageShape PNG/JPEG (pixelDataRGBA/pixelW/pixelH)
 
 // Folder Manager constants — defined here because Retro68 Carbon headers
 // don't always expose <Folders.h> constants via <Carbon.h>.
@@ -133,6 +133,9 @@ static void WriteShape(Writer& w, const Shape& s) {
         const auto& is = static_cast<const ImageShape&>(s);
         w.w32(static_cast<SInt32>(is.pictData.size()));
         if (!is.pictData.empty()) w.write(is.pictData.data(), static_cast<long>(is.pictData.size()));
+        w.w32(is.pixelW); w.w32(is.pixelH);
+        w.w32(static_cast<SInt32>(is.pixelDataRGBA.size()));
+        if (!is.pixelDataRGBA.empty()) w.write(is.pixelDataRGBA.data(), static_cast<long>(is.pixelDataRGBA.size()));
     }
     w.wStr(s.name);
 }
@@ -193,13 +196,25 @@ static std::unique_ptr<Shape> ReadShape(Reader& r, UInt16 ver) {
         }
         shape = std::move(ts);
     } else if (type == Shape::kImage) {
-        // No ver gate needed: type==kImage can only occur in a file written
-        // by a v22+ serializer, since that byte value didn't exist before.
+        // type==kImage can only occur in a file written by a v22+
+        // serializer, since that byte value didn't exist before -- no ver
+        // gate needed for pictData itself. The pixelW/pixelH/pixelDataRGBA
+        // fields were added in v23 though, so a v22 file (kImage existed,
+        // PNG/JPEG support didn't yet) won't have them.
         auto is = std::make_unique<ImageShape>();
         SInt32 len = r.r32();
         if (len > 0 && r.ok) {
             is->pictData.resize(static_cast<size_t>(len));
             r.read(is->pictData.data(), len);
+        }
+        if (ver >= 23) {
+            is->pixelW = r.r32();
+            is->pixelH = r.r32();
+            SInt32 pxLen = r.r32();
+            if (pxLen > 0 && r.ok) {
+                is->pixelDataRGBA.resize(static_cast<size_t>(pxLen));
+                r.read(is->pixelDataRGBA.data(), pxLen);
+            }
         }
         shape = std::move(is);
     } else {

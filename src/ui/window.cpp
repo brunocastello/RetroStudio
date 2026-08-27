@@ -5,6 +5,7 @@
 #include "../export/DocumentSerializer.h"
 #include "../export/PreferencesSerializer.h"
 #include "../canvas/AutoLayout.h"
+#include "../canvas/ImageDecode.h"
 #include <Navigation.h>
 #include <algorithm>
 #include <cstring>
@@ -1501,6 +1502,43 @@ static std::vector<std::string> WrapTextLines(const std::string& text, short max
     return outLines;
 }
 
+// Renders a decoded PNG/JPEG (ImageShape::pixelDataRGBA) into destination
+// rect `r`, nearest-neighbor scaled to whatever size the shape's bounds
+// currently are. Direct writes into the real port's own pixmap via
+// FastPixelWriter -- no GWorld, no CopyBits, same discipline as the PICT
+// path and every other rendering technique in this file (see project
+// memory: CopyBits screen corruption). HideCursor/ShowCursor brackets the
+// writes because the OS software cursor's own save/restore desyncs
+// against raw FastPixelWriter writes otherwise (same fix already needed
+// for live rotated-text pixel writes).
+static void DrawRawImagePixels(const ImageShape& img, const Rect& r) {
+    short destW = static_cast<short>(r.right - r.left);
+    short destH = static_cast<short>(r.bottom - r.top);
+    if (destW <= 0 || destH <= 0) return;
+
+    FastPixelWriter fw = GetFastPixelWriter();
+    if (!fw.Ready()) return;
+
+    HideCursor();
+    for (short dy = 0; dy < destH; ++dy) {
+        SInt32 sy = static_cast<SInt32>(dy) * img.pixelH / destH;
+        if (sy >= img.pixelH) sy = img.pixelH - 1;
+        const UInt8* srcRow = img.pixelDataRGBA.data() + static_cast<size_t>(sy) * img.pixelW * 4;
+        short py = static_cast<short>(r.top + dy);
+        for (short dx = 0; dx < destW; ++dx) {
+            SInt32 sx = static_cast<SInt32>(dx) * img.pixelW / destW;
+            if (sx >= img.pixelW) sx = img.pixelW - 1;
+            const UInt8* px = srcRow + static_cast<size_t>(sx) * 4;
+            RGBColor c;
+            c.red   = static_cast<UInt16>((px[0] << 8) | px[0]);
+            c.green = static_cast<UInt16>((px[1] << 8) | px[1]);
+            c.blue  = static_cast<UInt16>((px[2] << 8) | px[2]);
+            fw.Set(static_cast<short>(r.left + dx), py, c);
+        }
+    }
+    ShowCursor();
+}
+
 static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
     if (!shape.visible) return;
     if (gEditingTextShape && &shape == static_cast<const Shape*>(gEditingTextShape)) return;
@@ -2197,6 +2235,8 @@ static void DrawShape(const Shape& shape, const RotChain& ambient = {}) {
                     DrawPicture(reinterpret_cast<PicHandle>(h), &r);
                     DisposeHandle(h);
                 }
+            } else if (!img.pixelDataRGBA.empty() && img.pixelW > 0 && img.pixelH > 0) {
+                DrawRawImagePixels(img, r);
             }
             break;
         }
@@ -6924,48 +6964,70 @@ static void PlaceImage() {
     if (FSpOpenDF(&spec, fsRdPerm, &refNum) != noErr) return;
     long eof = 0;
     GetEOF(refNum, &eof);
+    if (eof <= 0) { FSClose(refNum); return; }
 
-    // Classic PICT files traditionally reserve a 512-byte header (historically
-    // print-info, usually zero) before the actual picture opcodes begin -- but
-    // this is only ever a convention, never enforced, and several real-world
-    // PICT files (some Desktop Pictures included) omit it entirely. Blindly
-    // skipping 512 bytes on a headerless file misaligns every opcode after
-    // it, which can render blank, render garbled, or hand QuickDraw's picture
-    // interpreter a bogus opcode stream that crashes outright -- exactly the
-    // three symptoms seen in testing. Detect which layout this file actually
-    // uses by looking for PICT v2's version-opcode signature (bytes 0x00 0x11
-    // 0x02 0xFF, right after the 2-byte picSize + 8-byte picFrame) at both
-    // candidate offsets, and refuse the file outright if neither matches
-    // rather than guessing and risking the same crash.
-    auto probeVersion = [&](long offset) -> bool {
-        if (offset + 14 > eof) return false;
-        if (SetFPos(refNum, fsFromStart, offset) != noErr) return false;
-        unsigned char probe[14];
-        long pcnt = 14;
-        if (FSRead(refNum, &pcnt, probe) != noErr || pcnt != 14) return false;
-        return probe[10] == 0x00 && probe[11] == 0x11 && probe[12] == 0x02 && probe[13] == 0xFF;
-    };
-    long headerLen;
-    if      (probeVersion(512)) headerLen = 512;
-    else if (probeVersion(0))   headerLen = 0;
-    else { FSClose(refNum); return; }  // not a PICT v2 opcode stream at either offset
-
-    if (SetFPos(refNum, fsFromStart, headerLen) != noErr) { FSClose(refNum); return; }
-    long dataLen = eof - headerLen;
-    std::vector<UInt8> data(static_cast<size_t>(dataLen));
-    long cnt = dataLen;
-    OSErr rerr = FSRead(refNum, &cnt, data.data());
+    // Read the whole file into memory up front -- PNG/JPEG detection just
+    // needs a magic-byte check at offset 0, and the PICT fallback below
+    // needs random access to probe two candidate header offsets anyway, so
+    // one full read is simpler than juggling seeks on the open file.
+    std::vector<UInt8> raw(static_cast<size_t>(eof));
+    long cnt = eof;
+    OSErr rerr = FSRead(refNum, &cnt, raw.data());
     FSClose(refNum);
-    if (rerr != noErr || cnt != dataLen) return;
+    if (rerr != noErr || cnt != eof) return;
 
-    // picFrame (the picture's own bounding box) sits at bytes [2,10) of the
-    // picture data, right after the 2-byte legacy picSize field.
-    short pTop    = static_cast<short>((data[2] << 8) | data[3]);
-    short pLeft   = static_cast<short>((data[4] << 8) | data[5]);
-    short pBottom = static_cast<short>((data[6] << 8) | data[7]);
-    short pRight  = static_cast<short>((data[8] << 8) | data[9]);
-    SInt32 picW = pRight - pLeft, picH = pBottom - pTop;
-    if (picW <= 0 || picH <= 0 || picW > 4000 || picH > 4000) { picW = 200; picH = 150; }
+    auto img = std::make_unique<ImageShape>();
+    SInt32 imgW = 0, imgH = 0;
+
+    // PNG signature: 0x89 'P' 'N' 'G' 0x0D 0x0A 0x1A 0x0A.
+    bool isPNG = raw.size() >= 8 &&
+                 raw[0] == 0x89 && raw[1] == 0x50 && raw[2] == 0x4E && raw[3] == 0x47 &&
+                 raw[4] == 0x0D && raw[5] == 0x0A && raw[6] == 0x1A && raw[7] == 0x0A;
+    // JPEG SOI marker: 0xFF 0xD8 0xFF.
+    bool isJPEG = raw.size() >= 3 && raw[0] == 0xFF && raw[1] == 0xD8 && raw[2] == 0xFF;
+
+    if (isPNG || isJPEG) {
+        std::vector<UInt8> rgba;
+        if (!DecodeImageBytes(raw, rgba, imgW, imgH)) return;  // couldn't decode -- refuse rather than guess
+        img->pixelDataRGBA = std::move(rgba);
+        img->pixelW = imgW;
+        img->pixelH = imgH;
+    } else {
+        // Classic PICT files traditionally reserve a 512-byte header
+        // (historically print-info, usually zero) before the actual
+        // picture opcodes begin -- but this is only ever a convention,
+        // never enforced, and several real-world PICT files (some Desktop
+        // Pictures included) omit it entirely. Blindly skipping 512 bytes
+        // on a headerless file misaligns every opcode after it, which can
+        // render blank, render garbled, or hand QuickDraw's picture
+        // interpreter a bogus opcode stream that crashes outright.
+        // Detect which layout this file actually uses by looking for PICT
+        // v2's version-opcode signature (bytes 0x00 0x11 0x02 0xFF, right
+        // after the 2-byte picSize + 8-byte picFrame) at both candidate
+        // offsets, and refuse the file outright if neither matches rather
+        // than guessing and risking the same crash.
+        auto probeVersion = [&](size_t offset) -> bool {
+            if (offset + 14 > raw.size()) return false;
+            return raw[offset+10] == 0x00 && raw[offset+11] == 0x11 &&
+                   raw[offset+12] == 0x02 && raw[offset+13] == 0xFF;
+        };
+        size_t headerLen;
+        if      (probeVersion(512)) headerLen = 512;
+        else if (probeVersion(0))   headerLen = 0;
+        else return;  // not a PICT v2 opcode stream, and not PNG/JPEG either
+
+        // picFrame (the picture's own bounding box) sits at bytes [2,10)
+        // of the picture data, right after the 2-byte legacy picSize field.
+        const UInt8* d = raw.data() + headerLen;
+        short pTop    = static_cast<short>((d[2] << 8) | d[3]);
+        short pLeft   = static_cast<short>((d[4] << 8) | d[5]);
+        short pBottom = static_cast<short>((d[6] << 8) | d[7]);
+        short pRight  = static_cast<short>((d[8] << 8) | d[9]);
+        imgW = pRight - pLeft; imgH = pBottom - pTop;
+        if (imgW <= 0 || imgH <= 0 || imgW > 4000 || imgH > 4000) { imgW = 200; imgH = 150; }
+
+        img->pictData.assign(raw.begin() + static_cast<long>(headerLen), raw.end());
+    }
 
     PushUndo();
 
@@ -6976,13 +7038,11 @@ static void PlaceImage() {
     Frame* target = DeepestFrameAt(centerLocal);
     Point centerCanvas = ScreenToCanvas(centerLocal);
 
-    auto img       = std::make_unique<ImageShape>();
     img->name      = "Image " + istr(gNextImageNum++);
-    img->pictData  = std::move(data);
-    img->bounds.w  = picW;
-    img->bounds.h  = picH;
-    img->bounds.x  = centerCanvas.h - picW / 2;
-    img->bounds.y  = centerCanvas.v - picH / 2;
+    img->bounds.w  = imgW;
+    img->bounds.h  = imgH;
+    img->bounds.x  = centerCanvas.h - imgW / 2;
+    img->bounds.y  = centerCanvas.v - imgH / 2;
     img->hasFill   = false;
     img->hasStroke = false;
 

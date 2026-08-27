@@ -106,22 +106,29 @@ public:
     bool        flippedV      = false;  // mirrored glyphs (crossed the opposite edge on a height resize)
 };
 
-// PICT-backed embedded image (first pass of image support -- PICT is the
-// only format with zero codec dependency on this toolchain; see project
-// memory: no Image Compression Manager/GraphicsImportComponent stub exists
-// here at all). pictData holds raw PICT opcode bytes -- the picture data
-// itself, NOT the 512-byte PICT-file header, which is stripped on import.
-// Rendered via DrawPicture straight onto the real window port -- no
-// GWorld, no CopyBits (see project memory: CopyBits screen corruption --
-// every offscreen-GWorld technique tried in this rendering path has
-// corrupted the shared screen palette). Rotation is not yet supported for
-// images: position tracks the ambient rotation chain like any other
-// shape, but the picture itself always draws upright into its own
-// axis-aligned box -- the same class of deliberate scope cut as text
-// flip+rotation combined.
+// Embedded image, backed by one of two mutually exclusive representations:
+//   - pictData: raw PICT opcode bytes (the picture data itself, NOT the
+//     512-byte PICT-file header, which is stripped on import). Rendered
+//     via DrawPicture straight onto the real window port.
+//   - pixelDataRGBA + pixelW/pixelH: a decoded PNG/JPEG, flat top-to-bottom
+//     RGBA buffer (4 bytes/pixel), produced by ImageDecode.cpp (vendored
+//     stb_image.h -- no Image Compression Manager exists on this toolchain
+//     to lean on). Rendered via direct real-port pixel writes
+//     (FastPixelWriter), nearest-neighbor scaled to the shape's bounds.
+// Both paths are deliberately GWorld-free and never call CopyBits (see
+// project memory: CopyBits screen corruption -- every offscreen-GWorld
+// technique tried in this rendering path has corrupted the shared screen
+// palette). A shape only ever has one representation populated; DrawShape
+// branches on whichever is non-empty.
+// Rotation is not yet supported for images: position tracks the ambient
+// rotation chain like any other shape, but the picture itself always
+// draws upright into its own axis-aligned box -- the same class of
+// deliberate scope cut as text flip+rotation combined.
 class ImageShape : public Shape {
 public:
     Type GetType() const override { return kImage; }
     std::unique_ptr<Shape> Clone() const override { return std::make_unique<ImageShape>(*this); }
     std::vector<UInt8> pictData;
+    std::vector<UInt8> pixelDataRGBA;
+    SInt32 pixelW = 0, pixelH = 0;
 };
