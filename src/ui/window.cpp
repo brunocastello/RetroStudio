@@ -7050,8 +7050,12 @@ static void PlaceImage() {
                  raw[4] == 0x0D && raw[5] == 0x0A && raw[6] == 0x1A && raw[7] == 0x0A;
     // JPEG SOI marker: 0xFF 0xD8 0xFF.
     bool isJPEG = raw.size() >= 3 && raw[0] == 0xFF && raw[1] == 0xD8 && raw[2] == 0xFF;
+    // GIF signature: "GIF87a" or "GIF89a".
+    bool isGIF = raw.size() >= 6 &&
+                 raw[0] == 'G' && raw[1] == 'I' && raw[2] == 'F' && raw[3] == '8' &&
+                 (raw[4] == '7' || raw[4] == '9') && raw[5] == 'a';
 
-    if (isPNG || isJPEG) {
+    if (isPNG || isJPEG || isGIF) {
         std::vector<UInt8> rgba;
         if (!DecodeImageBytes(raw, rgba, imgW, imgH)) return;  // couldn't decode -- refuse rather than guess
         img->pixelDataRGBA = std::move(rgba);

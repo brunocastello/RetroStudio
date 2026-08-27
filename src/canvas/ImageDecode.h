@@ -3,7 +3,7 @@
 #include <Carbon.h>
 #include <vector>
 
-// Decodes a PNG or JPEG file's raw bytes (already read into memory) into a
+// Decodes a PNG, JPEG, or GIF file's raw bytes (already read into memory) into a
 // flat top-to-bottom RGBA buffer, 4 bytes/pixel. Rejects (returns false)
 // anything whose decoded pixel count would exceed a sane RAM budget for
 // this target (see ImageDecode.cpp) before actually decoding, and anything

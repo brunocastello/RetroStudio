@@ -1,13 +1,18 @@
-// PNG/JPEG decode via vendored stb_image.h (src/thirdparty/stb_image.h,
-// v2.30, MIT/public-domain). Trimmed to just the two formats this app
-// needs -- STBI_ONLY_JPEG/STBI_ONLY_PNG auto-excludes BMP/TGA/GIF/PSD/
-// HDR/PIC/PNM at compile time. STBI_NO_STDIO because this app reads files
-// via the classic File Manager (FSRead into a buffer, same as the PICT
-// import path), never through a POSIX FILE*, so stb_image's own stdio
-// path is never used and isn't worth compiling in. STBI_NO_SIMD isn't
-// defined explicitly: stb_image's x86/ARM SIMD paths are already gated
-// behind __SSE2__/explicit STBI_NEON, neither of which is ever true on
-// this PowerPC target, so they compile out on their own.
+// PNG/JPEG/GIF decode via vendored stb_image.h (src/thirdparty/stb_image.h,
+// v2.30, MIT/public-domain). Trimmed to just the three formats this app
+// needs -- STBI_ONLY_JPEG/STBI_ONLY_PNG/STBI_ONLY_GIF auto-excludes BMP/
+// TGA/PSD/HDR/PIC/PNM at compile time. STBI_NO_STDIO because this app
+// reads files via the classic File Manager (FSRead into a buffer, same as
+// the PICT import path), never through a POSIX FILE*, so stb_image's own
+// stdio path is never used and isn't worth compiling in. STBI_NO_SIMD
+// isn't defined explicitly: stb_image's x86/ARM SIMD paths are already
+// gated behind __SSE2__/explicit STBI_NEON, neither of which is ever true
+// on this PowerPC target, so they compile out on their own.
+//
+// GIF note: stb_image's stbi_load_from_memory only ever decodes the FIRST
+// frame of an animated GIF (there's no frame-sequence API here) -- fine
+// for this app, which has no animation/timeline concept anywhere to begin
+// with, so a GIF just becomes a static placed image like anything else.
 //
 // This is the one piece of this app's image pipeline that touches zero
 // Mac OS/Carbon/Toolbox API -- pure standard C reading from a memory
@@ -16,6 +21,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_JPEG
 #define STBI_ONLY_PNG
+#define STBI_ONLY_GIF
 #define STBI_NO_STDIO
 #define STBI_NO_FAILURE_STRINGS
 #include "../thirdparty/stb_image.h"
