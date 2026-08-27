@@ -7,7 +7,6 @@
 #include "../canvas/AutoLayout.h"
 #include "../canvas/ImageDecode.h"
 #include <Navigation.h>
-#include <Drag.h>
 #include <algorithm>
 #include <cstring>
 #include <cmath>
@@ -421,11 +420,6 @@ static void LoadGlobalsFromCtx(DocCtx& ctx) {
     sRedoStack       = std::move(ctx.redoStack);
 }
 
-// Registers win as a Finder drag-and-drop target (dropping an image file
-// onto the canvas places it, same as File > Place Image...). Defined near
-// PlaceImage()/LoadImageShapeFromSpec() further down, which it depends on.
-static void InstallImageDragHandlers(WindowRef win);
-
 static WindowRef CreateDocumentWindow(Document* doc) {
     static short sWinOff = 0;
     short off = static_cast<short>((sWinOff % 8) * 22);
@@ -433,9 +427,7 @@ static WindowRef CreateDocumentWindow(Document* doc) {
     Rect bounds = { static_cast<short>(50 + off), static_cast<short>(80 + off),
                     static_cast<short>(580 + off), static_cast<short>(720 + off) };
     Str255 title; ToPStr(doc->name, title);
-    WindowRef win = NewCWindow(nullptr, &bounds, title, true, kZoomDocProc, (WindowRef)-1L, true, 0);
-    InstallImageDragHandlers(win);
-    return win;
+    return NewCWindow(nullptr, &bounds, title, true, kZoomDocProc, (WindowRef)-1L, true, 0);
 }
 
 // About window — non-modal document window, SimpleText-style.
@@ -7009,9 +7001,12 @@ static pascal void NavPlaceImageEventProc(NavEventCallbackMessage, NavCBRecPtr, 
 // Reads spec's file and builds an ImageShape (pictData, or pixelDataRGBA
 // + pixelW/pixelH, plus bounds.w/h) -- everything except its final
 // position, which the caller sets. Returns nullptr if the file can't be
-// read or isn't a format this app understands. Shared by File > Place
-// Image... and Finder drag-and-drop, which differ only in how they obtain
-// the FSSpec and where the dropped/opened image ends up positioned.
+// read or isn't a format this app understands. Factored out of
+// PlaceImage() (currently its only caller) so an FSSpec obtained some
+// other way -- e.g. Finder drag-and-drop, tried and reverted this session
+// because this toolchain has no Drag Manager headers/definitions at all
+// (see project memory: project_image_support_first_pass) -- could reuse
+// it without duplicating the format-detection logic.
 static std::unique_ptr<ImageShape> LoadImageShapeFromSpec(const FSSpec& spec) {
     FSSpec s = spec;  // FSpOpenDF wants a non-const FSSpecPtr in this toolchain
     short refNum;
@@ -7158,50 +7153,6 @@ static void PlaceImage() {
     centerLocal.h = static_cast<short>((winBounds.left + winBounds.right) / 2);
     centerLocal.v = static_cast<short>((winBounds.top + winBounds.bottom) / 2);
     InsertNewImageShape(std::move(img), centerLocal);
-}
-
-// Finder drag-and-drop receive handler: dropping an image file onto a
-// document window's canvas places it at the drop point, same result as
-// File > Place Image... but positioned under the cursor instead of
-// centered. Only handles a single dropped HFS (Finder file) item -- multi-
-// file drops and non-file flavors (e.g. dragged text/color swatches) are
-// left for a later pass. Basic support only, per explicit scope: dropping
-// ONTO an existing shape to set it as that shape's fill is a later-tier
-// feature blocked on this app's Fill system not supporting image fills yet.
-static pascal OSErr ImageDragReceiveHandler(WindowRef win, void* /*handlerRefCon*/, DragReference dragRef) {
-    if (!gDocument) return dragNotAcceptedErr;
-
-    UInt16 numItems = 0;
-    if (CountDragItems(dragRef, &numItems) != noErr || numItems < 1) return dragNotAcceptedErr;
-
-    DragItemRef itemRef;
-    if (GetDragItemReferenceNumber(dragRef, 1, &itemRef) != noErr) return dragNotAcceptedErr;
-
-    HFSFlavor hfs;
-    Size sz = sizeof(HFSFlavor);
-    if (GetFlavorData(dragRef, itemRef, flavorTypeHFS, &hfs, &sz, 0) != noErr) return dragNotAcceptedErr;
-
-    auto img = LoadImageShapeFromSpec(hfs.fileSpec);
-    if (!img) return dragNotAcceptedErr;
-
-    Point mouse;
-    GetDragMouse(dragRef, &mouse, nullptr);
-    SetPortWindowPort(win);
-    GlobalToLocal(&mouse);
-
-    // Switch the active document to whichever window was dropped on, same
-    // as clicking it -- InsertNewImageShape assumes gDocument/gMainWindow
-    // already refer to the drop target.
-    if (win != gMainWindow) SwitchActiveDocument(win);
-
-    InsertNewImageShape(std::move(img), mouse);
-    return noErr;
-}
-
-static void InstallImageDragHandlers(WindowRef win) {
-    static DragReceiveHandlerUPP sRecvUPP = nullptr;
-    if (!sRecvUPP) sRecvUPP = NewDragReceiveHandlerUPP(ImageDragReceiveHandler);
-    InstallReceiveHandler(sRecvUPP, win, nullptr);
 }
 
 void HandleMenuCommand(long menuResult) {
