@@ -3552,50 +3552,58 @@ static constexpr unsigned kEdgeAll = kEdgeLeft | kEdgeRight | kEdgeCenter; // us
 // Computes a shape's candidate X and Y positions for guide MATCHING, and
 // its own visual (rotation-aware) bounding extent for guide-line SPANNING.
 // Unrotated: candidates are exactly left/right/center per axis, gated by
-// mask (original behavior, unchanged). Rotated: mask is ignored and the
-// candidates are the shape's 4 actual corner coordinates (what a person
-// visually sees as "the corner") plus its center (rotation-invariant,
-// since rotation pivots around it) -- comparing raw unrotated bounds.x/
-// bounds.x+w against a sibling means nothing once the shape is actually
-// rendered tilted, which is why guides for a rotated object used to
-// appear at 2-3 meaningless, near-but-not-quite-aligned positions instead
-// of the one visually correct corner-to-edge match. Duplicate values
-// (e.g. two corners projecting to the same X at exactly 45°) are removed
-// so the same real alignment doesn't get drawn twice.
+// mask (original behavior, unchanged). Rotated: left/right/top/bottom are
+// recomputed as the axis-aligned bounding box (min/max) of the shape's 4
+// rotated corners -- i.e. the shape's real visual left/right/top/bottom
+// EXTENT -- and center is the midpoint of that box, same structure as the
+// unrotated case, still mask-gated.
+//
+// An earlier version of this function used the 4 raw corner points
+// directly as independent candidates instead of collapsing them to a
+// bounding box first -- that's wrong: for most rotation angles, only 2 of
+// the 4 corners are ever the shape's actual leftmost/rightmost/topmost/
+// bottommost point; the other 2 corners' coordinates on that axis are
+// somewhere in the middle and don't correspond to a real "edge" at all,
+// which produced exactly the spurious, misaligned matches a user reported
+// ("the line is not being traced from edge of one square to the corner of
+// the rotated element"). Cross-checked against a real open-source Figma-
+// clone's own guide implementation (open-pencil/open-pencil,
+// packages/scene-graph/src/geometry.ts's rotatedBBox) before rewriting --
+// it uses exactly this AABB-of-rotated-corners approach, not raw corners.
 static void GatherGuideCandidates(const Bounds2& bb, SInt16 rot, unsigned xMask, unsigned yMask,
                                    std::vector<SInt32>& xs, std::vector<SInt32>& ys,
                                    SInt32& extLeft, SInt32& extRight, SInt32& extTop, SInt32& extBottom) {
-    SInt32 cx = bb.x + bb.w / 2, cy = bb.y + bb.h / 2;
+    SInt32 left, right, top, bottom;
     if (rot == 0) {
-        if (xMask & kEdgeLeft)   xs.push_back(bb.x);
-        if (xMask & kEdgeRight)  xs.push_back(bb.x + bb.w);
-        if (xMask & kEdgeCenter) xs.push_back(cx);
-        if (yMask & kEdgeTop)    ys.push_back(bb.y);
-        if (yMask & kEdgeBottom) ys.push_back(bb.y + bb.h);
-        if (yMask & kEdgeCenter) ys.push_back(cy);
-        extLeft = bb.x; extRight = bb.x + bb.w;
-        extTop  = bb.y; extBottom = bb.y + bb.h;
-        return;
+        left = bb.x; right = bb.x + bb.w;
+        top  = bb.y; bottom = bb.y + bb.h;
+    } else {
+        double rad = static_cast<double>(rot) * 3.14159265358979323846 / 180.0;
+        double ca = std::cos(rad), sa = std::sin(rad);
+        double hw = bb.w * 0.5, hh = bb.h * 0.5;
+        double ccx = bb.x + hw, ccy = bb.y + hh;
+        double lx[4] = { -hw, hw, hw, -hw }, ly[4] = { -hh, -hh, hh, hh };
+        double minX = 0, maxX = 0, minY = 0, maxY = 0;
+        for (int i = 0; i < 4; ++i) {
+            double ox = ccx + lx[i]*ca - ly[i]*sa;
+            double oy = ccy + lx[i]*sa + ly[i]*ca;
+            if (i == 0) { minX = maxX = ox; minY = maxY = oy; }
+            else { minX = std::min(minX, ox); maxX = std::max(maxX, ox);
+                   minY = std::min(minY, oy); maxY = std::max(maxY, oy); }
+        }
+        left   = static_cast<SInt32>(minX + (minX >= 0 ? 0.5 : -0.5));
+        right  = static_cast<SInt32>(maxX + (maxX >= 0 ? 0.5 : -0.5));
+        top    = static_cast<SInt32>(minY + (minY >= 0 ? 0.5 : -0.5));
+        bottom = static_cast<SInt32>(maxY + (maxY >= 0 ? 0.5 : -0.5));
     }
-    double rad = static_cast<double>(rot) * 3.14159265358979323846 / 180.0;
-    double ca = std::cos(rad), sa = std::sin(rad);
-    double hw = bb.w * 0.5, hh = bb.h * 0.5;
-    double lx[4] = { -hw, hw, hw, -hw }, ly[4] = { -hh, -hh, hh, hh };
-    SInt32 minX = 0, maxX = 0, minY = 0, maxY = 0;
-    for (int i = 0; i < 4; ++i) {
-        double ox = cx + lx[i]*ca - ly[i]*sa;
-        double oy = cy + lx[i]*sa + ly[i]*ca;
-        SInt32 px = static_cast<SInt32>(ox + (ox >= 0 ? 0.5 : -0.5));
-        SInt32 py = static_cast<SInt32>(oy + (oy >= 0 ? 0.5 : -0.5));
-        xs.push_back(px); ys.push_back(py);
-        if (i == 0) { minX = maxX = px; minY = maxY = py; }
-        else { minX = std::min(minX, px); maxX = std::max(maxX, px);
-               minY = std::min(minY, py); maxY = std::max(maxY, py); }
-    }
-    xs.push_back(cx); ys.push_back(cy); // center always participates too
-    std::sort(xs.begin(), xs.end()); xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
-    std::sort(ys.begin(), ys.end()); ys.erase(std::unique(ys.begin(), ys.end()), ys.end());
-    extLeft = minX; extRight = maxX; extTop = minY; extBottom = maxY;
+    SInt32 cx = left + (right - left) / 2, cy = top + (bottom - top) / 2;
+    if (xMask & kEdgeLeft)   xs.push_back(left);
+    if (xMask & kEdgeRight)  xs.push_back(right);
+    if (xMask & kEdgeCenter) xs.push_back(cx);
+    if (yMask & kEdgeTop)    ys.push_back(top);
+    if (yMask & kEdgeBottom) ys.push_back(bottom);
+    if (yMask & kEdgeCenter) ys.push_back(cy);
+    extLeft = left; extRight = right; extTop = top; extBottom = bottom;
 }
 
 template <typename ExcludeShapeFn, typename ExcludeFrameFn>
