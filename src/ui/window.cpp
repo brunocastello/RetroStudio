@@ -5275,6 +5275,30 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
             if (!multiGuideParent) multiGuideValid = false; // root-level selection
         }
 
+        // Ambient rotation chain for whatever's actually being dragged
+        // (stable for the whole gesture, same "resolve once outside the
+        // loop" pattern as multiGuideParent above). A screen-space mouse
+        // delta only maps 1:1 onto a canvas-space delta when nothing
+        // between here and the root is rotated -- when it is, a naive
+        // zoom-only conversion silently maps real mouse movement to the
+        // WRONG canvas direction/magnitude once rendered back through that
+        // rotation. This is the actual reason Smart Guides felt "stronger"/
+        // less predictable specifically inside a rotated frame: the guide
+        // tolerance math itself was already correct (see the rotation-
+        // guard removal earlier this round), but the position it was being
+        // fed wasn't tracking the mouse correctly to begin with. Mixed/
+        // root-level multi-selections (multiGuideValid false) are left
+        // uncorrected, same narrow scope-cut Smart Guides itself already
+        // accepts for that case.
+        RotChain dragAmbientChain;
+        if (isMultiDrag) {
+            if (multiGuideValid) dragAmbientChain = AncestorChainFor(multiGuideParent);
+        } else if (hitShape) {
+            dragAmbientChain = AncestorChainFor(LocateShapeParent(hitShape));
+        } else if (hitFrame) {
+            dragAmbientChain = AncestorChainFor(hitFrame->parent);
+        }
+
         // Single-shape move: same dirty-rect approach HandleResizeDrag/
         // HandleRotateDrag already use, so this loop stops doing a full,
         // unclipped whole-window redraw on every mouse-move. That matters
@@ -5316,9 +5340,23 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
             GetMouse(&currPt);
             if (currPt.h != prevPt.h || currPt.v != prevPt.v) {
                 if (!pushedUndo) { PushUndo(); pushedUndo = true; }
-                // Convert screen pixel delta → canvas pixel delta
-                SInt32 dx = SInt32(currPt.h - prevPt.h) * 100 / gCanvasZoom;
-                SInt32 dy = SInt32(currPt.v - prevPt.v) * 100 / gCanvasZoom;
+                // Convert screen pixel delta → canvas pixel delta. When the
+                // drag lives inside a rotated frame, un-rotate the delta
+                // VECTOR through the inverse ambient chain first (computed
+                // as the difference of two independently-un-rotated points,
+                // which is exactly equivalent to rotating the vector itself
+                // -- the pivot cancels out in the subtraction -- so this
+                // reuses ApplyRotChainInverse's existing point-transform
+                // signature with no new helper needed).
+                double vx = currPt.h - prevPt.h, vy = currPt.v - prevPt.v;
+                if (!dragAmbientChain.empty()) {
+                    double ox0, oy0, ox1, oy1;
+                    ApplyRotChainInverse(dragAmbientChain, prevPt.h, prevPt.v, ox0, oy0);
+                    ApplyRotChainInverse(dragAmbientChain, currPt.h, currPt.v, ox1, oy1);
+                    vx = ox1 - ox0; vy = oy1 - oy0;
+                }
+                SInt32 dx = static_cast<SInt32>(vx * 100.0 / gCanvasZoom + (vx >= 0 ? 0.5 : -0.5));
+                SInt32 dy = static_cast<SInt32>(vy * 100.0 / gCanvasZoom + (vy >= 0 ? 0.5 : -0.5));
 
                 // Multi-select Smart Guides: build a trial aggregate bbox from the
                 // WHOLE selection's current (pre-move) bounds shifted by this tick's
