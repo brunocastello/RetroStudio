@@ -3366,6 +3366,28 @@ static RotChain AncestorChainFor(Frame* startFrame) {
     return chain;
 }
 
+// A shape/frame's `rotation` field is LOCAL to its immediate parent;
+// rendering composes it with the parent's own ambient chain (see
+// ComputeSmartGuidesCore's netRot). Dragging an item across a reparent
+// boundary (dropping it into a DIFFERENT frame, one with a different
+// ambient rotation total) changes what gets added to that local field at
+// render time even though the field itself never changed -- so without
+// this adjustment, dropping an upright object into a rotated frame makes
+// it visually snap-rotate to match the frame's angle, and dropping a
+// rotated object out of one snaps it back upright. Real Figma preserves
+// an object's on-screen appearance across a reparent; call this right
+// after updating `parent` (oldParent/newParent are the frames BEFORE/
+// AFTER the move) to keep the net on-screen rotation unchanged.
+static void PreserveNetRotationAcrossReparent(SInt16& rotation, Frame* oldParent, Frame* newParent) {
+    double oldAmbient = 0.0;
+    for (const RotStep& step : AncestorChainFor(oldParent)) oldAmbient += step.angleDeg;
+    double newAmbient = 0.0;
+    for (const RotStep& step : AncestorChainFor(newParent)) newAmbient += step.angleDeg;
+    double net = static_cast<double>(rotation) + oldAmbient;
+    SInt32 newLocal = static_cast<SInt32>(std::floor(net - newAmbient + 0.5));
+    rotation = static_cast<SInt16>(((newLocal % 360) + 360) % 360);
+}
+
 // Ancestor rotation chain for whichever single object is currently selected
 // (empty if nothing selected, or nothing above it is rotated).
 static RotChain SelectedAmbientChain() {
@@ -3725,9 +3747,13 @@ static void ComputeSmartGuidesCore(Bounds2& b, SInt16 selfRotation, Frame* paren
     // through both of them. Only falls back to the union of both extents
     // when the two objects actually overlap on the perpendicular axis (no
     // real "gap" exists to draw).
+    // Strict "<" (not "<="): two objects exactly touching (zero gap, a real
+    // corner-to-corner or edge-to-edge glue) must NOT take the gap branch --
+    // aHi==bLo there would return a ZERO-LENGTH line (invisible on screen)
+    // for exactly the case that most needs a visible guide.
     auto gapSpan = [](SInt32 aLo, SInt32 aHi, SInt32 bLo, SInt32 bHi) -> std::pair<SInt32, SInt32> {
-        if (aHi <= bLo) return { aHi, bLo };
-        if (bHi <= aLo) return { bHi, aLo };
+        if (aHi < bLo) return { aHi, bLo };
+        if (bHi < aLo) return { bHi, aLo };
         return { std::min(aLo, bLo), std::max(aHi, bHi) };
     };
     auto matchSibling = [&](const Bounds2& sb, SInt16 srot) {
@@ -5661,6 +5687,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                 for (Shape* target : gSelectedShapes) {
                     auto owned = ExtractShape(target, origShapeParent);
                     if (owned) {
+                        PreserveNetRotationAcrossReparent(owned->rotation, origShapeParent, newShapeParent);
                         if (newShapeParent) {
                             newShapeParent->childOrder.push_back({ false, (int)newShapeParent->children.size() });
                             newShapeParent->children.push_back(std::move(owned));
@@ -5697,6 +5724,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                 if (newFrameParent != origFrameParent) {
                     auto owned = ExtractFrame(f);
                     if (owned) {
+                        PreserveNetRotationAcrossReparent(owned->rotation, origFrameParent, newFrameParent);
                         if (newFrameParent) {
                             owned->parent = newFrameParent;
                             newFrameParent->childOrder.push_back({ true, (int)newFrameParent->childFrames.size() });
@@ -5787,6 +5815,7 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
             } else if (newParent != origParent) {
                 auto owned = ExtractShape(hitShape, origParent);
                 if (owned) {
+                    PreserveNetRotationAcrossReparent(owned->rotation, origParent, newParent);
                     if (newParent) {
                         newParent->childOrder.push_back({ false, (int)newParent->children.size() });
                         newParent->children.push_back(std::move(owned));
@@ -5841,9 +5870,11 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                     }
                 }
             } else if (newParent != hitFrame->parent) {
+                Frame* oldFrameParent = hitFrame->parent;
                 auto owned = ExtractFrame(hitFrame);
                 if (owned) {
                     Frame* raw = owned.get();
+                    PreserveNetRotationAcrossReparent(owned->rotation, oldFrameParent, newParent);
                     if (newParent) {
                         owned->parent = newParent;
                         newParent->childOrder.push_back({ true, (int)newParent->childFrames.size() });
