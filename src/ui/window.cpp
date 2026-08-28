@@ -2609,6 +2609,8 @@ static double SelectedOwnRotation();
 static RotChain SelectedAmbientChain();
 static short EffectiveRotateZone(const short hx[8], const short hy[8], int cornerIdx);
 static bool ComputeMultiSelectAggregateBounds(Bounds2& out);
+static Frame* LocateShapeParent(Shape* s);
+static RotChain AncestorChainFor(Frame* startFrame);
 
 // Union bounding box of the WHOLE current multi-selection (shapes ∪ frames),
 // in absolute canvas coordinates. Shared by the aggregate selection outline,
@@ -2616,16 +2618,26 @@ static bool ComputeMultiSelectAggregateBounds(Bounds2& out);
 // definition so all four always agree on what "the group" means. Returns
 // false when nothing is selected.
 //
-// Each item contributes its own ROTATED axis-aligned extent (own rotation
-// only, no ambient parent-chain — consistent with every other multi-select
-// aggregate restriction: no rotated-context support yet), not its raw local
-// box — a 45°-rotated square's true on-screen footprint is wider/taller
-// than its unrotated w/h, and skipping this made the aggregate box (and
-// therefore the resize anchor and rotate pivot derived from it) too small
-// and off-center for any selection containing a rotated member.
+// Each item contributes its own NET on-screen rotated axis-aligned extent —
+// own rotation composed with every ancestor frame's own rotation (a shape's
+// `rotation` field is local to its parent, and rendering carries the whole
+// ancestor chain along as a rigid body — see ComputeSmartGuidesCore's
+// netRot, same fix applied here), not its raw local box or raw local
+// rotation alone — a shape inside an ambient-rotated frame can look
+// perfectly upright on screen (net 0) despite a nonzero local rotation
+// field, or genuinely tilted (net != 0) despite a local rotation of 0, and
+// using the wrong one made the aggregate box (and therefore the resize
+// anchor and rotate pivot derived from it) too small/large and off-center
+// for any selection containing a member inside a rotated ancestor.
 static bool ComputeMultiSelectAggregateBounds(Bounds2& out) {
     bool have = false;
     double l = 0, t = 0, r = 0, b = 0;
+    auto netRotFor = [](SInt16 localRot, Frame* parent) -> SInt16 {
+        double total = static_cast<double>(localRot);
+        for (const RotStep& step : AncestorChainFor(parent)) total += step.angleDeg;
+        SInt32 n = static_cast<SInt32>(std::floor(total + 0.5));
+        return static_cast<SInt16>(((n % 360) + 360) % 360);
+    };
     auto uni = [&](const Bounds2& bb, SInt16 rotationDeg) {
         double bl, bt, br, bb2;
         if (rotationDeg == 0) {
@@ -2651,8 +2663,8 @@ static bool ComputeMultiSelectAggregateBounds(Bounds2& out) {
             r = std::max(r, br); b = std::max(b, bb2);
         }
     };
-    for (Shape* s : gSelectedShapes) uni(s->bounds, s->rotation);
-    for (Frame* f : gSelectedFrames) uni(f->bounds, f->rotation);
+    for (Shape* s : gSelectedShapes) uni(s->bounds, netRotFor(s->rotation, LocateShapeParent(s)));
+    for (Frame* f : gSelectedFrames) uni(f->bounds, netRotFor(f->rotation, f->parent));
     if (!have) return false;
     auto roundSInt32 = [](double v) -> SInt32 {
         return static_cast<SInt32>(v + (v >= 0 ? 0.5 : -0.5));
@@ -3608,7 +3620,8 @@ static void GatherGuideCandidates(const Bounds2& bb, SInt16 rot, unsigned xMask,
 
 template <typename ExcludeShapeFn, typename ExcludeFrameFn>
 static void ComputeSmartGuidesCore(Bounds2& b, SInt16 selfRotation, Frame* parent, unsigned xMask, unsigned yMask,
-                                    ExcludeShapeFn excludeShape, ExcludeFrameFn excludeFrame) {
+                                    ExcludeShapeFn excludeShape, ExcludeFrameFn excludeFrame,
+                                    bool selfComposesAmbient = true) {
     gActiveGuides.clear();
     if (!gSmartGuidesEnabled) return;
     if (!parent) return;
@@ -3632,10 +3645,16 @@ static void ComputeSmartGuidesCore(Bounds2& b, SInt16 selfRotation, Frame* paren
         n = ((n % 360) + 360) % 360;
         return static_cast<SInt16>(n);
     };
+    // The multi-select aggregate box is a deliberate exception: it must stay
+    // screen-plain (0) regardless of ambient parent rotation (confirmed
+    // against real Figma -- see ComputeSmartGuidesMulti), so it opts out of
+    // ambient composition for ITS OWN candidates only. Every sibling scanned/
+    // matched below is a real object and always composes ambient.
+    SInt16 myNetRotation = selfComposesAmbient ? netRot(selfRotation) : selfRotation;
 
     std::vector<SInt32> myXs, myYs;
     SInt32 myExtL, myExtR, myExtT, myExtB;
-    GatherGuideCandidates(b, netRot(selfRotation), xMask, yMask, myXs, myYs, myExtL, myExtR, myExtT, myExtB);
+    GatherGuideCandidates(b, myNetRotation, xMask, yMask, myXs, myYs, myExtL, myExtR, myExtT, myExtB);
 
     // ---- pass 1: find the single best X and Y snap across all my own candidates ----
     SInt32 bestDX = 0, bestDY = 0;
@@ -3675,7 +3694,7 @@ static void ComputeSmartGuidesCore(Bounds2& b, SInt16 selfRotation, Frame* paren
 
     // ---- pass 2: at the final position, collect EVERY exact match to draw ----
     myXs.clear(); myYs.clear();
-    GatherGuideCandidates(b, netRot(selfRotation), xMask, yMask, myXs, myYs, myExtL, myExtR, myExtT, myExtB);
+    GatherGuideCandidates(b, myNetRotation, xMask, yMask, myXs, myYs, myExtL, myExtR, myExtT, myExtB);
 
     bool centerXGuide = false, centerYGuide = false;
     for (SInt32 mx : myXs) if (mx == pCenterX) centerXGuide = true;
@@ -3743,11 +3762,11 @@ static void ComputeSmartGuidesCore(Bounds2& b, SInt16 selfRotation, Frame* paren
     // breakpoint-guide saga. Remove once the rotated-guide span/position
     // bug is found. Fires whenever an active guide is on screen.
     if (!gActiveGuides.empty() && gMainWindow) {
-        std::string t = "sr" + istr(selfRotation) + " amb" + istr(static_cast<SInt32>(guideAmbientTotalDeg))
-                       + " net" + istr(netRot(selfRotation))
-                       + " dDX" + istr(haveDX ? bestDX : -99999) + " dDY" + istr(haveDY ? bestDY : -99999)
-                       + " myExt L" + istr(myExtL) + " R" + istr(myExtR)
-                       + " T" + istr(myExtT) + " B" + istr(myExtB);
+        // Kept deliberately terse -- MacOS 9's title bar clips long text with
+        // no ellipsis, so a verbose format silently loses the tail fields.
+        std::string t = "n" + istr(myNetRotation)
+                       + " d" + (haveDX ? istr(bestDX) : std::string("-")) + "," + (haveDY ? istr(bestDY) : std::string("-"))
+                       + " m[" + istr(myExtL) + "," + istr(myExtR) + "," + istr(myExtT) + "," + istr(myExtB) + "]";
         for (const auto& g : gActiveGuides) {
             t += " " + std::string(g.vertical ? "V" : "H") + istr(g.pos)
                + "[" + istr(g.start) + "-" + istr(g.end) + "]";
@@ -3758,8 +3777,8 @@ static void ComputeSmartGuidesCore(Bounds2& b, SInt16 selfRotation, Frame* paren
         auto diagSibling = [&](const char* tag, const Bounds2& sb, SInt16 srot) {
             std::vector<SInt32> sxs, sys; SInt32 sl, sr, st, sbtm;
             GatherGuideCandidates(sb, netRot(srot), kEdgeAll, kEdgeAll, sxs, sys, sl, sr, st, sbtm);
-            t += std::string(" ") + tag + "sr" + istr(srot) + "net" + istr(netRot(srot))
-               + "L" + istr(sl) + "R" + istr(sr) + "T" + istr(st) + "B" + istr(sbtm);
+            t += std::string(" ") + tag + "n" + istr(netRot(srot))
+               + "[" + istr(sl) + "," + istr(sr) + "," + istr(st) + "," + istr(sbtm) + "]";
         };
         for (auto& s : parent->children)     if (!excludeShape(s.get())) diagSibling("s", s->bounds, s->rotation);
         for (auto& cf : parent->childFrames) if (!excludeFrame(cf.get())) diagSibling("f", cf->bounds, cf->rotation);
@@ -3795,7 +3814,8 @@ static void ComputeSmartGuidesMulti(Bounds2& b, Frame* parent,
     // than adopting any rotation itself.
     ComputeSmartGuidesCore(b, 0, parent, kEdgeAll, kEdgeAll,
         [&](Shape* s) { return std::find(selShapes.begin(), selShapes.end(), s) != selShapes.end(); },
-        [&](Frame* f) { return std::find(selFrames.begin(), selFrames.end(), f) != selFrames.end(); });
+        [&](Frame* f) { return std::find(selFrames.begin(), selFrames.end(), f) != selFrames.end(); },
+        /*selfComposesAmbient=*/false);
 }
 
 // Resize-drag: only the SPECIFIC edge(s) actually being dragged snap/guide —
@@ -5498,8 +5518,25 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                 if (isMultiDrag && multiGuideValid) {
                     bool haveBox = false;
                     Bounds2 agg{0, 0, 0, 0};
-                    auto uni = [&](const Bounds2& bb) {
-                        SInt32 l = bb.x + dx, t = bb.y + dy, r = l + bb.w, bo = t + bb.h;
+                    // Each member's true on-screen footprint is its NET
+                    // rotation (own rotation + every ancestor frame's own
+                    // rotation, the whole chain applied as a rigid body at
+                    // render time), same fix as ComputeMultiSelectAggregateBounds
+                    // and ComputeSmartGuidesCore's netRot -- using raw local
+                    // rotation (or ignoring rotation entirely, as this used
+                    // to) shrinks the trial box for any member sitting
+                    // inside a rotated ancestor, so it no longer actually
+                    // contains that member during a live multi-drag.
+                    auto netRotForItem = [](SInt16 localRot, Frame* parent) -> SInt16 {
+                        double total = static_cast<double>(localRot);
+                        for (const RotStep& step : AncestorChainFor(parent)) total += step.angleDeg;
+                        SInt32 n = static_cast<SInt32>(std::floor(total + 0.5));
+                        return static_cast<SInt16>(((n % 360) + 360) % 360);
+                    };
+                    auto uni = [&](const Bounds2& bb, SInt16 netRot) {
+                        Bounds2 shifted{ bb.x + dx, bb.y + dy, bb.w, bb.h };
+                        std::vector<SInt32> dxs, dys; SInt32 l, t, r, bo;
+                        GatherGuideCandidates(shifted, netRot, kEdgeAll, kEdgeAll, dxs, dys, l, r, t, bo);
                         if (!haveBox) { agg = { l, t, r - l, bo - t }; haveBox = true; }
                         else {
                             SInt32 nl = std::min(agg.x, l), nt = std::min(agg.y, t);
@@ -5507,8 +5544,8 @@ void HandleCanvasSelect(WindowRef win, Point startGlobal, UInt16 modifiers) {
                             agg = { nl, nt, nr - nl, nb - nt };
                         }
                     };
-                    for (Shape* s : gSelectedShapes) uni(s->bounds);
-                    for (Frame* f : gSelectedFrames)  uni(f->bounds);
+                    for (Shape* s : gSelectedShapes) uni(s->bounds, netRotForItem(s->rotation, LocateShapeParent(s)));
+                    for (Frame* f : gSelectedFrames)  uni(f->bounds, netRotForItem(f->rotation, f->parent));
                     Bounds2 beforeSnap = agg;
                     ComputeSmartGuidesMulti(agg, multiGuideParent, gSelectedShapes, gSelectedFrames);
                     dx += agg.x - beforeSnap.x;
