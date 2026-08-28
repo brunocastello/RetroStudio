@@ -3615,9 +3615,27 @@ static void ComputeSmartGuidesCore(Bounds2& b, SInt16 selfRotation, Frame* paren
 
     const SInt32 tolerance = std::max<SInt32>(1, SInt32(4) * 100 / gCanvasZoom);
 
+    // A shape's own `rotation` field is LOCAL (relative to its parent's
+    // frame, often deliberately counter-rotating an ambient parent tilt so
+    // the shape renders screen-upright -- see the squeezed-shape-creation
+    // fix). What actually determines a shape's ON-SCREEN footprint (and so
+    // what GatherGuideCandidates needs to compute a correct AABB) is the
+    // NET rotation: local rotation + the sum of every ancestor's own
+    // rotation. All siblings scanned/matched below share this exact same
+    // parent, so the ambient total is identical for every one of them --
+    // computed once here rather than per-candidate.
+    RotChain guideAmbient = AncestorChainFor(parent);
+    double guideAmbientTotalDeg = 0.0;
+    for (const RotStep& step : guideAmbient) guideAmbientTotalDeg += step.angleDeg;
+    auto netRot = [&](SInt16 localRot) -> SInt16 {
+        SInt32 n = static_cast<SInt32>(std::floor(static_cast<double>(localRot) + guideAmbientTotalDeg + 0.5));
+        n = ((n % 360) + 360) % 360;
+        return static_cast<SInt16>(n);
+    };
+
     std::vector<SInt32> myXs, myYs;
     SInt32 myExtL, myExtR, myExtT, myExtB;
-    GatherGuideCandidates(b, selfRotation, xMask, yMask, myXs, myYs, myExtL, myExtR, myExtT, myExtB);
+    GatherGuideCandidates(b, netRot(selfRotation), xMask, yMask, myXs, myYs, myExtL, myExtR, myExtT, myExtB);
 
     // ---- pass 1: find the single best X and Y snap across all my own candidates ----
     SInt32 bestDX = 0, bestDY = 0;
@@ -3645,7 +3663,7 @@ static void ComputeSmartGuidesCore(Bounds2& b, SInt16 selfRotation, Frame* paren
 
     auto scanSibling = [&](const Bounds2& sb, SInt16 srot) {
         std::vector<SInt32> sxs, sys; SInt32 dl, dr, dt, db;
-        GatherGuideCandidates(sb, srot, kEdgeAll, kEdgeAll, sxs, sys, dl, dr, dt, db);
+        GatherGuideCandidates(sb, netRot(srot), kEdgeAll, kEdgeAll, sxs, sys, dl, dr, dt, db);
         for (SInt32 sx : sxs) tryX(sx);
         for (SInt32 sy : sys) tryY(sy);
     };
@@ -3657,7 +3675,7 @@ static void ComputeSmartGuidesCore(Bounds2& b, SInt16 selfRotation, Frame* paren
 
     // ---- pass 2: at the final position, collect EVERY exact match to draw ----
     myXs.clear(); myYs.clear();
-    GatherGuideCandidates(b, selfRotation, xMask, yMask, myXs, myYs, myExtL, myExtR, myExtT, myExtB);
+    GatherGuideCandidates(b, netRot(selfRotation), xMask, yMask, myXs, myYs, myExtL, myExtR, myExtT, myExtB);
 
     bool centerXGuide = false, centerYGuide = false;
     for (SInt32 mx : myXs) if (mx == pCenterX) centerXGuide = true;
@@ -3665,18 +3683,26 @@ static void ComputeSmartGuidesCore(Bounds2& b, SInt16 selfRotation, Frame* paren
     if (centerXGuide) gActiveGuides.push_back({ true,  pCenterX, parent->bounds.y, parent->bounds.y + parent->bounds.h });
     if (centerYGuide) gActiveGuides.push_back({ false, pCenterY, parent->bounds.x, parent->bounds.x + parent->bounds.w });
 
-    // Guide line spans the visual (rotation-aware) extent of BOTH objects,
-    // not their raw unrotated top/bottom/left/right -- otherwise a matched
-    // line for a rotated object stops short of where it's actually visible,
-    // the "lines not going end to end" symptom.
+    // Guide line span, matching real Figma: when two specific objects match,
+    // the line covers only the GAP between their facing edges (a short
+    // segment sitting strictly between the two shapes), not a line running
+    // through both of them. Only falls back to the union of both extents
+    // when the two objects actually overlap on the perpendicular axis (no
+    // real "gap" exists to draw).
+    auto gapSpan = [](SInt32 aLo, SInt32 aHi, SInt32 bLo, SInt32 bHi) -> std::pair<SInt32, SInt32> {
+        if (aHi <= bLo) return { aHi, bLo };
+        if (bHi <= aLo) return { bHi, aLo };
+        return { std::min(aLo, bLo), std::max(aHi, bHi) };
+    };
     auto matchSibling = [&](const Bounds2& sb, SInt16 srot) {
         std::vector<SInt32> sxs, sys; SInt32 sl, sr, st, sbtm;
-        GatherGuideCandidates(sb, srot, kEdgeAll, kEdgeAll, sxs, sys, sl, sr, st, sbtm);
+        GatherGuideCandidates(sb, netRot(srot), kEdgeAll, kEdgeAll, sxs, sys, sl, sr, st, sbtm);
         for (SInt32 mx : myXs) {
             if (mx == pCenterX && centerXGuide) continue; // already drawn as the parent-center line above
             for (SInt32 sx : sxs) {
                 if (mx == sx) {
-                    gActiveGuides.push_back({ true, mx, std::min(myExtT, st), std::max(myExtB, sbtm) });
+                    auto span = gapSpan(myExtT, myExtB, st, sbtm);
+                    gActiveGuides.push_back({ true, mx, span.first, span.second });
                     break; // one line per matching my-value is enough even if multiple sibling candidates share it
                 }
             }
@@ -3685,7 +3711,8 @@ static void ComputeSmartGuidesCore(Bounds2& b, SInt16 selfRotation, Frame* paren
             if (my == pCenterY && centerYGuide) continue;
             for (SInt32 sy : sys) {
                 if (my == sy) {
-                    gActiveGuides.push_back({ false, my, std::min(myExtL, sl), std::max(myExtR, sr) });
+                    auto span = gapSpan(myExtL, myExtR, sl, sr);
+                    gActiveGuides.push_back({ false, my, span.first, span.second });
                     break;
                 }
             }
@@ -3699,7 +3726,9 @@ static void ComputeSmartGuidesCore(Bounds2& b, SInt16 selfRotation, Frame* paren
     // breakpoint-guide saga. Remove once the rotated-guide span/position
     // bug is found. Fires whenever an active guide is on screen.
     if (!gActiveGuides.empty() && gMainWindow) {
-        std::string t = "sr" + istr(selfRotation) + " myExt L" + istr(myExtL) + " R" + istr(myExtR)
+        std::string t = "sr" + istr(selfRotation) + " amb" + istr(static_cast<SInt32>(guideAmbientTotalDeg))
+                       + " net" + istr(netRot(selfRotation))
+                       + " myExt L" + istr(myExtL) + " R" + istr(myExtR)
                        + " T" + istr(myExtT) + " B" + istr(myExtB);
         for (const auto& g : gActiveGuides) {
             t += " " + std::string(g.vertical ? "V" : "H") + istr(g.pos)
