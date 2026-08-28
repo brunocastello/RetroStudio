@@ -3685,6 +3685,20 @@ static void ComputeSmartGuidesCore(Bounds2& b, SInt16 selfRotation, Frame* paren
     };
     for (auto& s : parent->children)     if (!excludeShape(s.get())) matchSibling(s->bounds, s->rotation);
     for (auto& cf : parent->childFrames) if (!excludeFrame(cf.get())) matchSibling(cf->bounds, cf->rotation);
+
+    // TEMPORARY DIAGNOSTIC -- window-title readout of the actual computed
+    // guide values, same technique used to crack the Auto Layout
+    // breakpoint-guide saga. Remove once the rotated-guide span/position
+    // bug is found. Fires whenever an active guide is on screen.
+    if (!gActiveGuides.empty() && gMainWindow) {
+        std::string t = "sr" + istr(selfRotation) + " myExt L" + istr(myExtL) + " R" + istr(myExtR)
+                       + " T" + istr(myExtT) + " B" + istr(myExtB);
+        for (const auto& g : gActiveGuides) {
+            t += " " + std::string(g.vertical ? "V" : "H") + istr(g.pos)
+               + "[" + istr(g.start) + "-" + istr(g.end) + "]";
+        }
+        Str255 ps; ToPStr(t, ps); SetWTitle(gMainWindow, ps);
+    }
 }
 
 // Single-item move-drag: excludeShape/excludeFrame is whichever of the two
