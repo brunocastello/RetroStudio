@@ -3680,8 +3680,25 @@ static void ComputeSmartGuidesCore(Bounds2& b, SInt16 selfRotation, Frame* paren
     bool centerXGuide = false, centerYGuide = false;
     for (SInt32 mx : myXs) if (mx == pCenterX) centerXGuide = true;
     for (SInt32 my : myYs) if (my == pCenterY) centerYGuide = true;
-    if (centerXGuide) gActiveGuides.push_back({ true,  pCenterX, parent->bounds.y, parent->bounds.y + parent->bounds.h });
-    if (centerYGuide) gActiveGuides.push_back({ false, pCenterY, parent->bounds.x, parent->bounds.x + parent->bounds.w });
+    // Span for a parent-center guide: when the parent frame is itself
+    // rotated, a plain screen-vertical/horizontal center line through it
+    // doesn't reach from parent->bounds.y to bounds.y+h (that's the frame's
+    // raw UNROTATED box, not what's actually on screen) -- it should reach
+    // exactly to where that line crosses the frame's rendered (rotated)
+    // silhouette, matching Figma's reference (a full-width/height line
+    // ending exactly at the diamond's vertices). guideAmbientTotalDeg
+    // already includes the parent's own rotation (AncestorChainFor(parent)
+    // starts its walk at parent itself), so it IS the parent's net on-
+    // screen rotation -- reuse GatherGuideCandidates on the parent's own
+    // bounds to get that rotated AABB, exactly like any child shape.
+    if (centerXGuide || centerYGuide) {
+        SInt32 pNetRotI = static_cast<SInt32>(std::floor(guideAmbientTotalDeg + 0.5));
+        SInt16 pNetRot = static_cast<SInt16>(((pNetRotI % 360) + 360) % 360);
+        std::vector<SInt32> pDummyXs, pDummyYs; SInt32 pL, pR, pT, pB;
+        GatherGuideCandidates(parent->bounds, pNetRot, kEdgeAll, kEdgeAll, pDummyXs, pDummyYs, pL, pR, pT, pB);
+        if (centerXGuide) gActiveGuides.push_back({ true,  pCenterX, pT, pB });
+        if (centerYGuide) gActiveGuides.push_back({ false, pCenterY, pL, pR });
+    }
 
     // Guide line span, matching real Figma: when two specific objects match,
     // the line covers only the GAP between their facing edges (a short
