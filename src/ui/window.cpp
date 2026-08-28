@@ -3745,12 +3745,24 @@ static void ComputeSmartGuidesCore(Bounds2& b, SInt16 selfRotation, Frame* paren
     if (!gActiveGuides.empty() && gMainWindow) {
         std::string t = "sr" + istr(selfRotation) + " amb" + istr(static_cast<SInt32>(guideAmbientTotalDeg))
                        + " net" + istr(netRot(selfRotation))
+                       + " dDX" + istr(haveDX ? bestDX : -99999) + " dDY" + istr(haveDY ? bestDY : -99999)
                        + " myExt L" + istr(myExtL) + " R" + istr(myExtR)
                        + " T" + istr(myExtT) + " B" + istr(myExtB);
         for (const auto& g : gActiveGuides) {
             t += " " + std::string(g.vertical ? "V" : "H") + istr(g.pos)
                + "[" + istr(g.start) + "-" + istr(g.end) + "]";
         }
+        // Sibling readout -- what the OTHER shape's own AABB looks like,
+        // needed to judge whether a match/snap picked the visually-correct
+        // corner/edge (can't tell from "my own" numbers alone).
+        auto diagSibling = [&](const char* tag, const Bounds2& sb, SInt16 srot) {
+            std::vector<SInt32> sxs, sys; SInt32 sl, sr, st, sbtm;
+            GatherGuideCandidates(sb, netRot(srot), kEdgeAll, kEdgeAll, sxs, sys, sl, sr, st, sbtm);
+            t += std::string(" ") + tag + "sr" + istr(srot) + "net" + istr(netRot(srot))
+               + "L" + istr(sl) + "R" + istr(sr) + "T" + istr(st) + "B" + istr(sbtm);
+        };
+        for (auto& s : parent->children)     if (!excludeShape(s.get())) diagSibling("s", s->bounds, s->rotation);
+        for (auto& cf : parent->childFrames) if (!excludeFrame(cf.get())) diagSibling("f", cf->bounds, cf->rotation);
         Str255 ps; ToPStr(t, ps); SetWTitle(gMainWindow, ps);
     }
 }
