@@ -3764,13 +3764,14 @@ static void ComputeSmartGuidesCore(Bounds2& b, SInt16 selfRotation, Frame* paren
     if (!gActiveGuides.empty() && gMainWindow) {
         // Kept deliberately terse -- MacOS 9's title bar clips long text with
         // no ellipsis, so a verbose format silently loses the tail fields.
+        // Uses ".." (never "-") as the range separator specifically so a
+        // negative start value (e.g. start=-5,end=70) can't visually fuse
+        // with the separator into something unreadable like "-570".
+        // Sibling data goes FIRST, guide spans LAST -- the siblings are
+        // higher diagnostic value and must survive truncation.
         std::string t = "n" + istr(myNetRotation)
                        + " d" + (haveDX ? istr(bestDX) : std::string("-")) + "," + (haveDY ? istr(bestDY) : std::string("-"))
                        + " m[" + istr(myExtL) + "," + istr(myExtR) + "," + istr(myExtT) + "," + istr(myExtB) + "]";
-        for (const auto& g : gActiveGuides) {
-            t += " " + std::string(g.vertical ? "V" : "H") + istr(g.pos)
-               + "[" + istr(g.start) + "-" + istr(g.end) + "]";
-        }
         // Sibling readout -- what the OTHER shape's own AABB looks like,
         // needed to judge whether a match/snap picked the visually-correct
         // corner/edge (can't tell from "my own" numbers alone).
@@ -3782,6 +3783,10 @@ static void ComputeSmartGuidesCore(Bounds2& b, SInt16 selfRotation, Frame* paren
         };
         for (auto& s : parent->children)     if (!excludeShape(s.get())) diagSibling("s", s->bounds, s->rotation);
         for (auto& cf : parent->childFrames) if (!excludeFrame(cf.get())) diagSibling("f", cf->bounds, cf->rotation);
+        for (const auto& g : gActiveGuides) {
+            t += " " + std::string(g.vertical ? "V" : "H") + istr(g.pos)
+               + "[" + istr(g.start) + ".." + istr(g.end) + "]";
+        }
         Str255 ps; ToPStr(t, ps); SetWTitle(gMainWindow, ps);
     }
 }
