@@ -3549,8 +3549,57 @@ static constexpr unsigned kEdgeLeft = 1, kEdgeRight = 2, kEdgeCenter = 4;
 static constexpr unsigned kEdgeTop = kEdgeLeft, kEdgeBottom = kEdgeRight; // same bits, Y axis
 static constexpr unsigned kEdgeAll = kEdgeLeft | kEdgeRight | kEdgeCenter; // used for both axes
 
+// Computes a shape's candidate X and Y positions for guide MATCHING, and
+// its own visual (rotation-aware) bounding extent for guide-line SPANNING.
+// Unrotated: candidates are exactly left/right/center per axis, gated by
+// mask (original behavior, unchanged). Rotated: mask is ignored and the
+// candidates are the shape's 4 actual corner coordinates (what a person
+// visually sees as "the corner") plus its center (rotation-invariant,
+// since rotation pivots around it) -- comparing raw unrotated bounds.x/
+// bounds.x+w against a sibling means nothing once the shape is actually
+// rendered tilted, which is why guides for a rotated object used to
+// appear at 2-3 meaningless, near-but-not-quite-aligned positions instead
+// of the one visually correct corner-to-edge match. Duplicate values
+// (e.g. two corners projecting to the same X at exactly 45°) are removed
+// so the same real alignment doesn't get drawn twice.
+static void GatherGuideCandidates(const Bounds2& bb, SInt16 rot, unsigned xMask, unsigned yMask,
+                                   std::vector<SInt32>& xs, std::vector<SInt32>& ys,
+                                   SInt32& extLeft, SInt32& extRight, SInt32& extTop, SInt32& extBottom) {
+    SInt32 cx = bb.x + bb.w / 2, cy = bb.y + bb.h / 2;
+    if (rot == 0) {
+        if (xMask & kEdgeLeft)   xs.push_back(bb.x);
+        if (xMask & kEdgeRight)  xs.push_back(bb.x + bb.w);
+        if (xMask & kEdgeCenter) xs.push_back(cx);
+        if (yMask & kEdgeTop)    ys.push_back(bb.y);
+        if (yMask & kEdgeBottom) ys.push_back(bb.y + bb.h);
+        if (yMask & kEdgeCenter) ys.push_back(cy);
+        extLeft = bb.x; extRight = bb.x + bb.w;
+        extTop  = bb.y; extBottom = bb.y + bb.h;
+        return;
+    }
+    double rad = static_cast<double>(rot) * 3.14159265358979323846 / 180.0;
+    double ca = std::cos(rad), sa = std::sin(rad);
+    double hw = bb.w * 0.5, hh = bb.h * 0.5;
+    double lx[4] = { -hw, hw, hw, -hw }, ly[4] = { -hh, -hh, hh, hh };
+    SInt32 minX = 0, maxX = 0, minY = 0, maxY = 0;
+    for (int i = 0; i < 4; ++i) {
+        double ox = cx + lx[i]*ca - ly[i]*sa;
+        double oy = cy + lx[i]*sa + ly[i]*ca;
+        SInt32 px = static_cast<SInt32>(ox + (ox >= 0 ? 0.5 : -0.5));
+        SInt32 py = static_cast<SInt32>(oy + (oy >= 0 ? 0.5 : -0.5));
+        xs.push_back(px); ys.push_back(py);
+        if (i == 0) { minX = maxX = px; minY = maxY = py; }
+        else { minX = std::min(minX, px); maxX = std::max(maxX, px);
+               minY = std::min(minY, py); maxY = std::max(maxY, py); }
+    }
+    xs.push_back(cx); ys.push_back(cy); // center always participates too
+    std::sort(xs.begin(), xs.end()); xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
+    std::sort(ys.begin(), ys.end()); ys.erase(std::unique(ys.begin(), ys.end()), ys.end());
+    extLeft = minX; extRight = maxX; extTop = minY; extBottom = maxY;
+}
+
 template <typename ExcludeShapeFn, typename ExcludeFrameFn>
-static void ComputeSmartGuidesCore(Bounds2& b, Frame* parent, unsigned xMask, unsigned yMask,
+static void ComputeSmartGuidesCore(Bounds2& b, SInt16 selfRotation, Frame* parent, unsigned xMask, unsigned yMask,
                                     ExcludeShapeFn excludeShape, ExcludeFrameFn excludeFrame) {
     gActiveGuides.clear();
     if (!gSmartGuidesEnabled) return;
@@ -3558,10 +3607,11 @@ static void ComputeSmartGuidesCore(Bounds2& b, Frame* parent, unsigned xMask, un
 
     const SInt32 tolerance = std::max<SInt32>(1, SInt32(4) * 100 / gCanvasZoom);
 
-    SInt32 left = b.x, right = b.x + b.w, centerX = b.x + b.w / 2;
-    SInt32 top  = b.y, bottom = b.y + b.h, centerY = b.y + b.h / 2;
+    std::vector<SInt32> myXs, myYs;
+    SInt32 myExtL, myExtR, myExtT, myExtB;
+    GatherGuideCandidates(b, selfRotation, xMask, yMask, myXs, myYs, myExtL, myExtR, myExtT, myExtB);
 
-    // ---- pass 1: find the single best X and Y snap ----
+    // ---- pass 1: find the single best X and Y snap across all my own candidates ----
     SInt32 bestDX = 0, bestDY = 0;
     bool haveDX = false, haveDY = false;
     auto absOf = [](SInt32 v) { return v < 0 ? -v : v; };
@@ -3573,89 +3623,80 @@ static void ComputeSmartGuidesCore(Bounds2& b, Frame* parent, unsigned xMask, un
         SInt32 d = target - from;
         if (absOf(d) <= tolerance && (!haveDY || absOf(d) < absOf(bestDY))) { bestDY = d; haveDY = true; }
     };
-    // Try `target` against whichever of our own left/right/center xMask enables.
-    auto tryX = [&](SInt32 target) {
-        if (xMask & kEdgeLeft)   considerX(target, left);
-        if (xMask & kEdgeRight)  considerX(target, right);
-        if (xMask & kEdgeCenter) considerX(target, centerX);
-    };
-    auto tryY = [&](SInt32 target) {
-        if (yMask & kEdgeTop)    considerY(target, top);
-        if (yMask & kEdgeBottom) considerY(target, bottom);
-        if (yMask & kEdgeCenter) considerY(target, centerY);
-    };
+    auto tryX = [&](SInt32 target) { for (SInt32 mx : myXs) considerX(target, mx); };
+    auto tryY = [&](SInt32 target) { for (SInt32 my : myYs) considerY(target, my); };
 
-    // Parent-center guide: compare against whichever of the dragged object's
-    // own left/right/center the mask allows — an object's edge landing
-    // exactly on the parent's centerline should snap/guide just as much as
-    // its own center would (for move-drag; resize-drag narrows this to
-    // whichever single edge is actually moving).
+    // Parent-center guide: compare against any of the dragged object's own
+    // candidates — an object's edge/corner landing exactly on the parent's
+    // centerline should snap/guide just as much as its own center would
+    // (for move-drag; resize-drag narrows this via xMask/yMask upstream).
     SInt32 pCenterX = parent->bounds.x + parent->bounds.w / 2;
     SInt32 pCenterY = parent->bounds.y + parent->bounds.h / 2;
     tryX(pCenterX);
     tryY(pCenterY);
 
-    auto scanSibling = [&](const Bounds2& sb) {
-        SInt32 sL = sb.x, sR = sb.x + sb.w, sCX = sb.x + sb.w / 2;
-        SInt32 sT = sb.y, sB = sb.y + sb.h, sCY = sb.y + sb.h / 2;
-        tryX(sL); tryX(sR); tryX(sCX);
-        tryY(sT); tryY(sB); tryY(sCY);
+    auto scanSibling = [&](const Bounds2& sb, SInt16 srot) {
+        std::vector<SInt32> sxs, sys; SInt32 dl, dr, dt, db;
+        GatherGuideCandidates(sb, srot, kEdgeAll, kEdgeAll, sxs, sys, dl, dr, dt, db);
+        for (SInt32 sx : sxs) tryX(sx);
+        for (SInt32 sy : sys) tryY(sy);
     };
-    for (auto& s : parent->children)    if (!excludeShape(s.get())) scanSibling(s->bounds);
-    for (auto& cf : parent->childFrames) if (!excludeFrame(cf.get())) scanSibling(cf->bounds);
+    for (auto& s : parent->children)    if (!excludeShape(s.get())) scanSibling(s->bounds, s->rotation);
+    for (auto& cf : parent->childFrames) if (!excludeFrame(cf.get())) scanSibling(cf->bounds, cf->rotation);
 
     if (haveDX) b.x += bestDX;
     if (haveDY) b.y += bestDY;
 
     // ---- pass 2: at the final position, collect EVERY exact match to draw ----
-    left = b.x; right = b.x + b.w; centerX = b.x + b.w / 2;
-    top  = b.y; bottom = b.y + b.h; centerY = b.y + b.h / 2;
+    myXs.clear(); myYs.clear();
+    GatherGuideCandidates(b, selfRotation, xMask, yMask, myXs, myYs, myExtL, myExtR, myExtT, myExtB);
 
-    // Note: the guide's own position is pCenterX/pCenterY, not centerX/centerY —
-    // when it's the object's LEFT or RIGHT edge (not its center) that matched,
-    // centerX has a different value than pCenterX even though the match is exact.
-    bool centerXGuide = ((xMask & kEdgeLeft)   && left   == pCenterX)
-                      || ((xMask & kEdgeRight)  && right  == pCenterX)
-                      || ((xMask & kEdgeCenter) && centerX == pCenterX);
-    bool centerYGuide = ((yMask & kEdgeTop)    && top    == pCenterY)
-                      || ((yMask & kEdgeBottom) && bottom == pCenterY)
-                      || ((yMask & kEdgeCenter) && centerY == pCenterY);
+    bool centerXGuide = false, centerYGuide = false;
+    for (SInt32 mx : myXs) if (mx == pCenterX) centerXGuide = true;
+    for (SInt32 my : myYs) if (my == pCenterY) centerYGuide = true;
     if (centerXGuide) gActiveGuides.push_back({ true,  pCenterX, parent->bounds.y, parent->bounds.y + parent->bounds.h });
     if (centerYGuide) gActiveGuides.push_back({ false, pCenterY, parent->bounds.x, parent->bounds.x + parent->bounds.w });
 
-    auto matchSibling = [&](const Bounds2& sb) {
-        SInt32 sL = sb.x, sR = sb.x + sb.w, sCX = sb.x + sb.w / 2;
-        SInt32 sT = sb.y, sB = sb.y + sb.h, sCY = sb.y + sb.h / 2;
-        if ((xMask & kEdgeLeft) && (left == sL || left == sR || left == sCX))
-            gActiveGuides.push_back({ true, left, std::min(top, sT), std::max(bottom, sB) });
-        if ((xMask & kEdgeRight) && (right == sL || right == sR || right == sCX))
-            gActiveGuides.push_back({ true, right, std::min(top, sT), std::max(bottom, sB) });
-        // Skip only if this would duplicate the parent-center line already added
-        // above (same position) — not just because SOME parent-center guide fired,
-        // which may be at a different x (e.g. triggered by the left/right edge).
-        if ((xMask & kEdgeCenter) && centerX != pCenterX && centerX == sCX)
-            gActiveGuides.push_back({ true, centerX, std::min(top, sT), std::max(bottom, sB) });
-        if ((yMask & kEdgeTop) && (top == sT || top == sB || top == sCY))
-            gActiveGuides.push_back({ false, top, std::min(left, sL), std::max(right, sR) });
-        if ((yMask & kEdgeBottom) && (bottom == sT || bottom == sB || bottom == sCY))
-            gActiveGuides.push_back({ false, bottom, std::min(left, sL), std::max(right, sR) });
-        if ((yMask & kEdgeCenter) && centerY != pCenterY && centerY == sCY)
-            gActiveGuides.push_back({ false, centerY, std::min(left, sL), std::max(right, sR) });
+    // Guide line spans the visual (rotation-aware) extent of BOTH objects,
+    // not their raw unrotated top/bottom/left/right -- otherwise a matched
+    // line for a rotated object stops short of where it's actually visible,
+    // the "lines not going end to end" symptom.
+    auto matchSibling = [&](const Bounds2& sb, SInt16 srot) {
+        std::vector<SInt32> sxs, sys; SInt32 sl, sr, st, sbtm;
+        GatherGuideCandidates(sb, srot, kEdgeAll, kEdgeAll, sxs, sys, sl, sr, st, sbtm);
+        for (SInt32 mx : myXs) {
+            if (mx == pCenterX && centerXGuide) continue; // already drawn as the parent-center line above
+            for (SInt32 sx : sxs) {
+                if (mx == sx) {
+                    gActiveGuides.push_back({ true, mx, std::min(myExtT, st), std::max(myExtB, sbtm) });
+                    break; // one line per matching my-value is enough even if multiple sibling candidates share it
+                }
+            }
+        }
+        for (SInt32 my : myYs) {
+            if (my == pCenterY && centerYGuide) continue;
+            for (SInt32 sy : sys) {
+                if (my == sy) {
+                    gActiveGuides.push_back({ false, my, std::min(myExtL, sl), std::max(myExtR, sr) });
+                    break;
+                }
+            }
+        }
     };
-    for (auto& s : parent->children)     if (!excludeShape(s.get())) matchSibling(s->bounds);
-    for (auto& cf : parent->childFrames) if (!excludeFrame(cf.get())) matchSibling(cf->bounds);
+    for (auto& s : parent->children)     if (!excludeShape(s.get())) matchSibling(s->bounds, s->rotation);
+    for (auto& cf : parent->childFrames) if (!excludeFrame(cf.get())) matchSibling(cf->bounds, cf->rotation);
 }
 
 // Single-item move-drag: excludeShape/excludeFrame is whichever of the two
 // the dragged item itself is, so it doesn't trivially "align" with itself.
-// selfRotation is no longer used to gate this (confirmed against real
-// Figma: guides work identically for a rotated dragged item) -- kept as a
-// parameter only because callers already have it on hand and removing it
-// would just be signature churn for no behavior change.
+// selfRotation is no longer used to GATE this (confirmed against real
+// Figma: guides work identically for a rotated dragged item) but IS still
+// used, to pick the right candidate positions (corners, for a rotated
+// item, instead of meaningless raw left/right/top/bottom) -- see
+// GatherGuideCandidates.
 static void ComputeSmartGuides(Bounds2& b, SInt16 selfRotation, Frame* parent,
                                 Shape* excludeShape, Frame* excludeFrame) {
-    (void)selfRotation;
-    ComputeSmartGuidesCore(b, parent, kEdgeAll, kEdgeAll,
+    ComputeSmartGuidesCore(b, selfRotation, parent, kEdgeAll, kEdgeAll,
         [&](Shape* s) { return s == excludeShape; },
         [&](Frame* f) { return f == excludeFrame; });
 }
@@ -3668,7 +3709,11 @@ static void ComputeSmartGuides(Bounds2& b, SInt16 selfRotation, Frame* parent,
 static void ComputeSmartGuidesMulti(Bounds2& b, Frame* parent,
                                      const std::vector<Shape*>& selShapes,
                                      const std::vector<Frame*>& selFrames) {
-    ComputeSmartGuidesCore(b, parent, kEdgeAll, kEdgeAll,
+    // Aggregate box is always treated as unrotated (0), matching real
+    // Figma's own multi-select behavior: the aggregate border stays plain
+    // axis-aligned, dynamically hugging the group's current extent, rather
+    // than adopting any rotation itself.
+    ComputeSmartGuidesCore(b, 0, parent, kEdgeAll, kEdgeAll,
         [&](Shape* s) { return std::find(selShapes.begin(), selShapes.end(), s) != selShapes.end(); },
         [&](Frame* f) { return std::find(selFrames.begin(), selFrames.end(), f) != selFrames.end(); });
 }
@@ -3682,13 +3727,19 @@ static void ComputeSmartGuidesMulti(Bounds2& b, Frame* parent,
 // shape/frame's trial bounds after this tick's resize math; the core mutates
 // whichever of b.x/b.y snapped, which the caller then has to translate back
 // into a width/height adjustment (see HandleResizeDrag).
-// selfRotation is no longer used to gate this -- see ComputeSmartGuides's
-// comment, same reasoning applies here.
+// Still gated on selfRotation (unlike move-drag): resize-drag's whole
+// design is "only the specific edge actually being dragged should guide"
+// (via xMask/yMask), but GatherGuideCandidates ignores the mask entirely
+// once an item is rotated (a corner isn't specifically a "left" or "right"
+// edge, all 4 always participate) -- which would fire guides for edges
+// that aren't the one being resized. Left as a narrower, deliberate scope-
+// cut rather than guessing at a combined mask+rotation design; move-drag
+// (the case actually reported broken) is fixed.
 static void ComputeSmartGuidesEdge(Bounds2& b, SInt16 selfRotation, Frame* parent,
                                     unsigned xMask, unsigned yMask,
                                     Shape* excludeShape, Frame* excludeFrame) {
-    (void)selfRotation;
-    ComputeSmartGuidesCore(b, parent, xMask, yMask,
+    if (selfRotation != 0) { gActiveGuides.clear(); return; }
+    ComputeSmartGuidesCore(b, selfRotation, parent, xMask, yMask,
         [&](Shape* s) { return s == excludeShape; },
         [&](Frame* f) { return f == excludeFrame; });
 }
